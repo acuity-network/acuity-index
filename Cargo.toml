@@ -1,0 +1,41 @@
+[package]
+name = "acuity-index"
+version = "0.8.0"
+edition = "2024"
+authors = ["Jonathan Brown"]
+description = "Configurable omni-indexer for Substrate blockchains."
+homepage = "https://index.acuity.network/"
+repository = "https://github.com/acuity-network/acuity-index"
+license = "Apache-2.0"
+
+[[bin]]
+name = "acuity-index"
+path = "src/main.rs"
+
+[dependencies]
+ahash = "0.8"
+byte-unit = "4.0"
+byteorder = "1.5"
+clap = { version = "4", features = ["derive"] }
+clap-verbosity-flag = "2"
+futures = "0.3"
+hex = "0.4"
+hex-literal = "0.4"
+home = "0.5"
+num-format = "0.4"
+scale-value = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+sled = "0.34"
+subxt = "0.44.2"
+thiserror = { version = "2", default-features = false }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.21"
+toml = "0.8"
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = "0.3"
+zerocopy = "0.7"
+zerocopy-derive = "0.7"

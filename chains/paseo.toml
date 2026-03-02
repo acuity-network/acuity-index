@@ -1,0 +1,86 @@
+name = "paseo"
+genesis_hash = "77afd6190f1554ad45fd0d31aee62aacc33c6db0ea801129acb813f913e2f8bb"
+default_url = "wss://paseo.rpc.amforc.com:443"
+versions = [0]
+
+[[pallets]]
+name = "System"
+sdk = true
+
+[[pallets]]
+name = "Indices"
+sdk = true
+
+[[pallets]]
+name = "Balances"
+sdk = true
+
+[[pallets]]
+name = "TransactionPayment"
+sdk = true
+
+[[pallets]]
+name = "Staking"
+sdk = true
+
+[[pallets]]
+name = "Session"
+sdk = true
+
+[[pallets]]
+name = "Vesting"
+sdk = true
+
+[[pallets]]
+name = "Proxy"
+sdk = true
+
+[[pallets]]
+name = "Multisig"
+sdk = true
+
+[[pallets]]
+name = "NominationPools"
+sdk = true
+
+[[pallets]]
+name = "FastUnstake"
+sdk = true
+
+[[pallets]]
+name = "ConvictionVoting"
+sdk = true
+
+[[pallets]]
+name = "Referenda"
+sdk = true
+
+[[pallets]]
+name = "Paras"
+
+[[pallets.events]]
+name = "CurrentCodeUpdated"
+[[pallets.events.params]]
+field = "0"
+key = "para_id"
+
+[[pallets.events]]
+name = "ActionQueued"
+[[pallets.events.params]]
+field = "0"
+key = "para_id"
+[[pallets.events.params]]
+field = "1"
+key = "session_index"
+
+[[pallets]]
+name = "Registrar"
+
+[[pallets.events]]
+name = "Registered"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+[[pallets.events.params]]
+field = "manager"
+key = "account_id"

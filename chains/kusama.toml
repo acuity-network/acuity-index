@@ -1,0 +1,260 @@
+name = "kusama"
+genesis_hash = "b0a8d493285c2df73290dfb7e61f870f17b41801197a149ca93654499ea3dafe"
+default_url = "wss://kusama-rpc.polkadot.io:443"
+versions = [0]
+
+[[pallets]]
+name = "System"
+sdk = true
+
+[[pallets]]
+name = "Preimage"
+sdk = true
+
+[[pallets]]
+name = "Indices"
+sdk = true
+
+[[pallets]]
+name = "Balances"
+sdk = true
+
+[[pallets]]
+name = "TransactionPayment"
+sdk = true
+
+[[pallets]]
+name = "Staking"
+sdk = true
+
+[[pallets]]
+name = "Session"
+sdk = true
+
+[[pallets]]
+name = "Treasury"
+sdk = true
+
+[[pallets]]
+name = "Vesting"
+sdk = true
+
+[[pallets]]
+name = "Proxy"
+sdk = true
+
+[[pallets]]
+name = "Multisig"
+sdk = true
+
+[[pallets]]
+name = "Bounties"
+sdk = true
+
+[[pallets]]
+name = "ChildBounties"
+sdk = true
+
+[[pallets]]
+name = "ElectionProviderMultiPhase"
+sdk = true
+
+[[pallets]]
+name = "VoterList"
+sdk = true
+
+[[pallets]]
+name = "NominationPools"
+sdk = true
+
+[[pallets]]
+name = "FastUnstake"
+sdk = true
+
+[[pallets]]
+name = "ConvictionVoting"
+sdk = true
+
+[[pallets]]
+name = "Referenda"
+sdk = true
+
+[[pallets]]
+name = "Claims"
+
+[[pallets.events]]
+name = "Claimed"
+[[pallets.events.params]]
+field = "who"
+key = "account_id"
+
+[[pallets]]
+name = "Paras"
+
+[[pallets.events]]
+name = "CurrentCodeUpdated"
+[[pallets.events.params]]
+field = "0"
+key = "para_id"
+
+[[pallets.events]]
+name = "CurrentHeadUpdated"
+[[pallets.events.params]]
+field = "0"
+key = "para_id"
+
+[[pallets.events]]
+name = "ActionQueued"
+[[pallets.events.params]]
+field = "0"
+key = "para_id"
+[[pallets.events.params]]
+field = "1"
+key = "session_index"
+
+[[pallets]]
+name = "Hrmp"
+
+[[pallets.events]]
+name = "OpenChannelRequested"
+[[pallets.events.params]]
+field = "sender"
+key = "para_id"
+[[pallets.events.params]]
+field = "recipient"
+key = "para_id"
+
+[[pallets.events]]
+name = "OpenChannelAccepted"
+[[pallets.events.params]]
+field = "sender"
+key = "para_id"
+[[pallets.events.params]]
+field = "recipient"
+key = "para_id"
+
+[[pallets.events]]
+name = "ChannelClosed"
+[[pallets.events.params]]
+field = "by_parachain"
+key = "para_id"
+
+[[pallets]]
+name = "ParasDisputes"
+
+[[pallets.events]]
+name = "DisputeInitiated"
+[[pallets.events.params]]
+field = "0"
+key = "candidate_hash"
+
+[[pallets.events]]
+name = "DisputeConcluded"
+[[pallets.events.params]]
+field = "0"
+key = "candidate_hash"
+
+[[pallets]]
+name = "Registrar"
+
+[[pallets.events]]
+name = "Registered"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+[[pallets.events.params]]
+field = "manager"
+key = "account_id"
+
+[[pallets.events]]
+name = "Deregistered"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets.events]]
+name = "Reserved"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+[[pallets.events.params]]
+field = "who"
+key = "account_id"
+
+[[pallets]]
+name = "Slots"
+
+[[pallets.events]]
+name = "Leased"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+[[pallets.events.params]]
+field = "leaser"
+key = "account_id"
+
+[[pallets]]
+name = "Auctions"
+
+[[pallets.events]]
+name = "AuctionStarted"
+[[pallets.events.params]]
+field = "auction_index"
+key = "auction_index"
+
+[[pallets.events]]
+name = "AuctionClosed"
+[[pallets.events.params]]
+field = "auction_index"
+key = "auction_index"
+
+[[pallets.events]]
+name = "BidAccepted"
+[[pallets.events.params]]
+field = "bidder"
+key = "account_id"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets]]
+name = "Crowdloan"
+
+[[pallets.events]]
+name = "Created"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets.events]]
+name = "Contributed"
+[[pallets.events.params]]
+field = "who"
+key = "account_id"
+[[pallets.events.params]]
+field = "fund_index"
+key = "para_id"
+
+[[pallets.events]]
+name = "Withdrew"
+[[pallets.events.params]]
+field = "who"
+key = "account_id"
+[[pallets.events.params]]
+field = "fund_index"
+key = "para_id"
+
+[[pallets.events]]
+name = "Dissolved"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets]]
+name = "ParaInclusion"
+
+[[pallets.events]]
+name = "UpwardMessagesReceived"
+[[pallets.events.params]]
+field = "from"
+key = "para_id"

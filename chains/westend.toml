@@ -1,0 +1,99 @@
+name = "westend"
+genesis_hash = "e143f23803ac50e8f6f8e62695d1ce9e4e1d68aa36c1cd2cfd15340213f3423e"
+default_url = "wss://westend-rpc.polkadot.io:443"
+versions = [0]
+
+[[pallets]]
+name = "System"
+sdk = true
+
+[[pallets]]
+name = "Indices"
+sdk = true
+
+[[pallets]]
+name = "Balances"
+sdk = true
+
+[[pallets]]
+name = "TransactionPayment"
+sdk = true
+
+[[pallets]]
+name = "Staking"
+sdk = true
+
+[[pallets]]
+name = "Session"
+sdk = true
+
+[[pallets]]
+name = "Vesting"
+sdk = true
+
+[[pallets]]
+name = "Proxy"
+sdk = true
+
+[[pallets]]
+name = "Multisig"
+sdk = true
+
+[[pallets]]
+name = "Bounties"
+sdk = true
+
+[[pallets]]
+name = "NominationPools"
+sdk = true
+
+[[pallets]]
+name = "FastUnstake"
+sdk = true
+
+[[pallets]]
+name = "ConvictionVoting"
+sdk = true
+
+[[pallets]]
+name = "Referenda"
+sdk = true
+
+[[pallets]]
+name = "Paras"
+
+[[pallets.events]]
+name = "CurrentCodeUpdated"
+[[pallets.events.params]]
+field = "0"
+key = "para_id"
+
+[[pallets.events]]
+name = "ActionQueued"
+[[pallets.events.params]]
+field = "0"
+key = "para_id"
+[[pallets.events.params]]
+field = "1"
+key = "session_index"
+
+[[pallets]]
+name = "Registrar"
+
+[[pallets.events]]
+name = "Registered"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+[[pallets.events.params]]
+field = "manager"
+key = "account_id"
+
+[[pallets.events]]
+name = "Reserved"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+[[pallets.events.params]]
+field = "who"
+key = "account_id"

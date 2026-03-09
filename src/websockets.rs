@@ -4,8 +4,8 @@ use crate::shared::*;
 use futures::{SinkExt, StreamExt};
 use sled::Tree;
 use std::net::SocketAddr;
-use subxt::{PolkadotConfig, backend::legacy::LegacyRpcMethods};
 use subxt::metadata::types::Metadata;
+use subxt::{PolkadotConfig, backend::legacy::LegacyRpcMethods};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{
     mpsc::{UnboundedSender, unbounded_channel},
@@ -56,8 +56,7 @@ pub fn process_msg_status(span_db: &Tree) -> ResponseMessage {
     for (key, value) in span_db.into_iter().flatten() {
         let sv = SpanDbValue::read_from(&value).unwrap();
         let start: u32 = sv.start.into();
-        let end: u32 =
-            u32::from_be_bytes(key.as_ref().try_into().unwrap());
+        let end: u32 = u32::from_be_bytes(key.as_ref().try_into().unwrap());
         spans.push(Span { start, end });
     }
     ResponseMessage::Status(spans)
@@ -92,28 +91,22 @@ pub async fn process_msg_variants(
     Ok(ResponseMessage::Variants(pallets))
 }
 
-pub fn process_msg_get_events(
-    trees: &Trees,
-    key: Key,
-) -> ResponseMessage {
+pub fn process_msg_get_events(trees: &Trees, key: Key) -> ResponseMessage {
     let event_refs = key.get_events(trees);
 
-    let mut block_numbers: Vec<u32> = event_refs
-        .iter()
-        .map(|e| e.block_number)
-        .collect();
+    let mut block_numbers: Vec<u32> = event_refs.iter().map(|e| e.block_number).collect();
     block_numbers.sort_unstable();
     block_numbers.dedup();
 
     let mut block_events = Vec::new();
     for bn in &block_numbers {
         let db_key: U32<BigEndian> = (*bn).into();
-        if let Ok(Some(bytes)) =
-            trees.block_events.get(db_key.as_bytes())
-        {
+        if let Ok(Some(bytes)) = trees.block_events.get(db_key.as_bytes()) {
             if let Ok(json) = serde_json::from_slice(&bytes) {
-                block_events
-                    .push(BlockEvents { block_number: *bn, events: json });
+                block_events.push(BlockEvents {
+                    block_number: *bn,
+                    events: json,
+                });
             }
         }
     }
@@ -133,9 +126,7 @@ pub async fn process_msg(
     sub_response_tx: &UnboundedSender<ResponseMessage>,
 ) -> Result<ResponseMessage, IndexError> {
     Ok(match msg {
-        RequestMessage::Status => {
-            process_msg_status(&trees.span)
-        }
+        RequestMessage::Status => process_msg_status(&trees.span),
         RequestMessage::SubscribeStatus => {
             sub_tx
                 .send(SubscriptionMessage::SubscribeStatus {
@@ -152,12 +143,8 @@ pub async fn process_msg(
                 .unwrap();
             ResponseMessage::Unsubscribed
         }
-        RequestMessage::Variants => {
-            process_msg_variants(rpc).await?
-        }
-        RequestMessage::GetEvents { key } => {
-            process_msg_get_events(trees, key)
-        }
+        RequestMessage::Variants => process_msg_variants(rpc).await?,
+        RequestMessage::GetEvents { key } => process_msg_get_events(trees, key),
         RequestMessage::SubscribeEvents { key } => {
             sub_tx
                 .send(SubscriptionMessage::SubscribeEvents {
@@ -176,9 +163,7 @@ pub async fn process_msg(
                 .unwrap();
             ResponseMessage::Unsubscribed
         }
-        RequestMessage::SizeOnDisk => {
-            ResponseMessage::SizeOnDisk(trees.root.size_on_disk()?)
-        }
+        RequestMessage::SizeOnDisk => ResponseMessage::SizeOnDisk(trees.root.size_on_disk()?),
     })
 }
 
@@ -192,8 +177,7 @@ async fn handle_connection(
     sub_tx: UnboundedSender<SubscriptionMessage>,
 ) -> Result<(), IndexError> {
     info!("TCP connection from {addr}");
-    let ws_stream =
-        tokio_tungstenite::accept_async(raw_stream).await?;
+    let ws_stream = tokio_tungstenite::accept_async(raw_stream).await?;
     info!("WebSocket established: {addr}");
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();

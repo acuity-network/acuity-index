@@ -150,7 +150,7 @@ mod websocket_tests {
     fn response_status_serializes() {
         let msg = ResponseMessage::Status(vec![Span { start: 1, end: 100 }]);
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("Status"));
+        assert!(json.contains("status"));
         assert!(json.contains("100"));
     }
 
@@ -158,7 +158,7 @@ mod websocket_tests {
     fn response_subscribed_serializes() {
         let msg = ResponseMessage::Subscribed;
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("Subscribed"));
+        assert!(json.contains("subscribed"));
     }
 
     #[test]
@@ -183,4 +183,3 @@ mod websocket_tests {
         assert!(json.contains("42"));
     }
 }
-

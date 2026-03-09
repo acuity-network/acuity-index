@@ -31,6 +31,9 @@ use indexer::run_indexer;
 use shared::Trees;
 use websockets::websockets_listen;
 
+#[cfg(test)]
+mod tests;
+
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]

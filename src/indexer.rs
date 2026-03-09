@@ -225,7 +225,7 @@ impl Indexer {
 
     // ─── Key derivation ───────────────────────────────────────────────────────
 
-    fn keys_for_event(
+    pub fn keys_for_event(
         &self,
         pallet_name: &str,
         event_name: &str,
@@ -262,7 +262,7 @@ impl Indexer {
 
     // ─── Event encoding ───────────────────────────────────────────────────────
 
-    fn encode_event(
+    pub fn encode_event(
         &self,
         pallet_name: &str,
         event_name: &str,

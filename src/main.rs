@@ -1,5 +1,3 @@
-#![feature(let_chains)]
-
 use byte_unit::Byte;
 use clap::{Parser, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
@@ -20,7 +18,7 @@ use tokio::{
     sync::{mpsc, watch},
 };
 use tracing::{error, info};
-use tracing_subscriber::filter::LevelFilter;
+use tracing_log::AsTrace;
 
 mod config;
 mod indexer;
@@ -103,18 +101,7 @@ pub struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-
-    let log_level: LevelFilter = {
-        use clap_verbosity_flag::log::LevelFilter as LF;
-        match args.verbose.log_level_filter() {
-            LF::Off => LevelFilter::OFF,
-            LF::Error => LevelFilter::ERROR,
-            LF::Warn => LevelFilter::WARN,
-            LF::Info => LevelFilter::INFO,
-            LF::Debug => LevelFilter::DEBUG,
-            LF::Trace => LevelFilter::TRACE,
-        }
-    };
+    let log_level = args.verbose.log_level_filter().as_trace();
     tracing_subscriber::fmt().with_max_level(log_level).init();
 
     // Load chain config.

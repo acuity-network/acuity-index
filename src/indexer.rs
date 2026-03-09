@@ -3,14 +3,12 @@
 use ahash::AHashMap;
 use futures::future;
 use num_format::{Locale, ToFormattedString};
-use scale_value::{Composite, Value};
+use scale_value::{Composite, Value, ValueDef};
 use serde_json::json;
 use sled::Tree;
 use std::{collections::HashMap, future::Future, sync::Mutex};
 use subxt::{
-    OnlineClient, PolkadotConfig,
-    backend::legacy::LegacyRpcMethods,
-    blocks::Block,
+    OnlineClient, PolkadotConfig, backend::legacy::LegacyRpcMethods, blocks::Block,
     metadata::Metadata,
 };
 use tokio::{
@@ -22,9 +20,7 @@ use zerocopy::{AsBytes, BigEndian, FromBytes, byteorder::U32};
 
 use crate::{
     config::{ChainConfig, KeyTypeName, ParamConfig},
-    pallets::{
-        extract_bytes32, extract_u32, get_field, index_sdk_pallet,
-    },
+    pallets::{extract_bytes32, extract_u32, get_field, index_sdk_pallet},
     shared::*,
     websockets::process_msg_status,
 };
@@ -39,14 +35,11 @@ pub struct Indexer {
     store_events: bool,
     metadata_map: RwLock<AHashMap<u32, Metadata>>,
     status_subs: Mutex<Vec<mpsc::UnboundedSender<ResponseMessage>>>,
-    events_subs: Mutex<
-        HashMap<Key, Vec<mpsc::UnboundedSender<ResponseMessage>>>,
-    >,
+    events_subs: Mutex<HashMap<Key, Vec<mpsc::UnboundedSender<ResponseMessage>>>>,
     /// sdk_pallets: set of pallet names using built-in SDK rules.
     sdk_pallets: std::collections::HashSet<String>,
     /// custom_index: pallet → event → params mapping from TOML.
-    custom_index:
-        HashMap<String, HashMap<String, Vec<ParamConfig>>>,
+    custom_index: HashMap<String, HashMap<String, Vec<ParamConfig>>>,
 }
 
 impl Indexer {
@@ -93,24 +86,15 @@ impl Indexer {
         &self,
         next: impl Future<
             Output = Option<
-                Result<
-                    Block<PolkadotConfig, OnlineClient<PolkadotConfig>>,
-                    subxt::Error,
-                >,
+                Result<Block<PolkadotConfig, OnlineClient<PolkadotConfig>>, subxt::Error>,
             >,
         >,
     ) -> Result<(u32, u32, u32), IndexError> {
         let block = next.await.unwrap()?;
-        self.index_block(
-            block.number().into().try_into().unwrap(),
-        )
-        .await
+        self.index_block(block.number()).await
     }
 
-    pub async fn index_block(
-        &self,
-        block_number: u32,
-    ) -> Result<(u32, u32, u32), IndexError> {
+    pub async fn index_block(&self, block_number: u32) -> Result<(u32, u32, u32), IndexError> {
         let mut key_count = 0u32;
         let api = self.api.as_ref().unwrap();
         let rpc = self.rpc.as_ref().unwrap();
@@ -120,8 +104,7 @@ impl Indexer {
             .await?
             .ok_or(IndexError::BlockNotFound(block_number))?;
 
-        let runtime_version =
-            rpc.state_get_runtime_version(Some(block_hash)).await?;
+        let runtime_version = rpc.state_get_runtime_version(Some(block_hash)).await?;
         let spec = runtime_version.spec_version;
 
         // Fetch or retrieve cached metadata.
@@ -135,29 +118,21 @@ impl Indexer {
                 if let Some(m) = map.get(&spec) {
                     m.clone()
                 } else {
-                    info!(
-                        "Downloading metadata for spec version {spec}"
-                    );
+                    info!("Downloading metadata for spec version {spec}");
                     let m: Metadata = rpc
                         .state_get_metadata(Some(block_hash))
                         .await?
                         .to_frame_metadata()?
                         .try_into()?;
-                    info!(
-                        "Downloaded metadata for spec version {spec}"
-                    );
+                    info!("Downloaded metadata for spec version {spec}");
                     map.insert(spec, m.clone());
                     m
                 }
             }
         };
 
-        let events = subxt::events::new_events_from_client(
-            metadata,
-            block_hash,
-            api.clone(),
-        )
-        .await?;
+        let events =
+            subxt::events::new_events_from_client(metadata, block_hash, api.clone()).await?;
 
         // Accumulate decoded events as JSON for storage.
         let mut decoded_events: Vec<serde_json::Value> = Vec::new();
@@ -166,9 +141,7 @@ impl Indexer {
             let event = match event_result {
                 Ok(e) => e,
                 Err(err) => {
-                    error!(
-                        "Block {block_number}, event {i}: {err}"
-                    );
+                    error!("Block {block_number}, event {i}: {err}");
                     continue;
                 }
             };
@@ -190,8 +163,21 @@ impl Indexer {
             }
 
             // Decode field values schema-lessly.
-            let field_values = match event.field_values() {
-                Ok(fv) => fv,
+            let field_values: Composite<()> = match event.field_values() {
+                Ok(fv) => {
+                    // Strip type-id context (u32 → ()) so downstream functions work.
+                    match fv {
+                        Composite::Named(fields) => Composite::Named(
+                            fields
+                                .into_iter()
+                                .map(|(k, v)| (k, v.remove_context()))
+                                .collect(),
+                        ),
+                        Composite::Unnamed(fields) => Composite::Unnamed(
+                            fields.into_iter().map(|v| v.remove_context()).collect(),
+                        ),
+                    }
+                }
                 Err(err) => {
                     error!(
                         "Block {block_number} {pallet_name}::{event_name} \
@@ -202,33 +188,23 @@ impl Indexer {
             };
 
             // Determine indexing keys from config.
-            let keys = self.keys_for_event(
-                pallet_name,
-                event_name,
-                &field_values,
-            );
+            let keys = self.keys_for_event(pallet_name, event_name, &field_values);
 
             for key in &keys {
-                self.index_event_key(
-                    key.clone(),
-                    block_number,
-                    event_index,
-                )?;
+                self.index_event_key(key.clone(), block_number, event_index)?;
                 key_count += 1;
             }
 
             // Accumulate decoded event for storage.
             if self.store_events {
-                decoded_events.push(
-                    self.encode_event(
-                        pallet_name,
-                        event_name,
-                        pallet_index,
-                        variant_index,
-                        event_index,
-                        &field_values,
-                    ),
-                );
+                decoded_events.push(self.encode_event(
+                    pallet_name,
+                    event_name,
+                    pallet_index,
+                    variant_index,
+                    event_index,
+                    &field_values,
+                ));
             }
         }
 
@@ -239,10 +215,9 @@ impl Indexer {
                 "specVersion": u32::from(spec_be),
                 "events": decoded_events,
             }))?;
-            self.trees.block_events.insert(
-                db_key.as_bytes(),
-                json_bytes.as_slice(),
-            )?;
+            self.trees
+                .block_events
+                .insert(db_key.as_bytes(), json_bytes.as_slice())?;
         }
 
         Ok((block_number, events.len() as u32, key_count))
@@ -258,9 +233,7 @@ impl Indexer {
     ) -> Vec<Key> {
         // Try SDK built-in first.
         if self.sdk_pallets.contains(pallet_name) {
-            if let Some(keys) =
-                index_sdk_pallet(pallet_name, event_name, fields)
-            {
+            if let Some(keys) = index_sdk_pallet(pallet_name, event_name, fields) {
                 return keys;
             }
         }
@@ -273,21 +246,14 @@ impl Indexer {
         vec![]
     }
 
-    fn keys_from_params(
-        &self,
-        params: &[ParamConfig],
-        fields: &Composite<()>,
-    ) -> Vec<Key> {
+    fn keys_from_params(&self, params: &[ParamConfig], fields: &Composite<()>) -> Vec<Key> {
         let mut keys = Vec::new();
         for param in params {
-            let value =
-                match get_field(fields, &param.field) {
-                    Some(v) => v,
-                    None => continue,
-                };
-            if let Some(key) =
-                value_to_key(value, &param.key)
-            {
+            let value = match get_field(fields, &param.field) {
+                Some(v) => v,
+                None => continue,
+            };
+            if let Some(key) = value_to_key(value, &param.key) {
                 keys.push(key);
             }
         }
@@ -326,24 +292,22 @@ impl Indexer {
         key.write_db_key(&self.trees, block_number, event_index)?;
         self.notify_event_subscribers(
             key,
-            EventRef { block_number, event_index },
+            EventRef {
+                block_number,
+                event_index,
+            },
         );
         Ok(())
     }
 
     pub fn notify_status_subscribers(&self) {
-        let msg =
-            process_msg_status(&self.trees.span);
+        let msg = process_msg_status(&self.trees.span);
         for tx in self.status_subs.lock().unwrap().iter() {
             let _ = tx.send(msg.clone());
         }
     }
 
-    fn notify_event_subscribers(
-        &self,
-        key: Key,
-        event_ref: EventRef,
-    ) {
+    fn notify_event_subscribers(&self, key: Key, event_ref: EventRef) {
         let subs = self.events_subs.lock().unwrap();
         if let Some(txs) = subs.get(&key) {
             let db_key: U32<BigEndian> = event_ref.block_number.into();
@@ -376,57 +340,27 @@ impl Indexer {
 
 // ─── scale_value → Key conversion ────────────────────────────────────────────
 
-fn value_to_key(
-    value: &Value<()>,
-    key_type: &KeyTypeName,
-) -> Option<Key> {
+fn value_to_key(value: &Value<()>, key_type: &KeyTypeName) -> Option<Key> {
     match key_type {
-        KeyTypeName::AccountId => {
-            extract_bytes32(value).map(|b| Key::AccountId(Bytes32(b)))
-        }
-        KeyTypeName::AccountIndex => {
-            extract_u32(value).map(Key::AccountIndex)
-        }
-        KeyTypeName::AuctionIndex => {
-            extract_u32(value).map(Key::AuctionIndex)
-        }
-        KeyTypeName::BountyIndex => {
-            extract_u32(value).map(Key::BountyIndex)
-        }
+        KeyTypeName::AccountId => extract_bytes32(value).map(|b| Key::AccountId(Bytes32(b))),
+        KeyTypeName::AccountIndex => extract_u32(value).map(Key::AccountIndex),
+        KeyTypeName::AuctionIndex => extract_u32(value).map(Key::AuctionIndex),
+        KeyTypeName::BountyIndex => extract_u32(value).map(Key::BountyIndex),
         KeyTypeName::CandidateHash => {
-            extract_bytes32(value)
-                .map(|b| Key::CandidateHash(Bytes32(b)))
+            extract_bytes32(value).map(|b| Key::CandidateHash(Bytes32(b)))
         }
         KeyTypeName::EraIndex => extract_u32(value).map(Key::EraIndex),
-        KeyTypeName::MessageId => {
-            extract_bytes32(value).map(|b| Key::MessageId(Bytes32(b)))
-        }
+        KeyTypeName::MessageId => extract_bytes32(value).map(|b| Key::MessageId(Bytes32(b))),
         KeyTypeName::ParaId => extract_u32(value).map(Key::ParaId),
         KeyTypeName::PoolId => extract_u32(value).map(Key::PoolId),
-        KeyTypeName::PreimageHash => {
-            extract_bytes32(value)
-                .map(|b| Key::PreimageHash(Bytes32(b)))
-        }
-        KeyTypeName::ProposalHash => {
-            extract_bytes32(value)
-                .map(|b| Key::ProposalHash(Bytes32(b)))
-        }
-        KeyTypeName::ProposalIndex => {
-            extract_u32(value).map(Key::ProposalIndex)
-        }
+        KeyTypeName::PreimageHash => extract_bytes32(value).map(|b| Key::PreimageHash(Bytes32(b))),
+        KeyTypeName::ProposalHash => extract_bytes32(value).map(|b| Key::ProposalHash(Bytes32(b))),
+        KeyTypeName::ProposalIndex => extract_u32(value).map(Key::ProposalIndex),
         KeyTypeName::RefIndex => extract_u32(value).map(Key::RefIndex),
-        KeyTypeName::RegistrarIndex => {
-            extract_u32(value).map(Key::RegistrarIndex)
-        }
-        KeyTypeName::SessionIndex => {
-            extract_u32(value).map(Key::SessionIndex)
-        }
-        KeyTypeName::SpendIndex => {
-            extract_u32(value).map(Key::SpendIndex)
-        }
-        KeyTypeName::TipHash => {
-            extract_bytes32(value).map(|b| Key::TipHash(Bytes32(b)))
-        }
+        KeyTypeName::RegistrarIndex => extract_u32(value).map(Key::RegistrarIndex),
+        KeyTypeName::SessionIndex => extract_u32(value).map(Key::SessionIndex),
+        KeyTypeName::SpendIndex => extract_u32(value).map(Key::SpendIndex),
+        KeyTypeName::TipHash => extract_bytes32(value).map(|b| Key::TipHash(Bytes32(b))),
     }
 }
 
@@ -440,52 +374,7 @@ fn value_to_json(v: &Value<()>) -> serde_json::Value {
             "variant": var.name,
             "fields": composite_to_json(&var.values),
         }),
-        ValueDef::Sequence(seq) => {
-            // Check if it's a byte array: all U128 values ≤ 255
-            let as_bytes: Option<Vec<u8>> = seq
-                .iter()
-                .map(|v| match &v.value {
-                    ValueDef::Primitive(Primitive::U128(n)) => {
-                        u8::try_from(*n).ok()
-                    }
-                    _ => None,
-                })
-                .collect();
-            if let Some(bytes) = as_bytes {
-                serde_json::Value::String(format!(
-                    "0x{}",
-                    hex::encode(&bytes)
-                ))
-            } else {
-                serde_json::Value::Array(
-                    seq.iter().map(value_to_json).collect(),
-                )
-            }
-        }
-        ValueDef::Array(arr) => {
-            let as_bytes: Option<Vec<u8>> = arr
-                .iter()
-                .map(|v| match &v.value {
-                    ValueDef::Primitive(Primitive::U128(n)) => {
-                        u8::try_from(*n).ok()
-                    }
-                    _ => None,
-                })
-                .collect();
-            if let Some(bytes) = as_bytes {
-                serde_json::Value::String(format!(
-                    "0x{}",
-                    hex::encode(&bytes)
-                ))
-            } else {
-                serde_json::Value::Array(
-                    arr.iter().map(value_to_json).collect(),
-                )
-            }
-        }
-        ValueDef::BitSequence(_) => {
-            serde_json::Value::String("<bitseq>".to_string())
-        }
+        ValueDef::BitSequence(_) => serde_json::Value::String("<bitseq>".to_string()),
         ValueDef::Primitive(p) => match p {
             Primitive::Bool(b) => json!(b),
             Primitive::Char(c) => {
@@ -510,20 +399,32 @@ fn value_to_json(v: &Value<()>) -> serde_json::Value {
 pub fn composite_to_json(c: &Composite<()>) -> serde_json::Value {
     match c {
         Composite::Named(fields) => {
-            let map: serde_json::Map<String, serde_json::Value> =
-                fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), value_to_json(v)))
-                    .collect();
+            let map: serde_json::Map<String, serde_json::Value> = fields
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
             serde_json::Value::Object(map)
         }
         Composite::Unnamed(fields) => {
+            // Detect byte arrays: all elements are U128 values ≤ 255
+            if fields.len() > 1 {
+                let as_bytes: Option<Vec<u8>> = fields
+                    .iter()
+                    .map(|v| match &v.value {
+                        ValueDef::Primitive(scale_value::Primitive::U128(n)) => {
+                            u8::try_from(*n).ok()
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(bytes) = as_bytes {
+                    return serde_json::Value::String(format!("0x{}", hex::encode(&bytes)));
+                }
+            }
             if fields.len() == 1 {
                 value_to_json(&fields[0])
             } else {
-                serde_json::Value::Array(
-                    fields.iter().map(value_to_json).collect(),
-                )
+                serde_json::Value::Array(fields.iter().map(value_to_json).collect())
             }
         }
     }
@@ -531,10 +432,7 @@ pub fn composite_to_json(c: &Composite<()>) -> serde_json::Value {
 
 // ─── Subscription message handler ────────────────────────────────────────────
 
-pub fn process_sub_msg(
-    indexer: &Indexer,
-    msg: SubscriptionMessage,
-) {
+pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) {
     match msg {
         SubscriptionMessage::SubscribeStatus { tx } => {
             indexer.status_subs.lock().unwrap().push(tx);
@@ -571,8 +469,7 @@ pub fn load_spans(
     'span: for (key, value) in span_db.into_iter().flatten() {
         let span_value = SpanDbValue::read_from(&value).unwrap();
         let start: u32 = span_value.start.into();
-        let mut end: u32 =
-            u32::from_be_bytes(key.as_ref().try_into().unwrap());
+        let mut end: u32 = u32::from_be_bytes(key.as_ref().try_into().unwrap());
         if index_variant && span_value.index_variant != 1 {
             span_db.remove(&key)?;
             info!(
@@ -598,9 +495,7 @@ pub fn load_spans(
             // re-index boundaries. Expand here as needed.
             std::iter::empty::<(usize, u32)>()
         {
-            if span_version < version.try_into().unwrap()
-                && end >= block_number
-            {
+            if span_version < version.try_into().unwrap() && end >= block_number {
                 span_db.remove(&key)?;
                 if start >= block_number {
                     info!(
@@ -637,9 +532,7 @@ pub fn check_span(
     current_span: &mut Span,
 ) -> Result<(), IndexError> {
     while let Some(span) = spans.last() {
-        if current_span.start > span.start
-            && current_span.start - 1 <= span.end
-        {
+        if current_span.start > span.start && current_span.start - 1 <= span.end {
             let skipped = span.end - span.start + 1;
             info!(
                 "📚 Skipping {} blocks #{} to #{}",
@@ -657,10 +550,7 @@ pub fn check_span(
     Ok(())
 }
 
-pub fn check_next_batch_block(
-    spans: &[Span],
-    next: &mut u32,
-) {
+pub fn check_next_batch_block(spans: &[Span], next: &mut u32) {
     let mut i = spans.len();
     while i != 0 {
         i -= 1;
@@ -726,42 +616,32 @@ pub async fn run_indexer(
         .next()
         .await
         .ok_or(IndexError::BlockNotFound(0))??
-        .number()
-        .into()
-        .try_into()
-        .unwrap();
+        .number();
 
     info!(
         "📚 Indexing backwards from #{}",
         next_batch_block.to_formatted_string(&Locale::en)
     );
 
-    let mut spans = load_spans(
-        &trees.span,
-        versions_len,
-        index_variant,
-        store_events,
-    )?;
+    let mut spans = load_spans(&trees.span, versions_len, index_variant, store_events)?;
 
-    let mut current_span =
-        if let Some(span) = spans.last().filter(|s| s.end == next_batch_block)
-        {
-            let span = span.clone();
-            info!(
-                "📚 Resuming span #{} to #{}",
-                span.start.to_formatted_string(&Locale::en),
-                span.end.to_formatted_string(&Locale::en)
-            );
-            trees.span.remove(span.end.to_be_bytes())?;
-            spans.pop();
-            next_batch_block = span.start - 1;
-            span
-        } else {
-            Span {
-                start: next_batch_block + 1,
-                end: next_batch_block + 1,
-            }
-        };
+    let mut current_span = if let Some(span) = spans.last().filter(|s| s.end == next_batch_block) {
+        let span = span.clone();
+        info!(
+            "📚 Resuming span #{} to #{}",
+            span.start.to_formatted_string(&Locale::en),
+            span.end.to_formatted_string(&Locale::en)
+        );
+        trees.span.remove(span.end.to_be_bytes())?;
+        spans.pop();
+        next_batch_block = span.start - 1;
+        span
+    } else {
+        Span {
+            start: next_batch_block + 1,
+            end: next_batch_block + 1,
+        }
+    };
 
     let indexer = Indexer::new(
         trees.clone(),
@@ -772,8 +652,7 @@ pub async fn run_indexer(
         &config,
     );
 
-    let mut head_future =
-        Box::pin(indexer.index_head(blocks_sub.next()));
+    let mut head_future = Box::pin(indexer.index_head(blocks_sub.next()));
 
     let mut futures = Vec::with_capacity(queue_depth as usize);
     for _ in 0..queue_depth {
@@ -792,8 +671,7 @@ pub async fn run_indexer(
     let mut stats_keys = 0u32;
     let mut stats_start = Instant::now();
     let interval_dur = Duration::from_millis(2000);
-    let mut interval =
-        time::interval_at(Instant::now() + interval_dur, interval_dur);
+    let mut interval = time::interval_at(Instant::now() + interval_dur, interval_dur);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut is_batching = true;
 

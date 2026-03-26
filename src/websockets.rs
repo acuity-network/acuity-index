@@ -203,7 +203,7 @@ async fn handle_connection(
                             let json =
                                 serde_json::to_string(&response)?;
                             ws_sender
-                                .send(tungstenite::Message::Text(json))
+                                .send(tungstenite::Message::Text(json.into()))
                                 .await?;
                         }
                         Err(err) => error!("Parse error: {err}"),
@@ -213,7 +213,7 @@ async fn handle_connection(
             Some(msg) = sub_events_rx.recv() => {
                 let json = serde_json::to_string(&msg)?;
                 ws_sender
-                    .send(tungstenite::Message::Text(json))
+                    .send(tungstenite::Message::Text(json.into()))
                     .await?;
             }
         }

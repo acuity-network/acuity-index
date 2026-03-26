@@ -31,7 +31,7 @@ sled = "0.34"
 subxt = "0.50.0"
 thiserror = { version = "2", default-features = false }
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.21"
+tokio-tungstenite = "0.29.0"
 toml = "0.8"
 tracing = "0.1"
 tracing-log = "0.2"

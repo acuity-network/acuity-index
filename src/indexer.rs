@@ -65,6 +65,7 @@ impl Indexer {
         }
     }
 
+    #[cfg(test)]
     pub fn new_test(trees: Trees, config: &ChainConfig) -> Self {
         Indexer {
             trees,

@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 ahash = "0.8"
-byte-unit = "4.0"
+byte-unit = "5.2"
 byteorder = "1.5"
 clap = { version = "4", features = ["derive"] }
 clap-verbosity-flag = "2"

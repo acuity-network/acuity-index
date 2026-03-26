@@ -153,10 +153,9 @@ async fn main() {
     };
     info!("Database path: {}", db_path.display());
 
-    let db_cache_capacity: u64 = Byte::from_str(&args.db_cache_capacity)
+    let db_cache_capacity = Byte::parse_str(&args.db_cache_capacity, true)
         .unwrap()
-        .get_bytes()
-        .try_into()
+        .as_u64_checked()
         .unwrap();
 
     let db_config = sled::Config::new()

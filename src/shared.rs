@@ -1,6 +1,5 @@
 //! Shared data types for acuity-index.
 
-use byteorder::BigEndian;
 use serde::{Deserialize, Serialize};
 use sled::{Db, Tree};
 use std::fmt;
@@ -8,7 +7,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite;
 use zerocopy::{
     byteorder::{U16, U32},
-    AsBytes,
+    BigEndian, IntoBytes,
 };
 use zerocopy_derive::*;
 
@@ -45,7 +44,7 @@ pub enum IndexError {
 // ─── On-disk key formats ──────────────────────────────────────────────────────
 
 /// On-disk format for variant keys.
-#[derive(FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug)]
+#[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
 #[repr(C)]
 pub struct VariantKey {
     pub pallet_index: u8,
@@ -55,7 +54,7 @@ pub struct VariantKey {
 }
 
 /// On-disk format for 32-byte keys.
-#[derive(FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug)]
+#[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
 #[repr(C)]
 pub struct Bytes32Key {
     pub key: [u8; 32],
@@ -64,7 +63,7 @@ pub struct Bytes32Key {
 }
 
 /// On-disk format for u32 keys.
-#[derive(FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug)]
+#[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
 #[repr(C)]
 pub struct U32Key {
     pub key: U32<BigEndian>,
@@ -73,7 +72,7 @@ pub struct U32Key {
 }
 
 /// On-disk format for span values.
-#[derive(FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug)]
+#[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
 #[repr(C)]
 pub struct SpanDbValue {
     pub start: U32<BigEndian>,
@@ -392,7 +391,7 @@ fn get_events_variant(tree: &sled::Tree, pallet_id: u8, variant_id: u8) -> Vec<E
     let mut events = Vec::new();
     let mut iter = tree.scan_prefix([pallet_id, variant_id]).keys();
     while let Some(Ok(key)) = iter.next_back() {
-        let key = VariantKey::read_from(&key).unwrap();
+        let key = VariantKey::read_from_bytes(&key).unwrap();
         events.push(EventRef {
             block_number: key.block_number.into(),
             event_index: key.event_index.into(),

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod shared_tests {
     use crate::shared::*;
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     // ─── Bytes32 ──────────────────────────────────────────────────────────
 

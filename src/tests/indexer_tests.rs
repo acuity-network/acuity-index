@@ -322,7 +322,7 @@ mod indexer_tests {
         };
         trees
             .span
-            .insert(20u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .insert(20u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
         let mut current = Span { start: 21, end: 30 };
@@ -362,7 +362,7 @@ mod indexer_tests {
         };
         trees
             .span
-            .insert(15u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .insert(15u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
         let spans = load_spans(&trees.span, &[0], true, true).unwrap();
@@ -382,7 +382,7 @@ mod indexer_tests {
         };
         trees
             .span
-            .insert(15u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .insert(15u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
         let spans = load_spans(&trees.span, &[0], true, true).unwrap();
@@ -401,7 +401,7 @@ mod indexer_tests {
         };
         trees
             .span
-            .insert(15u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .insert(15u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
         let spans = load_spans(&trees.span, &[0], true, true).unwrap();
@@ -420,7 +420,7 @@ mod indexer_tests {
         };
         trees
             .span
-            .insert(160u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .insert(160u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
         let spans = load_spans(&trees.span, &[0, 100], true, true).unwrap();
@@ -439,7 +439,7 @@ mod indexer_tests {
         };
         trees
             .span
-            .insert(160u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .insert(160u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
         let spans = load_spans(&trees.span, &[0, 100], true, true).unwrap();
@@ -461,7 +461,7 @@ mod indexer_tests {
         };
         trees
             .span
-            .insert(90u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .insert(90u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
         let spans = load_spans(&trees.span, &[0, 100], true, true).unwrap();
@@ -482,7 +482,7 @@ mod indexer_tests {
         };
         trees
             .span
-            .insert(260u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .insert(260u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
         // Version 0 spans should reindex from block 100 onward (not 200),

@@ -18,7 +18,7 @@ use tokio::{
     time::{self, Duration, Instant, MissedTickBehavior},
 };
 use tracing::{debug, error, info};
-use zerocopy::{AsBytes, BigEndian, FromBytes, byteorder::U32};
+use zerocopy::{BigEndian, FromBytes, IntoBytes, byteorder::U32};
 
 use crate::{
     config::{ChainConfig, KeyTypeName, ParamConfig},
@@ -429,7 +429,7 @@ pub fn load_spans(
 ) -> Result<Vec<Span>, IndexError> {
     let mut spans = vec![];
     'span: for (key, value) in span_db.into_iter().flatten() {
-        let span_value = SpanDbValue::read_from(&value).unwrap();
+        let span_value = SpanDbValue::read_from_bytes(&value).unwrap();
         let start: u32 = span_value.start.into();
         let mut end: u32 = u32::from_be_bytes(key.as_ref().try_into().unwrap());
         if index_variant && span_value.index_variant != 1 {

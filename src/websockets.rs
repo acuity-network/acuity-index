@@ -16,7 +16,7 @@ use tokio::sync::{
 };
 use tokio_tungstenite::tungstenite;
 use tracing::{error, info};
-use zerocopy::{AsBytes, BigEndian, FromBytes, byteorder::U32};
+use zerocopy::{BigEndian, FromBytes, IntoBytes, byteorder::U32};
 
 // ─── Tree scan helpers (pub so shared.rs can call them) ───────────────────────
 
@@ -24,7 +24,7 @@ pub fn get_events_bytes32(tree: &Tree, key: &Bytes32) -> Vec<EventRef> {
     let mut events = Vec::new();
     let mut iter = tree.scan_prefix(key.as_ref() as &[u8]).keys();
     while let Some(Ok(raw)) = iter.next_back() {
-        let k = Bytes32Key::read_from(&raw).unwrap();
+        let k = Bytes32Key::read_from_bytes(&raw).unwrap();
         events.push(EventRef {
             block_number: k.block_number.into(),
             event_index: k.event_index.into(),
@@ -40,7 +40,7 @@ pub fn get_events_u32(tree: &Tree, key: u32) -> Vec<EventRef> {
     let mut events = Vec::new();
     let mut iter = tree.scan_prefix(key.to_be_bytes()).keys();
     while let Some(Ok(raw)) = iter.next_back() {
-        let k = U32Key::read_from(&raw).unwrap();
+        let k = U32Key::read_from_bytes(&raw).unwrap();
         events.push(EventRef {
             block_number: k.block_number.into(),
             event_index: k.event_index.into(),
@@ -57,7 +57,7 @@ pub fn get_events_u32(tree: &Tree, key: u32) -> Vec<EventRef> {
 pub fn process_msg_status(span_db: &Tree) -> ResponseMessage {
     let mut spans = vec![];
     for (key, value) in span_db.into_iter().flatten() {
-        let sv = SpanDbValue::read_from(&value).unwrap();
+        let sv = SpanDbValue::read_from_bytes(&value).unwrap();
         let start: u32 = sv.start.into();
         let end: u32 = u32::from_be_bytes(key.as_ref().try_into().unwrap());
         spans.push(Span { start, end });

@@ -2,7 +2,7 @@
 mod websocket_tests {
     use crate::shared::*;
     use crate::websockets::*;
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     fn temp_trees() -> Trees {
         let dir = tempfile::tempdir().unwrap();

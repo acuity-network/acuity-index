@@ -4,6 +4,7 @@ mod indexer_tests {
     use crate::indexer::*;
     use crate::shared::*;
     use scale_value::{Composite, Primitive, Value, ValueDef};
+    use tokio::sync::mpsc;
 
     fn u128_val(n: u128) -> Value<()> {
         Value {
@@ -348,6 +349,112 @@ mod indexer_tests {
     fn trees_flush_succeeds() {
         let trees = temp_trees();
         trees.flush().unwrap();
+    }
+
+    #[test]
+    fn load_spans_reads_existing_span() {
+        let trees = temp_trees();
+        let sv = SpanDbValue {
+            start: 5u32.into(),
+            version: 0u16.into(),
+            index_variant: 1,
+            store_events: 1,
+        };
+        trees
+            .span
+            .insert(15u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .unwrap();
+
+        let spans = load_spans(&trees.span, 1, true, true).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 5);
+        assert_eq!(spans[0].end, 15);
+    }
+
+    #[test]
+    fn load_spans_drops_when_variant_indexing_enabled() {
+        let trees = temp_trees();
+        let sv = SpanDbValue {
+            start: 5u32.into(),
+            version: 0u16.into(),
+            index_variant: 0,
+            store_events: 1,
+        };
+        trees
+            .span
+            .insert(15u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .unwrap();
+
+        let spans = load_spans(&trees.span, 1, true, true).unwrap();
+        assert!(spans.is_empty());
+        assert!(trees.span.get(15u32.to_be_bytes()).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_spans_drops_when_event_storage_enabled() {
+        let trees = temp_trees();
+        let sv = SpanDbValue {
+            start: 5u32.into(),
+            version: 0u16.into(),
+            index_variant: 1,
+            store_events: 0,
+        };
+        trees
+            .span
+            .insert(15u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .unwrap();
+
+        let spans = load_spans(&trees.span, 1, true, true).unwrap();
+        assert!(spans.is_empty());
+        assert!(trees.span.get(15u32.to_be_bytes()).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn process_sub_msg_status_subscribe_and_unsubscribe() {
+        let trees = temp_trees();
+        let config = test_config();
+        let indexer = Indexer::new_test(trees, &config);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        process_sub_msg(&indexer, SubscriptionMessage::SubscribeStatus { tx: tx.clone() });
+        indexer.notify_status_subscribers();
+        assert!(rx.recv().await.is_some());
+
+        process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeStatus { tx });
+        indexer.notify_status_subscribers();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn process_sub_msg_event_subscribe_and_unsubscribe() {
+        let trees = temp_trees();
+        let config = test_config();
+        let indexer = Indexer::new_test(trees, &config);
+
+        let key = Key::RefIndex(42);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeEvents {
+                key: key.clone(),
+                tx: tx.clone(),
+            },
+        );
+
+        indexer.index_event_key(key.clone(), 7, 1).unwrap();
+        assert!(matches!(rx.recv().await, Some(ResponseMessage::Events { .. })));
+
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::UnsubscribeEvents {
+                key,
+                tx,
+            },
+        );
+
+        indexer.index_event_key(Key::RefIndex(42), 8, 2).unwrap();
+        assert!(rx.try_recv().is_err());
     }
 }
 

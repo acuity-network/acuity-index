@@ -10,8 +10,9 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use subxt::{
+    config::RpcConfigFor,
     OnlineClient, PolkadotConfig,
-    backend::{legacy::LegacyRpcMethods, rpc::RpcClient},
+    rpcs::{RpcClient, methods::legacy::LegacyRpcMethods},
 };
 use tokio::{
     join, spawn,
@@ -210,7 +211,7 @@ async fn main() {
             exit(1);
         });
 
-    let rpc = LegacyRpcMethods::<PolkadotConfig>::new(rpc_client);
+    let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client);
 
     // Verify chain genesis hash.
     let chain_genesis = api.genesis_hash().as_ref().to_vec();

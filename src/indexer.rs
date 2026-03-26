@@ -8,11 +8,13 @@ use serde_json::json;
 use sled::Tree;
 use std::{collections::HashMap, future::Future, sync::Mutex};
 use subxt::{
-    OnlineClient, PolkadotConfig, backend::legacy::LegacyRpcMethods, blocks::Block,
-    metadata::Metadata,
+    OnlineClient, PolkadotConfig,
+    client::Block,
+    config::RpcConfigFor,
+    rpcs::methods::legacy::LegacyRpcMethods,
 };
 use tokio::{
-    sync::{RwLock, mpsc, watch},
+    sync::{mpsc, watch},
     time::{self, Duration, Instant, MissedTickBehavior},
 };
 use tracing::{debug, error, info};
@@ -30,10 +32,9 @@ use crate::{
 pub struct Indexer {
     pub trees: Trees,
     api: Option<OnlineClient<PolkadotConfig>>,
-    rpc: Option<LegacyRpcMethods<PolkadotConfig>>,
+    rpc: Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>,
     index_variant: bool,
     store_events: bool,
-    metadata_map: RwLock<AHashMap<u32, Metadata>>,
     status_subs: Mutex<Vec<mpsc::UnboundedSender<ResponseMessage>>>,
     events_subs: Mutex<HashMap<Key, Vec<mpsc::UnboundedSender<ResponseMessage>>>>,
     /// sdk_pallets: set of pallet names using built-in SDK rules.
@@ -46,7 +47,7 @@ impl Indexer {
     pub fn new(
         trees: Trees,
         api: OnlineClient<PolkadotConfig>,
-        rpc: LegacyRpcMethods<PolkadotConfig>,
+        rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
         index_variant: bool,
         store_events: bool,
         config: &ChainConfig,
@@ -57,7 +58,6 @@ impl Indexer {
             rpc: Some(rpc),
             index_variant,
             store_events,
-            metadata_map: RwLock::new(AHashMap::new()),
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
@@ -72,7 +72,6 @@ impl Indexer {
             rpc: None,
             index_variant: true,
             store_events: true,
-            metadata_map: RwLock::new(AHashMap::new()),
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
@@ -86,12 +85,13 @@ impl Indexer {
         &self,
         next: impl Future<
             Output = Option<
-                Result<Block<PolkadotConfig, OnlineClient<PolkadotConfig>>, subxt::Error>,
+                Result<Block<PolkadotConfig>, subxt::error::BlocksError>,
             >,
         >,
     ) -> Result<(u32, u32, u32), IndexError> {
         let block = next.await.unwrap()?;
-        self.index_block(block.number()).await
+        let block_number: u32 = block.number().try_into().unwrap();
+        self.index_block(block_number).await
     }
 
     pub async fn index_block(&self, block_number: u32) -> Result<(u32, u32, u32), IndexError> {
@@ -104,35 +104,9 @@ impl Indexer {
             .await?
             .ok_or(IndexError::BlockNotFound(block_number))?;
 
-        let runtime_version = rpc.state_get_runtime_version(Some(block_hash)).await?;
-        let spec = runtime_version.spec_version;
-
-        // Fetch or retrieve cached metadata.
-        let metadata = {
-            let map = self.metadata_map.read().await;
-            if let Some(m) = map.get(&spec) {
-                m.clone()
-            } else {
-                drop(map);
-                let mut map = self.metadata_map.write().await;
-                if let Some(m) = map.get(&spec) {
-                    m.clone()
-                } else {
-                    info!("Downloading metadata for spec version {spec}");
-                    let m: Metadata = rpc
-                        .state_get_metadata(Some(block_hash))
-                        .await?
-                        .to_frame_metadata()?
-                        .try_into()?;
-                    info!("Downloaded metadata for spec version {spec}");
-                    map.insert(spec, m.clone());
-                    m
-                }
-            }
-        };
-
-        let events =
-            subxt::events::new_events_from_client(metadata, block_hash, api.clone()).await?;
+        let at_block = api.at_block(block_hash).await?;
+        let spec = at_block.spec_version();
+        let events = at_block.events().fetch().await?;
 
         // Accumulate decoded events as JSON for storage.
         let mut decoded_events: Vec<serde_json::Value> = Vec::new();
@@ -148,9 +122,9 @@ impl Indexer {
 
             let event_index: u16 = i.try_into().unwrap();
             let pallet_name = event.pallet_name();
-            let event_name = event.variant_name();
+            let event_name = event.event_name();
             let pallet_index = event.pallet_index();
-            let variant_index = event.variant_index();
+            let variant_index = event.event_index();
 
             // Index the variant key if enabled.
             if self.index_variant {
@@ -163,21 +137,8 @@ impl Indexer {
             }
 
             // Decode field values schema-lessly.
-            let field_values: Composite<()> = match event.field_values() {
-                Ok(fv) => {
-                    // Strip type-id context (u32 → ()) so downstream functions work.
-                    match fv {
-                        Composite::Named(fields) => Composite::Named(
-                            fields
-                                .into_iter()
-                                .map(|(k, v)| (k, v.remove_context()))
-                                .collect(),
-                        ),
-                        Composite::Unnamed(fields) => Composite::Unnamed(
-                            fields.into_iter().map(|v| v.remove_context()).collect(),
-                        ),
-                    }
-                }
+            let field_values: Composite<()> = match event.decode_fields_unchecked_as::<Composite<()>>() {
+                Ok(fv) => fv,
                 Err(err) => {
                     error!(
                         "Block {block_number} {pallet_name}::{event_name} \
@@ -582,7 +543,7 @@ fn save_span(
 pub async fn run_indexer(
     trees: Trees,
     api: OnlineClient<PolkadotConfig>,
-    rpc: LegacyRpcMethods<PolkadotConfig>,
+    rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     config: ChainConfig,
     finalized: bool,
     queue_depth: u32,
@@ -607,16 +568,18 @@ pub async fn run_indexer(
     let versions_len = config.versions.len();
 
     let mut blocks_sub = if finalized {
-        api.blocks().subscribe_finalized().await
+        api.stream_blocks().await
     } else {
-        api.blocks().subscribe_best().await
+        api.stream_best_blocks().await
     }?;
 
     let mut next_batch_block: u32 = blocks_sub
         .next()
         .await
         .ok_or(IndexError::BlockNotFound(0))??
-        .number();
+        .number()
+        .try_into()
+        .unwrap();
 
     info!(
         "📚 Indexing backwards from #{}",

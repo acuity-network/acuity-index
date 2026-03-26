@@ -4,8 +4,11 @@ use crate::shared::*;
 use futures::{SinkExt, StreamExt};
 use sled::Tree;
 use std::net::SocketAddr;
-use subxt::metadata::types::Metadata;
-use subxt::{PolkadotConfig, backend::legacy::LegacyRpcMethods};
+use subxt::{
+    Metadata, PolkadotConfig,
+    config::RpcConfigFor,
+    rpcs::methods::legacy::LegacyRpcMethods,
+};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{
     mpsc::{UnboundedSender, unbounded_channel},
@@ -63,7 +66,7 @@ pub fn process_msg_status(span_db: &Tree) -> ResponseMessage {
 }
 
 pub async fn process_msg_variants(
-    rpc: &LegacyRpcMethods<PolkadotConfig>,
+    rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
 ) -> Result<ResponseMessage, IndexError> {
     let metadata: Metadata = rpc
         .state_get_metadata(None)
@@ -75,7 +78,7 @@ pub async fn process_msg_variants(
     for pallet in metadata.pallets() {
         if let Some(variants) = pallet.event_variants() {
             let mut meta = PalletMeta {
-                index: pallet.index(),
+                index: pallet.event_index(),
                 name: pallet.name().to_owned(),
                 events: vec![],
             };
@@ -119,7 +122,7 @@ pub fn process_msg_get_events(trees: &Trees, key: Key) -> ResponseMessage {
 }
 
 pub async fn process_msg(
-    rpc: &LegacyRpcMethods<PolkadotConfig>,
+    rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     trees: &Trees,
     msg: RequestMessage,
     sub_tx: &UnboundedSender<SubscriptionMessage>,
@@ -170,7 +173,7 @@ pub async fn process_msg(
 // ─── Connection handler ───────────────────────────────────────────────────────
 
 async fn handle_connection(
-    rpc: LegacyRpcMethods<PolkadotConfig>,
+    rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     raw_stream: TcpStream,
     addr: SocketAddr,
     trees: Trees,
@@ -221,7 +224,7 @@ async fn handle_connection(
 
 pub async fn websockets_listen(
     trees: Trees,
-    rpc: LegacyRpcMethods<PolkadotConfig>,
+    rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     port: u16,
     mut exit_rx: Receiver<bool>,
     sub_tx: UnboundedSender<SubscriptionMessage>,

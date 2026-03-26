@@ -27,6 +27,20 @@ mod shared_tests {
     }
 
     #[test]
+    fn bytes32_deserialize_json_invalid_hex() {
+        let bad = "\"0xzz\"";
+        let result: Result<Bytes32, _> = serde_json::from_str(bad);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bytes32_deserialize_json_wrong_length() {
+        let bad = "\"0xaaaa\"";
+        let result: Result<Bytes32, _> = serde_json::from_str(bad);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn bytes32_from_array() {
         let arr = [42u8; 32];
         let b: Bytes32 = arr.into();
@@ -144,6 +158,42 @@ mod shared_tests {
         assert_eq!(k, k2);
     }
 
+    #[test]
+    fn key_write_and_get_events_all_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_config = sled::Config::new().path(dir.path()).temporary(true);
+        let trees = Trees::open(db_config).unwrap();
+
+        let keys = vec![
+            Key::Variant(1, 2),
+            Key::AccountId(Bytes32([0x01; 32])),
+            Key::AccountIndex(11),
+            Key::BountyIndex(12),
+            Key::EraIndex(13),
+            Key::MessageId(Bytes32([0x02; 32])),
+            Key::PoolId(14),
+            Key::PreimageHash(Bytes32([0x03; 32])),
+            Key::ProposalHash(Bytes32([0x04; 32])),
+            Key::ProposalIndex(15),
+            Key::RefIndex(16),
+            Key::RegistrarIndex(17),
+            Key::SessionIndex(18),
+            Key::TipHash(Bytes32([0x05; 32])),
+            Key::SpendIndex(19),
+            Key::AuctionIndex(20),
+            Key::CandidateHash(Bytes32([0x06; 32])),
+            Key::ParaId(21),
+        ];
+
+        for (i, key) in keys.into_iter().enumerate() {
+            key.write_db_key(&trees, 1000 + i as u32, i as u16).unwrap();
+            let events = key.get_events(&trees);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].block_number, 1000 + i as u32);
+            assert_eq!(events[0].event_index, i as u16);
+        }
+    }
+
     // ─── RequestMessage deserialization ───────────────────────────────────
 
     #[test]
@@ -207,5 +257,3 @@ mod shared_tests {
         assert!(out.contains("20"));
     }
 }
-
-

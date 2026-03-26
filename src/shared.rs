@@ -7,8 +7,8 @@ use std::fmt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite;
 use zerocopy::{
-    AsBytes,
     byteorder::{U16, U32},
+    AsBytes,
 };
 use zerocopy_derive::*;
 
@@ -29,11 +29,17 @@ pub enum IndexError {
     #[error("block not found: {0}")]
     BlockNotFound(u32),
     #[error("RPC error")]
-    RpcError(#[from] subxt::ext::subxt_rpcs::Error),
+    RpcError(#[from] subxt::rpcs::Error),
     #[error("codec error")]
     CodecError(#[from] subxt::ext::codec::Error),
     #[error("metadata error")]
     MetadataError(#[from] subxt::error::MetadataTryFromError),
+    #[error("block stream error")]
+    BlocksError(#[from] subxt::error::BlocksError),
+    #[error("events error")]
+    EventsError(#[from] subxt::error::EventsError),
+    #[error("at-block error")]
+    OnlineClientAtBlockError(#[from] subxt::error::OnlineClientAtBlockError),
     #[error("JSON error")]
     Json(#[from] serde_json::Error),
     #[error("config error: {0}")]
@@ -43,9 +49,7 @@ pub enum IndexError {
 // ─── On-disk key formats ──────────────────────────────────────────────────────
 
 /// On-disk format for variant keys.
-#[derive(
-    FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug,
-)]
+#[derive(FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug)]
 #[repr(C)]
 pub struct VariantKey {
     pub pallet_index: u8,
@@ -55,9 +59,7 @@ pub struct VariantKey {
 }
 
 /// On-disk format for 32-byte keys.
-#[derive(
-    FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug,
-)]
+#[derive(FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug)]
 #[repr(C)]
 pub struct Bytes32Key {
     pub key: [u8; 32],
@@ -66,9 +68,7 @@ pub struct Bytes32Key {
 }
 
 /// On-disk format for u32 keys.
-#[derive(
-    FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug,
-)]
+#[derive(FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug)]
 #[repr(C)]
 pub struct U32Key {
     pub key: U32<BigEndian>,
@@ -77,9 +77,7 @@ pub struct U32Key {
 }
 
 /// On-disk format for span values.
-#[derive(
-    FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug,
-)]
+#[derive(FromZeroes, FromBytes, AsBytes, Unaligned, PartialEq, Debug)]
 #[repr(C)]
 pub struct SpanDbValue {
     pub start: U32<BigEndian>,
@@ -116,8 +114,7 @@ impl Serialize for Bytes32 {
     where
         S: serde::Serializer,
     {
-        serializer
-            .serialize_str(&format!("0x{}", hex::encode(self.0)))
+        serializer.serialize_str(&format!("0x{}", hex::encode(self.0)))
     }
 }
 
@@ -128,8 +125,7 @@ impl<'de> Deserialize<'de> for Bytes32 {
     {
         let s = String::deserialize(deserializer)?;
         let hex_part = s.strip_prefix("0x").unwrap_or(&s);
-        let bytes = hex::decode(hex_part)
-            .map_err(serde::de::Error::custom)?;
+        let bytes = hex::decode(hex_part).map_err(serde::de::Error::custom)?;
         let arr: [u8; 32] = bytes
             .try_into()
             .map_err(|_| serde::de::Error::custom("expected 32 bytes"))?;
@@ -373,73 +369,32 @@ impl Key {
     pub fn get_events(&self, trees: &Trees) -> Vec<EventRef> {
         use crate::websockets::{get_events_bytes32, get_events_u32};
         match self {
-            Key::Variant(pi, vi) => {
-                get_events_variant(&trees.variant, *pi, *vi)
-            }
-            Key::AccountId(v) => {
-                get_events_bytes32(&trees.substrate.account_id, v)
-            }
-            Key::AccountIndex(v) => {
-                get_events_u32(&trees.substrate.account_index, *v)
-            }
-            Key::BountyIndex(v) => {
-                get_events_u32(&trees.substrate.bounty_index, *v)
-            }
-            Key::EraIndex(v) => {
-                get_events_u32(&trees.substrate.era_index, *v)
-            }
-            Key::MessageId(v) => {
-                get_events_bytes32(&trees.substrate.message_id, v)
-            }
-            Key::PoolId(v) => {
-                get_events_u32(&trees.substrate.pool_id, *v)
-            }
-            Key::PreimageHash(v) => {
-                get_events_bytes32(&trees.substrate.preimage_hash, v)
-            }
-            Key::ProposalHash(v) => {
-                get_events_bytes32(&trees.substrate.proposal_hash, v)
-            }
-            Key::ProposalIndex(v) => {
-                get_events_u32(&trees.substrate.proposal_index, *v)
-            }
-            Key::RefIndex(v) => {
-                get_events_u32(&trees.substrate.ref_index, *v)
-            }
-            Key::RegistrarIndex(v) => {
-                get_events_u32(&trees.substrate.registrar_index, *v)
-            }
-            Key::SessionIndex(v) => {
-                get_events_u32(&trees.substrate.session_index, *v)
-            }
-            Key::TipHash(v) => {
-                get_events_bytes32(&trees.substrate.tip_hash, v)
-            }
-            Key::SpendIndex(v) => {
-                get_events_u32(&trees.substrate.spend_index, *v)
-            }
-            Key::AuctionIndex(v) => {
-                get_events_u32(&trees.chain.auction_index, *v)
-            }
-            Key::CandidateHash(v) => {
-                get_events_bytes32(&trees.chain.candidate_hash, v)
-            }
-            Key::ParaId(v) => {
-                get_events_u32(&trees.chain.para_id, *v)
-            }
+            Key::Variant(pi, vi) => get_events_variant(&trees.variant, *pi, *vi),
+            Key::AccountId(v) => get_events_bytes32(&trees.substrate.account_id, v),
+            Key::AccountIndex(v) => get_events_u32(&trees.substrate.account_index, *v),
+            Key::BountyIndex(v) => get_events_u32(&trees.substrate.bounty_index, *v),
+            Key::EraIndex(v) => get_events_u32(&trees.substrate.era_index, *v),
+            Key::MessageId(v) => get_events_bytes32(&trees.substrate.message_id, v),
+            Key::PoolId(v) => get_events_u32(&trees.substrate.pool_id, *v),
+            Key::PreimageHash(v) => get_events_bytes32(&trees.substrate.preimage_hash, v),
+            Key::ProposalHash(v) => get_events_bytes32(&trees.substrate.proposal_hash, v),
+            Key::ProposalIndex(v) => get_events_u32(&trees.substrate.proposal_index, *v),
+            Key::RefIndex(v) => get_events_u32(&trees.substrate.ref_index, *v),
+            Key::RegistrarIndex(v) => get_events_u32(&trees.substrate.registrar_index, *v),
+            Key::SessionIndex(v) => get_events_u32(&trees.substrate.session_index, *v),
+            Key::TipHash(v) => get_events_bytes32(&trees.substrate.tip_hash, v),
+            Key::SpendIndex(v) => get_events_u32(&trees.substrate.spend_index, *v),
+            Key::AuctionIndex(v) => get_events_u32(&trees.chain.auction_index, *v),
+            Key::CandidateHash(v) => get_events_bytes32(&trees.chain.candidate_hash, v),
+            Key::ParaId(v) => get_events_u32(&trees.chain.para_id, *v),
         }
     }
 }
 
-fn get_events_variant(
-    tree: &sled::Tree,
-    pallet_id: u8,
-    variant_id: u8,
-) -> Vec<EventRef> {
+fn get_events_variant(tree: &sled::Tree, pallet_id: u8, variant_id: u8) -> Vec<EventRef> {
     use zerocopy::FromBytes;
     let mut events = Vec::new();
-    let mut iter =
-        tree.scan_prefix([pallet_id, variant_id]).keys();
+    let mut iter = tree.scan_prefix([pallet_id, variant_id]).keys();
     while let Some(Ok(key)) = iter.next_back() {
         let key = VariantKey::read_from(&key).unwrap();
         events.push(EventRef {

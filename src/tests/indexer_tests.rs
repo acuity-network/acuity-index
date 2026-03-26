@@ -365,7 +365,7 @@ mod indexer_tests {
             .insert(15u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
             .unwrap();
 
-        let spans = load_spans(&trees.span, 1, true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].start, 5);
         assert_eq!(spans[0].end, 15);
@@ -385,7 +385,7 @@ mod indexer_tests {
             .insert(15u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
             .unwrap();
 
-        let spans = load_spans(&trees.span, 1, true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
         assert!(spans.is_empty());
         assert!(trees.span.get(15u32.to_be_bytes()).unwrap().is_none());
     }
@@ -404,9 +404,95 @@ mod indexer_tests {
             .insert(15u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
             .unwrap();
 
-        let spans = load_spans(&trees.span, 1, true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
         assert!(spans.is_empty());
         assert!(trees.span.get(15u32.to_be_bytes()).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_spans_reindexes_full_span_when_version_boundary_inside_span() {
+        let trees = temp_trees();
+        let sv = SpanDbValue {
+            start: 120u32.into(),
+            version: 0u16.into(),
+            index_variant: 1,
+            store_events: 1,
+        };
+        trees
+            .span
+            .insert(160u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .unwrap();
+
+        let spans = load_spans(&trees.span, &[0, 100], true, true).unwrap();
+        assert!(spans.is_empty());
+        assert!(trees.span.get(160u32.to_be_bytes()).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_spans_truncates_span_when_version_boundary_splits_span() {
+        let trees = temp_trees();
+        let sv = SpanDbValue {
+            start: 80u32.into(),
+            version: 0u16.into(),
+            index_variant: 1,
+            store_events: 1,
+        };
+        trees
+            .span
+            .insert(160u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .unwrap();
+
+        let spans = load_spans(&trees.span, &[0, 100], true, true).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 80);
+        assert_eq!(spans[0].end, 99);
+        assert!(trees.span.get(160u32.to_be_bytes()).unwrap().is_none());
+        assert!(trees.span.get(99u32.to_be_bytes()).unwrap().is_some());
+    }
+
+    #[test]
+    fn load_spans_keeps_span_when_it_ends_before_version_boundary() {
+        let trees = temp_trees();
+        let sv = SpanDbValue {
+            start: 10u32.into(),
+            version: 0u16.into(),
+            index_variant: 1,
+            store_events: 1,
+        };
+        trees
+            .span
+            .insert(90u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .unwrap();
+
+        let spans = load_spans(&trees.span, &[0, 100], true, true).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 10);
+        assert_eq!(spans[0].end, 90);
+        assert!(trees.span.get(90u32.to_be_bytes()).unwrap().is_some());
+    }
+
+    #[test]
+    fn load_spans_uses_earliest_applicable_version_boundary() {
+        let trees = temp_trees();
+        let sv = SpanDbValue {
+            start: 50u32.into(),
+            version: 0u16.into(),
+            index_variant: 1,
+            store_events: 1,
+        };
+        trees
+            .span
+            .insert(260u32.to_be_bytes(), zerocopy::AsBytes::as_bytes(&sv))
+            .unwrap();
+
+        // Version 0 spans should reindex from block 100 onward (not 200),
+        // because 100 is the earliest boundary newer than span_version.
+        let spans = load_spans(&trees.span, &[0, 100, 200], true, true).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 50);
+        assert_eq!(spans[0].end, 99);
+        assert!(trees.span.get(260u32.to_be_bytes()).unwrap().is_none());
+        assert!(trees.span.get(99u32.to_be_bytes()).unwrap().is_some());
     }
 
     #[tokio::test]

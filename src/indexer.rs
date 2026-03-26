@@ -422,7 +422,7 @@ pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) {
 
 pub fn load_spans(
     span_db: &Tree,
-    versions_len: usize,
+    versions: &[u32],
     index_variant: bool,
     store_events: bool,
 ) -> Result<Vec<Span>, IndexError> {
@@ -450,15 +450,10 @@ pub fn load_spans(
             continue;
         }
         let span_version: u16 = span_value.version.into();
-        for (version, block_number) in
-            // versions is a list of block numbers where re-index is required
-            // For this implementation versions is simply [0], meaning no
-            // re-index boundaries. Expand here as needed.
-            std::iter::empty::<(usize, u32)>()
-        {
-            if span_version < version.try_into().unwrap() && end >= block_number {
+        for (version, block_number) in versions.iter().enumerate() {
+            if span_version < version.try_into().unwrap() && end >= *block_number {
                 span_db.remove(&key)?;
-                if start >= block_number {
+                if start >= *block_number {
                     info!(
                         "📚 Re-indexing #{} to #{}.",
                         start.to_formatted_string(&Locale::en),
@@ -586,7 +581,7 @@ pub async fn run_indexer(
         next_batch_block.to_formatted_string(&Locale::en)
     );
 
-    let mut spans = load_spans(&trees.span, versions_len, index_variant, store_events)?;
+    let mut spans = load_spans(&trees.span, &config.versions, index_variant, store_events)?;
 
     let mut current_span = if let Some(span) = spans.last().filter(|s| s.end == next_batch_block) {
         let span = span.clone();

@@ -24,8 +24,6 @@ pub enum IndexError {
     Tungstenite(#[from] tungstenite::Error),
     #[error("parse error")]
     Hex(#[from] hex::FromHexError),
-    #[error("parse error")]
-    ParseError,
     #[error("block not found: {0}")]
     BlockNotFound(u32),
     #[error("RPC error")]
@@ -42,8 +40,6 @@ pub enum IndexError {
     OnlineClientAtBlockError(#[from] subxt::error::OnlineClientAtBlockError),
     #[error("JSON error")]
     Json(#[from] serde_json::Error),
-    #[error("config error: {0}")]
-    Config(String),
 }
 
 // ─── On-disk key formats ──────────────────────────────────────────────────────

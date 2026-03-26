@@ -60,8 +60,24 @@ impl From<DbMode> for sled::Mode {
     }
 }
 
+fn clap_styles() -> clap::builder::Styles {
+    use clap::builder::styling::{AnsiColor, Effects, Styles};
+
+    Styles::styled()
+        .header(AnsiColor::Green.on_default() | Effects::BOLD)
+        .usage(AnsiColor::Green.on_default() | Effects::BOLD)
+        .literal(AnsiColor::Cyan.on_default() | Effects::BOLD)
+        .placeholder(AnsiColor::Cyan.on_default())
+}
+
 #[derive(Parser, Debug)]
-#[command(author, version, about)]
+#[command(
+    author,
+    version,
+    about,
+    color = clap::ColorChoice::Always,
+    styles = clap_styles()
+)]
 pub struct Args {
     /// Chain to index
     #[arg(short, long, value_enum, default_value_t = Chain::Polkadot)]

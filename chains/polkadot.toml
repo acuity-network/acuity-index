@@ -84,6 +84,10 @@ sdk = true
 name = "DelegatedStaking"
 sdk = true
 
+[[pallets]]
+name = "StateTrieMigration"
+sdk = true
+
 # Custom pallets with explicit field→key mappings.
 
 [[pallets]]

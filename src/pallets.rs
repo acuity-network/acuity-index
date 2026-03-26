@@ -22,10 +22,11 @@ pub fn extract_u32(v: &Value<()>) -> Option<u32> {
                 _ => None,
             }
         }
-        ValueDef::Composite(Composite::Unnamed(fields))
-            if fields.len() == 1 =>
-        {
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
             extract_u32(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_u32(&fields[0].1)
         }
         _ => None,
     }
@@ -37,9 +38,7 @@ pub fn extract_u32(v: &Value<()>) -> Option<u32> {
 /// every element is a `Primitive::U128` holding a single byte.
 pub fn extract_bytes32(v: &Value<()>) -> Option<[u8; 32]> {
     match &v.value {
-        ValueDef::Composite(Composite::Unnamed(fields))
-            if fields.len() == 32 =>
-        {
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 32 => {
             let mut out = [0u8; 32];
             for (i, f) in fields.iter().enumerate() {
                 match &f.value {
@@ -52,40 +51,111 @@ pub fn extract_bytes32(v: &Value<()>) -> Option<[u8; 32]> {
             Some(out)
         }
         // Some types wrap the array in one more layer.
-        ValueDef::Composite(Composite::Unnamed(fields))
-            if fields.len() == 1 =>
-        {
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
             extract_bytes32(&fields[0])
         }
-        ValueDef::Composite(Composite::Named(fields))
-            if fields.len() == 1 =>
-        {
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
             extract_bytes32(&fields[0].1)
         }
         _ => None,
     }
 }
 
+/// Try to extract `Vec<u32>` from a scale_value `Value`.
+pub fn extract_vec_u32(v: &Value<()>) -> Option<Vec<u32>> {
+    match &v.value {
+        ValueDef::Composite(Composite::Unnamed(fields)) => {
+            if fields.is_empty() {
+                return Some(vec![]);
+            }
+            let mut out = Vec::with_capacity(fields.len());
+            for field in fields {
+                if let Some(value) = extract_u32(field) {
+                    out.push(value);
+                } else if fields.len() == 1 {
+                    return extract_vec_u32(&fields[0]);
+                } else {
+                    return None;
+                }
+            }
+            Some(out)
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_vec_u32(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+fn composite_single_value(composite: &Composite<()>) -> Option<&Value<()>> {
+    match composite {
+        Composite::Unnamed(values) if values.len() == 1 => Some(&values[0]),
+        Composite::Named(values) if values.len() == 1 => Some(&values[0].1),
+        _ => None,
+    }
+}
+
+fn extract_option_bytes32(v: &Value<()>) -> Option<Option<[u8; 32]>> {
+    if let Some(bytes) = extract_bytes32(v) {
+        return Some(Some(bytes));
+    }
+    match &v.value {
+        ValueDef::Variant(var) => match var.name.as_str() {
+            "Some" => {
+                let payload = composite_single_value(&var.values)?;
+                extract_bytes32(payload).map(Some)
+            }
+            "None" => Some(None),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn extract_tuple_second_bytes32(v: &Value<()>) -> Option<[u8; 32]> {
+    match &v.value {
+        ValueDef::Composite(Composite::Unnamed(values)) if values.len() >= 2 => {
+            extract_bytes32(&values[1])
+        }
+        ValueDef::Composite(Composite::Named(values)) if values.len() == 1 => {
+            extract_tuple_second_bytes32(&values[0].1)
+        }
+        ValueDef::Composite(Composite::Unnamed(values)) if values.len() == 1 => {
+            extract_tuple_second_bytes32(&values[0])
+        }
+        _ => None,
+    }
+}
+
+fn extract_option_tuple_second_bytes32(v: &Value<()>) -> Option<Option<[u8; 32]>> {
+    if let Some(bytes) = extract_tuple_second_bytes32(v) {
+        return Some(Some(bytes));
+    }
+    match &v.value {
+        ValueDef::Variant(var) => match var.name.as_str() {
+            "Some" => {
+                let payload = composite_single_value(&var.values)?;
+                extract_tuple_second_bytes32(payload).map(Some)
+            }
+            "None" => Some(None),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Look up a field from a `Composite` by name or by positional index string.
-pub fn get_field<'a>(
-    composite: &'a Composite<()>,
-    field: &str,
-) -> Option<&'a Value<()>> {
+pub fn get_field<'a>(composite: &'a Composite<()>, field: &str) -> Option<&'a Value<()>> {
     // Try positional index first.
     if let Ok(idx) = field.parse::<usize>() {
         match composite {
             Composite::Unnamed(fields) => return fields.get(idx),
-            Composite::Named(fields) => {
-                return fields.get(idx).map(|(_, v)| v)
-            }
+            Composite::Named(fields) => return fields.get(idx).map(|(_, v)| v),
         }
     }
     // Try by name.
     match composite {
-        Composite::Named(fields) => fields
-            .iter()
-            .find(|(k, _)| k == field)
-            .map(|(_, v)| v),
+        Composite::Named(fields) => fields.iter().find(|(k, _)| k == field).map(|(_, v)| v),
         Composite::Unnamed(_) => None,
     }
 }
@@ -93,24 +163,16 @@ pub fn get_field<'a>(
 // ─── SDK pallet rules ─────────────────────────────────────────────────────────
 
 /// Index events from `pallet_system`.
-pub fn index_system(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_system(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "NewAccount" | "KilledAccount" => {
-            named_account_id(fields, "account")
-        }
+        "NewAccount" | "KilledAccount" => named_account_id(fields, "account"),
         "Remarked" => named_account_id(fields, "sender"),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_balances`.
-pub fn index_balances(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_balances(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
         "Endowed" => named_account_id(fields, "account"),
         "DustLost" => named_account_id(fields, "account"),
@@ -120,42 +182,39 @@ pub fn index_balances(
             keys
         }
         "BalanceSet" => named_account_id(fields, "who"),
-        "Reserved" | "Unreserved" | "Withdraw" | "Slashed"
-        | "Minted" | "Burned" => named_account_id(fields, "who"),
+        "Reserved" | "Unreserved" | "Withdraw" | "Slashed" | "Minted" | "Burned" | "Suspended"
+        | "Restored" | "Upgraded" | "Locked" | "Unlocked" => named_account_id(fields, "who"),
         "ReserveRepatriated" => {
             let mut keys = named_account_id(fields, "from");
             keys.extend(named_account_id(fields, "to"));
             keys
         }
-        "Deposit" | "Frozen" | "Thawed" => {
-            named_account_id(fields, "who")
-        }
+        "Deposit" | "Frozen" | "Thawed" => named_account_id(fields, "who"),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_staking`.
-pub fn index_staking(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_staking(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "EraPaid" => {
-            positional_u32_key(fields, 0, Key::EraIndex)
-        }
+        "EraPaid" => positional_u32_key(fields, 0, Key::EraIndex),
         "Rewarded" => named_account_id(fields, "stash"),
         "Slashed" => named_account_id(fields, "staker"),
-        "SlashReported" => named_account_id(fields, "validator"),
-        "OldSlashingReportDiscarded" => {
-            positional_u32_key(fields, 0, Key::SessionIndex)
+        "SlashReported" => {
+            let mut keys = named_account_id(fields, "validator");
+            keys.extend(named_u32_key(fields, "slash_era", Key::EraIndex));
+            keys
         }
-        "StakersElected" | "ForceEra" | "ChillThreshold"
-        | "StakingElectionFailed" => vec![],
-        "Bonded" | "Unbonded" | "Withdrawn" | "Kicked"
-        | "Chilled" => named_account_id(fields, "stash"),
+        "OldSlashingReportDiscarded" => positional_u32_key(fields, 0, Key::SessionIndex),
+        "StakersElected" | "ForceEra" | "ChillThreshold" | "StakingElectionFailed" => vec![],
+        "Kicked" => {
+            let mut keys = named_account_id(fields, "nominator");
+            keys.extend(named_account_id(fields, "stash"));
+            keys
+        }
+        "Bonded" | "Unbonded" | "Withdrawn" | "Chilled" => named_account_id(fields, "stash"),
         "PayoutStarted" => {
-            let mut keys =
-                named_u32_key(fields, "era_index", Key::EraIndex);
+            let mut keys = named_u32_key(fields, "era_index", Key::EraIndex);
             keys.extend(named_account_id(fields, "validator_stash"));
             keys
         }
@@ -165,35 +224,24 @@ pub fn index_staking(
 }
 
 /// Index events from `pallet_session`.
-pub fn index_session(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_session(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "NewSession" => {
-            named_u32_key(fields, "session_index", Key::SessionIndex)
-        }
+        "NewSession" => named_u32_key(fields, "session_index", Key::SessionIndex),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_indices`.
-pub fn index_indices(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_indices(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
         "IndexAssigned" => {
             let mut keys = named_account_id(fields, "who");
             keys.extend(named_u32_key(fields, "index", Key::AccountIndex));
             keys
         }
-        "IndexFreed" => {
-            named_u32_key(fields, "index", Key::AccountIndex)
-        }
+        "IndexFreed" => named_u32_key(fields, "index", Key::AccountIndex),
         "IndexFrozen" => {
-            let mut keys =
-                named_u32_key(fields, "index", Key::AccountIndex);
+            let mut keys = named_u32_key(fields, "index", Key::AccountIndex);
             keys.extend(named_account_id(fields, "who"));
             keys
         }
@@ -202,32 +250,33 @@ pub fn index_indices(
 }
 
 /// Index events from `pallet_preimage`.
-pub fn index_preimage(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_preimage(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "Noted" | "Requested" | "Cleared" => {
-            named_bytes32_key(fields, "hash", Key::PreimageHash)
-        }
+        "Noted" | "Requested" | "Cleared" => named_bytes32_key(fields, "hash", Key::PreimageHash),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_treasury`.
-pub fn index_treasury(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_treasury(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "Proposed" | "Rejected" | "Awarded" => {
-            named_u32_key(fields, "proposal_index", Key::ProposalIndex)
+        "Proposed" | "Rejected" => named_u32_key(fields, "proposal_index", Key::ProposalIndex),
+        "Awarded" => {
+            let mut keys = named_u32_key(fields, "proposal_index", Key::ProposalIndex);
+            let mut account_keys = named_account_id(fields, "account");
+            if account_keys.is_empty() {
+                account_keys = named_account_id(fields, "beneficiary");
+            }
+            keys.extend(account_keys);
+            keys
         }
         "SpendApproved" => {
-            let mut keys =
-                named_u32_key(fields, "proposal_index", Key::ProposalIndex);
+            let mut keys = named_u32_key(fields, "proposal_index", Key::ProposalIndex);
             keys.extend(named_account_id(fields, "beneficiary"));
             keys
+        }
+        "AssetSpendApproved" | "AssetSpendVoided" => {
+            named_u32_key(fields, "index", Key::SpendIndex)
         }
         "Paid" | "PaymentFailed" | "SpendProcessed" => {
             named_u32_key(fields, "index", Key::SpendIndex)
@@ -238,51 +287,53 @@ pub fn index_treasury(
 }
 
 /// Index events from `pallet_bounties`.
-pub fn index_bounties(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_bounties(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "BountyProposed" | "BountyRejected" | "BountyBecameActive"
-        | "BountyAwarded" | "BountyClaimed" | "BountyCanceled"
-        | "BountyExtended" | "BountyApproved" => {
-            named_u32_key(fields, "index", Key::BountyIndex)
+        "BountyProposed" | "BountyRejected" | "BountyBecameActive" | "BountyCanceled"
+        | "BountyExtended" | "BountyApproved" => named_u32_key(fields, "index", Key::BountyIndex),
+        "BountyAwarded" | "BountyClaimed" => {
+            let mut keys = named_u32_key(fields, "index", Key::BountyIndex);
+            keys.extend(named_account_id(fields, "beneficiary"));
+            keys
         }
+        "CuratorProposed" | "CuratorAccepted" => {
+            let mut keys = named_u32_key(fields, "bounty_id", Key::BountyIndex);
+            keys.extend(named_account_id(fields, "curator"));
+            keys
+        }
+        "CuratorUnassigned" => named_u32_key(fields, "bounty_id", Key::BountyIndex),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_child_bounties`.
-pub fn index_child_bounties(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_child_bounties(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "Added" | "Awarded" | "Claimed" | "Canceled" => {
-            named_u32_key(fields, "index", Key::BountyIndex)
+        "Added" | "Canceled" => {
+            let mut keys = named_u32_key(fields, "index", Key::BountyIndex);
+            keys.extend(named_u32_key(fields, "child_index", Key::BountyIndex));
+            keys
+        }
+        "Awarded" | "Claimed" => {
+            let mut keys = named_u32_key(fields, "index", Key::BountyIndex);
+            keys.extend(named_u32_key(fields, "child_index", Key::BountyIndex));
+            keys.extend(named_account_id(fields, "beneficiary"));
+            keys
         }
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_vesting`.
-pub fn index_vesting(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_vesting(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "VestingUpdated" | "VestingCompleted" => {
-            named_account_id(fields, "account")
-        }
+        "VestingUpdated" | "VestingCompleted" => named_account_id(fields, "account"),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_proxy`.
-pub fn index_proxy(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_proxy(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
         "ProxyAdded" | "ProxyRemoved" => {
             let mut keys = named_account_id(fields, "delegator");
@@ -305,14 +356,15 @@ pub fn index_proxy(
 }
 
 /// Index events from `pallet_multisig`.
-pub fn index_multisig(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_multisig(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "NewMultisig" | "MultisigApproval" | "MultisigExecuted"
-        | "MultisigCancelled" => {
+        "NewMultisig" | "MultisigApproval" | "MultisigExecuted" => {
             let mut keys = named_account_id(fields, "approving");
+            keys.extend(named_account_id(fields, "multisig"));
+            keys
+        }
+        "MultisigCancelled" => {
+            let mut keys = named_account_id(fields, "cancelling");
             keys.extend(named_account_id(fields, "multisig"));
             keys
         }
@@ -321,37 +373,26 @@ pub fn index_multisig(
 }
 
 /// Index events from `pallet_election_provider_multi_phase`.
-pub fn index_election_provider_multi_phase(
-    event_name: &str,
-    _fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_election_provider_multi_phase(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
+        "SolutionStored" => named_optional_account_id(fields, "origin"),
+        "Rewarded" | "Slashed" => named_account_id(fields, "account"),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_bags_list` (VoterList).
-pub fn index_bags_list(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_bags_list(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "Rebagged" => {
-            named_account_id(fields, "who")
-        }
+        "Rebagged" => named_account_id(fields, "who"),
         "ScoreUpdated" => named_account_id(fields, "who"),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_nomination_pools`.
-pub fn index_nomination_pools(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
-    let pool_key = |f: &Composite<()>| -> Vec<Key> {
-        named_u32_key(f, "pool_id", Key::PoolId)
-    };
+pub fn index_nomination_pools(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    let pool_key = |f: &Composite<()>| -> Vec<Key> { named_u32_key(f, "pool_id", Key::PoolId) };
     match event_name {
         "Created" => {
             let mut keys = named_account_id(fields, "depositor");
@@ -368,16 +409,44 @@ pub fn index_nomination_pools(
             keys.extend(pool_key(fields));
             keys
         }
-        "Unbonded" | "Withdrawn" => {
+        "Unbonded" => {
+            let mut keys = named_account_id(fields, "member");
+            keys.extend(pool_key(fields));
+            keys.extend(named_u32_key(fields, "era", Key::EraIndex));
+            keys
+        }
+        "Withdrawn" => {
             let mut keys = named_account_id(fields, "member");
             keys.extend(pool_key(fields));
             keys
         }
-        "Destroyed" | "StateChanged" | "MemberRemoved"
-        | "RolesUpdated" | "PoolSlashed" | "UnbondingPoolSlashed"
-        | "PoolCommissionUpdated"
+        "MemberRemoved" => {
+            let mut keys = pool_key(fields);
+            keys.extend(named_account_id(fields, "member"));
+            keys
+        }
+        "RolesUpdated" => {
+            let mut keys = named_optional_account_id(fields, "root");
+            keys.extend(named_optional_account_id(fields, "bouncer"));
+            keys.extend(named_optional_account_id(fields, "nominator"));
+            keys
+        }
+        "UnbondingPoolSlashed" => {
+            let mut keys = pool_key(fields);
+            keys.extend(named_u32_key(fields, "era", Key::EraIndex));
+            keys
+        }
+        "PoolCommissionUpdated" => {
+            let mut keys = pool_key(fields);
+            keys.extend(named_option_tuple_second_account_id(fields, "current"));
+            keys
+        }
+        "Destroyed"
+        | "StateChanged"
+        | "PoolSlashed"
         | "PoolMaxCommissionUpdated"
         | "PoolCommissionChangeRateUpdated"
+        | "PoolCommissionClaimPermissionUpdated"
         | "PoolCommissionClaimed"
         | "MinBalanceDeficitAdjusted"
         | "MinBalanceExcessAdjusted" => pool_key(fields),
@@ -386,23 +455,20 @@ pub fn index_nomination_pools(
 }
 
 /// Index events from `pallet_fast_unstake`.
-pub fn index_fast_unstake(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_fast_unstake(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "Unstaked" | "Slashed" => {
-            named_account_id(fields, "stash")
-        }
+        "Unstaked" | "Slashed" => named_account_id(fields, "stash"),
+        "BatchChecked" => get_field(fields, "eras")
+            .or_else(|| get_field(fields, "0"))
+            .and_then(extract_vec_u32)
+            .map(|eras| eras.into_iter().map(Key::EraIndex).collect())
+            .unwrap_or_default(),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_conviction_voting`.
-pub fn index_conviction_voting(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_conviction_voting(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
         "Delegated" => {
             let mut keys = positional_account_id(fields, 0);
@@ -410,34 +476,29 @@ pub fn index_conviction_voting(
             keys
         }
         "Undelegated" => positional_account_id(fields, 0),
+        "Voted" | "VoteRemoved" => named_account_id(fields, "who"),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_referenda`.
-pub fn index_referenda(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_referenda(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "Submitted" | "DecisionDepositPlaced"
-        | "DecisionDepositRefunded" | "DepositSlashed"
-        | "DecisionStarted" | "ConfirmStarted"
-        | "ConfirmAborted" | "Confirmed" | "Approved"
-        | "Rejected" | "TimedOut" | "Cancelled" | "Killed"
-        | "SubmissionDepositRefunded"
-        | "MetadataSet" | "MetadataCleared" => {
-            named_u32_key(fields, "index", Key::RefIndex)
+        "DecisionDepositPlaced" | "DecisionDepositRefunded" | "SubmissionDepositRefunded" => {
+            let mut keys = named_u32_key(fields, "index", Key::RefIndex);
+            keys.extend(named_account_id(fields, "who"));
+            keys
         }
+        "DepositSlashed" => named_account_id(fields, "who"),
+        "Submitted" | "DecisionStarted" | "ConfirmStarted" | "ConfirmAborted" | "Confirmed"
+        | "Approved" | "Rejected" | "TimedOut" | "Cancelled" | "Killed" | "MetadataSet"
+        | "MetadataCleared" => named_u32_key(fields, "index", Key::RefIndex),
         _ => vec![],
     }
 }
 
 /// Index events from `pallet_transaction_payment`.
-pub fn index_transaction_payment(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_transaction_payment(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
         "TransactionFeePaid" => named_account_id(fields, "who"),
         _ => vec![],
@@ -445,16 +506,87 @@ pub fn index_transaction_payment(
 }
 
 /// Index events from `pallet_delegated_staking`.
-pub fn index_delegated_staking(
-    event_name: &str,
-    fields: &Composite<()>,
-) -> Vec<Key> {
+pub fn index_delegated_staking(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
     match event_name {
-        "Delegated" | "Withdrawn" | "Slashed" => {
+        "Delegated" | "Released" | "Slashed" | "MigratedDelegation" | "Withdrawn" => {
             let mut keys = named_account_id(fields, "agent");
             keys.extend(named_account_id(fields, "delegator"));
             keys
         }
+        _ => vec![],
+    }
+}
+
+/// Index events from `pallet_identity`.
+pub fn index_identity(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "IdentitySet" | "IdentityCleared" | "IdentityKilled" => named_account_id(fields, "who"),
+        "JudgementRequested" | "JudgementUnrequested" => {
+            let mut keys = named_account_id(fields, "who");
+            keys.extend(named_u32_key(
+                fields,
+                "registrar_index",
+                Key::RegistrarIndex,
+            ));
+            keys
+        }
+        "JudgementGiven" => {
+            let mut keys = named_account_id(fields, "target");
+            keys.extend(named_u32_key(
+                fields,
+                "registrar_index",
+                Key::RegistrarIndex,
+            ));
+            keys
+        }
+        "RegistrarAdded" => named_u32_key(fields, "registrar_index", Key::RegistrarIndex),
+        "SubIdentityAdded" | "SubIdentityRemoved" | "SubIdentityRevoked" => {
+            let mut keys = named_account_id(fields, "sub");
+            keys.extend(named_account_id(fields, "main"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from `pallet_recovery`.
+pub fn index_recovery(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "RecoveryCreated" | "RecoveryRemoved" => named_account_id(fields, "account")
+            .into_iter()
+            .chain(named_account_id(fields, "lost_account"))
+            .collect(),
+        "RecoveryInitiated" | "RecoveryClosed" | "AccountRecovered" => {
+            let mut keys = named_account_id(fields, "lost_account");
+            keys.extend(named_account_id(fields, "rescuer_account"));
+            keys
+        }
+        "RecoveryVouched" => {
+            let mut keys = named_account_id(fields, "lost_account");
+            keys.extend(named_account_id(fields, "rescuer_account"));
+            keys.extend(named_account_id(fields, "sender"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from `pallet_sudo`.
+pub fn index_sudo(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "KeyChanged" => {
+            let mut keys = named_account_id(fields, "new");
+            keys.extend(named_optional_account_id(fields, "old"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from `pallet_state_trie_migration`.
+pub fn index_state_trie_migration(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "Slashed" => named_account_id(fields, "who"),
         _ => vec![],
     }
 }
@@ -468,18 +600,25 @@ fn named_account_id(fields: &Composite<()>, name: &str) -> Vec<Key> {
         .unwrap_or_default()
 }
 
-fn positional_account_id(
-    fields: &Composite<()>,
-    idx: usize,
-) -> Vec<Key> {
+fn named_optional_account_id(fields: &Composite<()>, name: &str) -> Vec<Key> {
+    get_field(fields, name)
+        .and_then(extract_option_bytes32)
+        .and_then(|value| value.map(|bytes| vec![Key::AccountId(Bytes32(bytes))]))
+        .unwrap_or_default()
+}
+
+fn named_option_tuple_second_account_id(fields: &Composite<()>, name: &str) -> Vec<Key> {
+    get_field(fields, name)
+        .and_then(extract_option_tuple_second_bytes32)
+        .and_then(|value| value.map(|bytes| vec![Key::AccountId(Bytes32(bytes))]))
+        .unwrap_or_default()
+}
+
+fn positional_account_id(fields: &Composite<()>, idx: usize) -> Vec<Key> {
     named_account_id(fields, &idx.to_string())
 }
 
-fn named_u32_key<F>(
-    fields: &Composite<()>,
-    name: &str,
-    ctor: F,
-) -> Vec<Key>
+fn named_u32_key<F>(fields: &Composite<()>, name: &str, ctor: F) -> Vec<Key>
 where
     F: Fn(u32) -> Key,
 {
@@ -489,22 +628,14 @@ where
         .unwrap_or_default()
 }
 
-fn positional_u32_key<F>(
-    fields: &Composite<()>,
-    idx: usize,
-    ctor: F,
-) -> Vec<Key>
+fn positional_u32_key<F>(fields: &Composite<()>, idx: usize, ctor: F) -> Vec<Key>
 where
     F: Fn(u32) -> Key,
 {
     named_u32_key(fields, &idx.to_string(), ctor)
 }
 
-fn named_bytes32_key<F>(
-    fields: &Composite<()>,
-    name: &str,
-    ctor: F,
-) -> Vec<Key>
+fn named_bytes32_key<F>(fields: &Composite<()>, name: &str, ctor: F) -> Vec<Key>
 where
     F: Fn(Bytes32) -> Key,
 {
@@ -536,24 +667,18 @@ pub fn index_sdk_pallet(
         "Vesting" => index_vesting(event_name, fields),
         "Proxy" => index_proxy(event_name, fields),
         "Multisig" => index_multisig(event_name, fields),
-        "ElectionProviderMultiPhase" => {
-            index_election_provider_multi_phase(event_name, fields)
-        }
+        "ElectionProviderMultiPhase" => index_election_provider_multi_phase(event_name, fields),
         "VoterList" => index_bags_list(event_name, fields),
-        "NominationPools" => {
-            index_nomination_pools(event_name, fields)
-        }
+        "NominationPools" => index_nomination_pools(event_name, fields),
         "FastUnstake" => index_fast_unstake(event_name, fields),
-        "ConvictionVoting" => {
-            index_conviction_voting(event_name, fields)
-        }
+        "ConvictionVoting" => index_conviction_voting(event_name, fields),
         "Referenda" => index_referenda(event_name, fields),
-        "TransactionPayment" => {
-            index_transaction_payment(event_name, fields)
-        }
-        "DelegatedStaking" => {
-            index_delegated_staking(event_name, fields)
-        }
+        "TransactionPayment" => index_transaction_payment(event_name, fields),
+        "DelegatedStaking" => index_delegated_staking(event_name, fields),
+        "Identity" => index_identity(event_name, fields),
+        "Recovery" => index_recovery(event_name, fields),
+        "Sudo" => index_sudo(event_name, fields),
+        "StateTrieMigration" => index_state_trie_migration(event_name, fields),
         _ => return None,
     })
 }

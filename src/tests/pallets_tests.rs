@@ -2,7 +2,7 @@
 mod pallets_tests {
     use crate::pallets::*;
     use crate::shared::{Bytes32, Key};
-    use scale_value::{Composite, Primitive, Value, ValueDef};
+    use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
 
     fn u128_val(n: u128) -> Value<()> {
         Value {
@@ -36,6 +36,23 @@ mod pallets_tests {
 
     fn unnamed(fields: Vec<Value<()>>) -> Composite<()> {
         Composite::Unnamed(fields)
+    }
+
+    fn variant(name: &str, values: Composite<()>) -> Value<()> {
+        Value {
+            value: ValueDef::Variant(Variant {
+                name: name.to_string(),
+                values,
+            }),
+            context: (),
+        }
+    }
+
+    fn composite_value(values: Composite<()>) -> Value<()> {
+        Value {
+            value: ValueDef::Composite(values),
+            context: (),
+        }
     }
 
     // ─── extract_u32 ──────────────────────────────────────────────────────
@@ -246,6 +263,14 @@ mod pallets_tests {
     }
 
     #[test]
+    fn balances_locked_indexes_account() {
+        let who = [42u8; 32];
+        let fields = named(vec![("who", bytes32_val(who))]);
+        let keys = index_balances("Locked", &fields);
+        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
+    }
+
+    #[test]
     fn balances_reserve_repatriated() {
         let from = [13u8; 32];
         let to = [14u8; 32];
@@ -282,6 +307,31 @@ mod pallets_tests {
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&Key::EraIndex(50)));
         assert!(keys.contains(&Key::AccountId(Bytes32(validator))));
+    }
+
+    #[test]
+    fn staking_slash_reported_indexes_validator_and_era() {
+        let validator = [77u8; 32];
+        let fields = named(vec![
+            ("validator", bytes32_val(validator)),
+            ("slash_era", u128_val(9)),
+        ]);
+        let keys = index_staking("SlashReported", &fields);
+        assert!(keys.contains(&Key::AccountId(Bytes32(validator))));
+        assert!(keys.contains(&Key::EraIndex(9)));
+    }
+
+    #[test]
+    fn staking_kicked_indexes_nominator_and_stash() {
+        let nominator = [55u8; 32];
+        let stash = [56u8; 32];
+        let fields = named(vec![
+            ("nominator", bytes32_val(nominator)),
+            ("stash", bytes32_val(stash)),
+        ]);
+        let keys = index_staking("Kicked", &fields);
+        assert!(keys.contains(&Key::AccountId(Bytes32(nominator))));
+        assert!(keys.contains(&Key::AccountId(Bytes32(stash))));
     }
 
     #[test]
@@ -351,6 +401,25 @@ mod pallets_tests {
         assert_eq!(keys, vec![Key::SpendIndex(3)]);
     }
 
+    #[test]
+    fn treasury_awarded_indexes_account() {
+        let account = [66u8; 32];
+        let fields = named(vec![
+            ("proposal_index", u128_val(10)),
+            ("account", bytes32_val(account)),
+        ]);
+        let keys = index_treasury("Awarded", &fields);
+        assert!(keys.contains(&Key::ProposalIndex(10)));
+        assert!(keys.contains(&Key::AccountId(Bytes32(account))));
+    }
+
+    #[test]
+    fn treasury_asset_spend_approved_indexes_spend_index() {
+        let fields = named(vec![("index", u128_val(88))]);
+        let keys = index_treasury("AssetSpendApproved", &fields);
+        assert_eq!(keys, vec![Key::SpendIndex(88)]);
+    }
+
     // ─── SDK pallet: Bounties ─────────────────────────────────────────────
 
     #[test]
@@ -360,13 +429,52 @@ mod pallets_tests {
         assert_eq!(keys, vec![Key::BountyIndex(7)]);
     }
 
+    #[test]
+    fn bounties_curator_proposed_indexes_bounty_and_curator() {
+        let curator = [67u8; 32];
+        let fields = named(vec![
+            ("bounty_id", u128_val(9)),
+            ("curator", bytes32_val(curator)),
+        ]);
+        let keys = index_bounties("CuratorProposed", &fields);
+        assert!(keys.contains(&Key::BountyIndex(9)));
+        assert!(keys.contains(&Key::AccountId(Bytes32(curator))));
+    }
+
+    #[test]
+    fn bounties_awarded_indexes_beneficiary() {
+        let beneficiary = [68u8; 32];
+        let fields = named(vec![
+            ("index", u128_val(13)),
+            ("beneficiary", bytes32_val(beneficiary)),
+        ]);
+        let keys = index_bounties("BountyAwarded", &fields);
+        assert!(keys.contains(&Key::BountyIndex(13)));
+        assert!(keys.contains(&Key::AccountId(Bytes32(beneficiary))));
+    }
+
     // ─── SDK pallet: ChildBounties ────────────────────────────────────────
 
     #[test]
     fn child_bounties_added() {
-        let fields = named(vec![("index", u128_val(4))]);
+        let fields = named(vec![("index", u128_val(4)), ("child_index", u128_val(5))]);
         let keys = index_child_bounties("Added", &fields);
-        assert_eq!(keys, vec![Key::BountyIndex(4)]);
+        assert!(keys.contains(&Key::BountyIndex(4)));
+        assert!(keys.contains(&Key::BountyIndex(5)));
+    }
+
+    #[test]
+    fn child_bounties_awarded_indexes_child_and_beneficiary() {
+        let beneficiary = [69u8; 32];
+        let fields = named(vec![
+            ("index", u128_val(4)),
+            ("child_index", u128_val(6)),
+            ("beneficiary", bytes32_val(beneficiary)),
+        ]);
+        let keys = index_child_bounties("Awarded", &fields);
+        assert!(keys.contains(&Key::BountyIndex(4)));
+        assert!(keys.contains(&Key::BountyIndex(6)));
+        assert!(keys.contains(&Key::AccountId(Bytes32(beneficiary))));
     }
 
     // ─── SDK pallet: Vesting ──────────────────────────────────────────────
@@ -418,6 +526,37 @@ mod pallets_tests {
         assert_eq!(keys.len(), 2);
     }
 
+    #[test]
+    fn multisig_cancelled_uses_cancelling_field() {
+        let cancelling = [70u8; 32];
+        let multisig = [71u8; 32];
+        let fields = named(vec![
+            ("cancelling", bytes32_val(cancelling)),
+            ("multisig", bytes32_val(multisig)),
+        ]);
+        let keys = index_multisig("MultisigCancelled", &fields);
+        assert!(keys.contains(&Key::AccountId(Bytes32(cancelling))));
+        assert!(keys.contains(&Key::AccountId(Bytes32(multisig))));
+    }
+
+    #[test]
+    fn election_provider_solution_stored_indexes_origin() {
+        let origin = [81u8; 32];
+        let fields = named(vec![(
+            "origin",
+            variant("Some", unnamed(vec![bytes32_val(origin)])),
+        )]);
+        let keys = index_election_provider_multi_phase("SolutionStored", &fields);
+        assert_eq!(keys, vec![Key::AccountId(Bytes32(origin))]);
+    }
+
+    #[test]
+    fn election_provider_solution_stored_none_indexes_nothing() {
+        let fields = named(vec![("origin", variant("None", unnamed(vec![])))]);
+        let keys = index_election_provider_multi_phase("SolutionStored", &fields);
+        assert!(keys.is_empty());
+    }
+
     // ─── SDK pallet: NominationPools ──────────────────────────────────────
 
     #[test]
@@ -440,6 +579,54 @@ mod pallets_tests {
         assert_eq!(keys, vec![Key::PoolId(99)]);
     }
 
+    #[test]
+    fn nomination_pools_unbonded_indexes_era() {
+        let member = [72u8; 32];
+        let fields = named(vec![
+            ("member", bytes32_val(member)),
+            ("pool_id", u128_val(10)),
+            ("era", u128_val(99)),
+        ]);
+        let keys = index_nomination_pools("Unbonded", &fields);
+        assert!(keys.contains(&Key::AccountId(Bytes32(member))));
+        assert!(keys.contains(&Key::PoolId(10)));
+        assert!(keys.contains(&Key::EraIndex(99)));
+    }
+
+    #[test]
+    fn nomination_pools_roles_updated_indexes_optional_accounts() {
+        let root = [73u8; 32];
+        let nominator = [74u8; 32];
+        let fields = named(vec![
+            ("root", variant("Some", unnamed(vec![bytes32_val(root)]))),
+            ("bouncer", variant("None", unnamed(vec![]))),
+            (
+                "nominator",
+                variant("Some", unnamed(vec![bytes32_val(nominator)])),
+            ),
+        ]);
+        let keys = index_nomination_pools("RolesUpdated", &fields);
+        assert!(keys.contains(&Key::AccountId(Bytes32(root))));
+        assert!(keys.contains(&Key::AccountId(Bytes32(nominator))));
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn nomination_pools_pool_commission_updated_indexes_current_account() {
+        let account = [75u8; 32];
+        let current = variant(
+            "Some",
+            unnamed(vec![composite_value(unnamed(vec![
+                u128_val(1),
+                bytes32_val(account),
+            ]))]),
+        );
+        let fields = named(vec![("pool_id", u128_val(7)), ("current", current)]);
+        let keys = index_nomination_pools("PoolCommissionUpdated", &fields);
+        assert!(keys.contains(&Key::PoolId(7)));
+        assert!(keys.contains(&Key::AccountId(Bytes32(account))));
+    }
+
     // ─── SDK pallet: FastUnstake ──────────────────────────────────────────
 
     #[test]
@@ -448,6 +635,19 @@ mod pallets_tests {
         let fields = named(vec![("stash", bytes32_val(stash))]);
         let keys = index_fast_unstake("Unstaked", &fields);
         assert_eq!(keys, vec![Key::AccountId(Bytes32(stash))]);
+    }
+
+    #[test]
+    fn fast_unstake_batch_checked_indexes_eras() {
+        let fields = named(vec![(
+            "eras",
+            composite_value(unnamed(vec![u128_val(5), u128_val(6), u128_val(7)])),
+        )]);
+        let keys = index_fast_unstake("BatchChecked", &fields);
+        assert_eq!(
+            keys,
+            vec![Key::EraIndex(5), Key::EraIndex(6), Key::EraIndex(7)]
+        );
     }
 
     // ─── SDK pallet: ConvictionVoting ─────────────────────────────────────
@@ -467,6 +667,14 @@ mod pallets_tests {
         let fields = unnamed(vec![bytes32_val(a)]);
         let keys = index_conviction_voting("Undelegated", &fields);
         assert_eq!(keys, vec![Key::AccountId(Bytes32(a))]);
+    }
+
+    #[test]
+    fn conviction_voting_vote_removed_indexes_who() {
+        let who = [76u8; 32];
+        let fields = named(vec![("who", bytes32_val(who))]);
+        let keys = index_conviction_voting("VoteRemoved", &fields);
+        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
     }
 
     // ─── SDK pallet: Referenda ────────────────────────────────────────────
@@ -497,6 +705,23 @@ mod pallets_tests {
         }
     }
 
+    #[test]
+    fn referenda_decision_deposit_placed_indexes_who_and_ref() {
+        let who = [77u8; 32];
+        let fields = named(vec![("index", u128_val(11)), ("who", bytes32_val(who))]);
+        let keys = index_referenda("DecisionDepositPlaced", &fields);
+        assert!(keys.contains(&Key::RefIndex(11)));
+        assert!(keys.contains(&Key::AccountId(Bytes32(who))));
+    }
+
+    #[test]
+    fn referenda_deposit_slashed_indexes_only_who() {
+        let who = [78u8; 32];
+        let fields = named(vec![("index", u128_val(12)), ("who", bytes32_val(who))]);
+        let keys = index_referenda("DepositSlashed", &fields);
+        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
+    }
+
     // ─── SDK pallet: TransactionPayment ───────────────────────────────────
 
     #[test]
@@ -519,6 +744,68 @@ mod pallets_tests {
         ]);
         let keys = index_delegated_staking("Delegated", &fields);
         assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn delegated_staking_released() {
+        let agent = [79u8; 32];
+        let delegator = [80u8; 32];
+        let fields = named(vec![
+            ("agent", bytes32_val(agent)),
+            ("delegator", bytes32_val(delegator)),
+        ]);
+        let keys = index_delegated_staking("Released", &fields);
+        assert!(keys.contains(&Key::AccountId(Bytes32(agent))));
+        assert!(keys.contains(&Key::AccountId(Bytes32(delegator))));
+    }
+
+    #[test]
+    fn identity_judgement_given_indexes_target_and_registrar() {
+        let target = [82u8; 32];
+        let fields = named(vec![
+            ("target", bytes32_val(target)),
+            ("registrar_index", u128_val(5)),
+        ]);
+        let keys = index_identity("JudgementGiven", &fields);
+        assert!(keys.contains(&Key::AccountId(Bytes32(target))));
+        assert!(keys.contains(&Key::RegistrarIndex(5)));
+    }
+
+    #[test]
+    fn recovery_vouched_indexes_three_accounts() {
+        let lost = [83u8; 32];
+        let rescuer = [84u8; 32];
+        let sender = [85u8; 32];
+        let fields = named(vec![
+            ("lost_account", bytes32_val(lost)),
+            ("rescuer_account", bytes32_val(rescuer)),
+            ("sender", bytes32_val(sender)),
+        ]);
+        let keys = index_recovery("RecoveryVouched", &fields);
+        assert!(keys.contains(&Key::AccountId(Bytes32(lost))));
+        assert!(keys.contains(&Key::AccountId(Bytes32(rescuer))));
+        assert!(keys.contains(&Key::AccountId(Bytes32(sender))));
+    }
+
+    #[test]
+    fn sudo_key_changed_indexes_new_and_old_if_present() {
+        let old = [86u8; 32];
+        let new = [87u8; 32];
+        let fields = named(vec![
+            ("old", variant("Some", unnamed(vec![bytes32_val(old)]))),
+            ("new", bytes32_val(new)),
+        ]);
+        let keys = index_sudo("KeyChanged", &fields);
+        assert!(keys.contains(&Key::AccountId(Bytes32(old))));
+        assert!(keys.contains(&Key::AccountId(Bytes32(new))));
+    }
+
+    #[test]
+    fn state_trie_migration_slashed_indexes_who() {
+        let who = [88u8; 32];
+        let fields = named(vec![("who", bytes32_val(who))]);
+        let keys = index_state_trie_migration("Slashed", &fields);
+        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
     }
 
     // ─── SDK dispatch ─────────────────────────────────────────────────────
@@ -561,6 +848,10 @@ mod pallets_tests {
             "Referenda",
             "TransactionPayment",
             "DelegatedStaking",
+            "Identity",
+            "Recovery",
+            "Sudo",
+            "StateTrieMigration",
         ];
         for name in known {
             assert!(
@@ -570,5 +861,3 @@ mod pallets_tests {
         }
     }
 }
-
-

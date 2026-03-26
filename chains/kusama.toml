@@ -80,6 +80,14 @@ name = "Referenda"
 sdk = true
 
 [[pallets]]
+name = "DelegatedStaking"
+sdk = true
+
+[[pallets]]
+name = "Recovery"
+sdk = true
+
+[[pallets]]
 name = "Claims"
 
 [[pallets.events]]
@@ -104,6 +112,18 @@ field = "0"
 key = "para_id"
 
 [[pallets.events]]
+name = "CodeUpgradeScheduled"
+[[pallets.events.params]]
+field = "0"
+key = "para_id"
+
+[[pallets.events]]
+name = "NewHeadNoted"
+[[pallets.events.params]]
+field = "0"
+key = "para_id"
+
+[[pallets.events]]
 name = "ActionQueued"
 [[pallets.events.params]]
 field = "0"
@@ -111,6 +131,24 @@ key = "para_id"
 [[pallets.events.params]]
 field = "1"
 key = "session_index"
+
+[[pallets.events]]
+name = "PvfCheckStarted"
+[[pallets.events.params]]
+field = "1"
+key = "para_id"
+
+[[pallets.events]]
+name = "PvfCheckAccepted"
+[[pallets.events.params]]
+field = "1"
+key = "para_id"
+
+[[pallets.events]]
+name = "PvfCheckRejected"
+[[pallets.events.params]]
+field = "1"
+key = "para_id"
 
 [[pallets]]
 name = "Hrmp"
@@ -122,6 +160,12 @@ field = "sender"
 key = "para_id"
 [[pallets.events.params]]
 field = "recipient"
+key = "para_id"
+
+[[pallets.events]]
+name = "OpenChannelCanceled"
+[[pallets.events.params]]
+field = "by_parachain"
 key = "para_id"
 
 [[pallets.events]]
@@ -137,6 +181,33 @@ key = "para_id"
 name = "ChannelClosed"
 [[pallets.events.params]]
 field = "by_parachain"
+key = "para_id"
+
+[[pallets.events]]
+name = "HrmpChannelForceOpened"
+[[pallets.events.params]]
+field = "sender"
+key = "para_id"
+[[pallets.events.params]]
+field = "recipient"
+key = "para_id"
+
+[[pallets.events]]
+name = "HrmpSystemChannelOpened"
+[[pallets.events.params]]
+field = "sender"
+key = "para_id"
+[[pallets.events.params]]
+field = "recipient"
+key = "para_id"
+
+[[pallets.events]]
+name = "OpenChannelDepositsUpdated"
+[[pallets.events.params]]
+field = "sender"
+key = "para_id"
+[[pallets.events.params]]
+field = "recipient"
 key = "para_id"
 
 [[pallets]]
@@ -181,6 +252,15 @@ key = "para_id"
 field = "who"
 key = "account_id"
 
+[[pallets.events]]
+name = "Swapped"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+[[pallets.events.params]]
+field = "other_id"
+key = "para_id"
+
 [[pallets]]
 name = "Slots"
 
@@ -209,6 +289,27 @@ field = "auction_index"
 key = "auction_index"
 
 [[pallets.events]]
+name = "Reserved"
+[[pallets.events.params]]
+field = "bidder"
+key = "account_id"
+
+[[pallets.events]]
+name = "Unreserved"
+[[pallets.events.params]]
+field = "bidder"
+key = "account_id"
+
+[[pallets.events]]
+name = "ReserveConfiscated"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+[[pallets.events.params]]
+field = "leaser"
+key = "account_id"
+
+[[pallets.events]]
 name = "BidAccepted"
 [[pallets.events.params]]
 field = "bidder"
@@ -216,6 +317,12 @@ key = "account_id"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
+
+[[pallets.events]]
+name = "WinningOffset"
+[[pallets.events.params]]
+field = "auction_index"
+key = "auction_index"
 
 [[pallets]]
 name = "Crowdloan"
@@ -245,7 +352,46 @@ field = "fund_index"
 key = "para_id"
 
 [[pallets.events]]
+name = "PartiallyRefunded"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets.events]]
+name = "AllRefunded"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets.events]]
 name = "Dissolved"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets.events]]
+name = "HandleBidResult"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets.events]]
+name = "Edited"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets.events]]
+name = "MemoUpdated"
+[[pallets.events.params]]
+field = "who"
+key = "account_id"
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+
+[[pallets.events]]
+name = "AddedToNewRaise"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"

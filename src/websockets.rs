@@ -5,9 +5,7 @@ use futures::{SinkExt, StreamExt};
 use sled::Tree;
 use std::net::SocketAddr;
 use subxt::{
-    Metadata, PolkadotConfig,
-    config::RpcConfigFor,
-    rpcs::methods::legacy::LegacyRpcMethods,
+    Metadata, PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{

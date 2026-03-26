@@ -10,8 +10,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use subxt::{
-    config::RpcConfigFor,
     OnlineClient, PolkadotConfig,
+    config::RpcConfigFor,
     rpcs::{RpcClient, methods::legacy::LegacyRpcMethods},
 };
 use tokio::{

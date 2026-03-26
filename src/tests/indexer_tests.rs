@@ -502,7 +502,10 @@ mod indexer_tests {
         let indexer = Indexer::new_test(trees, &config);
 
         let (tx, mut rx) = mpsc::unbounded_channel();
-        process_sub_msg(&indexer, SubscriptionMessage::SubscribeStatus { tx: tx.clone() });
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeStatus { tx: tx.clone() },
+        );
         indexer.notify_status_subscribers();
         assert!(rx.recv().await.is_some());
 
@@ -529,15 +532,12 @@ mod indexer_tests {
         );
 
         indexer.index_event_key(key.clone(), 7, 1).unwrap();
-        assert!(matches!(rx.recv().await, Some(ResponseMessage::Events { .. })));
+        assert!(matches!(
+            rx.recv().await,
+            Some(ResponseMessage::Events { .. })
+        ));
 
-        process_sub_msg(
-            &indexer,
-            SubscriptionMessage::UnsubscribeEvents {
-                key,
-                tx,
-            },
-        );
+        process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeEvents { key, tx });
 
         indexer.index_event_key(Key::RefIndex(42), 8, 2).unwrap();
         assert!(rx.try_recv().is_err());

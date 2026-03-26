@@ -66,11 +66,8 @@ pub struct ChainConfig {
 
 impl ChainConfig {
     /// Build a fast lookup: pallet_name → event_name → Vec<ParamConfig>.
-    pub fn build_custom_index(
-        &self,
-    ) -> HashMap<String, HashMap<String, Vec<ParamConfig>>> {
-        let mut map: HashMap<String, HashMap<String, Vec<ParamConfig>>> =
-            HashMap::new();
+    pub fn build_custom_index(&self) -> HashMap<String, HashMap<String, Vec<ParamConfig>>> {
+        let mut map: HashMap<String, HashMap<String, Vec<ParamConfig>>> = HashMap::new();
         for pallet in &self.pallets {
             if pallet.sdk {
                 continue;
@@ -94,14 +91,13 @@ impl ChainConfig {
 
     pub fn genesis_hash_bytes(&self) -> Result<[u8; 32], hex::FromHexError> {
         let bytes = hex::decode(&self.genesis_hash)?;
-        bytes.try_into().map_err(|_| {
-            hex::FromHexError::InvalidStringLength
-        })
+        bytes
+            .try_into()
+            .map_err(|_| hex::FromHexError::InvalidStringLength)
     }
 }
 
-pub const POLKADOT_TOML: &str =
-    include_str!("../chains/polkadot.toml");
+pub const POLKADOT_TOML: &str = include_str!("../chains/polkadot.toml");
 pub const KUSAMA_TOML: &str = include_str!("../chains/kusama.toml");
 pub const WESTEND_TOML: &str = include_str!("../chains/westend.toml");
 pub const PASEO_TOML: &str = include_str!("../chains/paseo.toml");

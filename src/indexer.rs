@@ -8,9 +8,7 @@ use serde_json::json;
 use sled::Tree;
 use std::{collections::HashMap, future::Future, sync::Mutex};
 use subxt::{
-    OnlineClient, PolkadotConfig,
-    client::Block,
-    config::RpcConfigFor,
+    OnlineClient, PolkadotConfig, client::Block, config::RpcConfigFor,
     rpcs::methods::legacy::LegacyRpcMethods,
 };
 use tokio::{
@@ -84,11 +82,7 @@ impl Indexer {
 
     pub async fn index_head(
         &self,
-        next: impl Future<
-            Output = Option<
-                Result<Block<PolkadotConfig>, subxt::error::BlocksError>,
-            >,
-        >,
+        next: impl Future<Output = Option<Result<Block<PolkadotConfig>, subxt::error::BlocksError>>>,
     ) -> Result<(u32, u32, u32), IndexError> {
         let block = next.await.unwrap()?;
         let block_number: u32 = block.number().try_into().unwrap();
@@ -138,16 +132,17 @@ impl Indexer {
             }
 
             // Decode field values schema-lessly.
-            let field_values: Composite<()> = match event.decode_fields_unchecked_as::<Composite<()>>() {
-                Ok(fv) => fv,
-                Err(err) => {
-                    error!(
-                        "Block {block_number} {pallet_name}::{event_name} \
+            let field_values: Composite<()> =
+                match event.decode_fields_unchecked_as::<Composite<()>>() {
+                    Ok(fv) => fv,
+                    Err(err) => {
+                        error!(
+                            "Block {block_number} {pallet_name}::{event_name} \
                          field_values error: {err}"
-                    );
-                    continue;
-                }
-            };
+                        );
+                        continue;
+                    }
+                };
 
             // Determine indexing keys from config.
             let keys = self.keys_for_event(pallet_name, event_name, &field_values);

@@ -6,8 +6,8 @@ use std::fmt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite;
 use zerocopy::{
-    byteorder::{U16, U32},
     BigEndian, IntoBytes,
+    byteorder::{U16, U32},
 };
 use zerocopy_derive::*;
 

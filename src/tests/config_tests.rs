@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod config_tests {
     use crate::config::*;
+    use std::collections::HashSet;
 
     fn load_polkadot() -> ChainConfig {
         toml::from_str(POLKADOT_TOML).unwrap()
@@ -16,6 +17,24 @@ mod config_tests {
 
     fn load_paseo() -> ChainConfig {
         toml::from_str(PASEO_TOML).unwrap()
+    }
+
+    fn pallet<'a>(cfg: &'a ChainConfig, name: &str) -> &'a PalletConfig {
+        cfg.pallets
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("missing pallet {name}"))
+    }
+
+    fn has_events(cfg: &ChainConfig, pallet_name: &str, required: &[&str]) {
+        let pallet = pallet(cfg, pallet_name);
+        let names: HashSet<&str> = pallet.events.iter().map(|e| e.name.as_str()).collect();
+        for event_name in required {
+            assert!(
+                names.contains(event_name),
+                "missing event {pallet_name}::{event_name}"
+            );
+        }
     }
 
     #[test]
@@ -162,6 +181,101 @@ key = "pool_id"
         let baz = bar.get("Baz").unwrap();
         assert_eq!(baz[0].key, KeyTypeName::PoolId);
     }
+
+    #[test]
+    fn sdk_pallets_match_legacy_chain_modules() {
+        let dot = load_polkadot();
+        assert!(pallet(&dot, "StateTrieMigration").sdk);
+
+        let ksm = load_kusama();
+        assert!(pallet(&ksm, "DelegatedStaking").sdk);
+        assert!(pallet(&ksm, "Recovery").sdk);
+
+        let wnd = load_westend();
+        for name in [
+            "Preimage",
+            "Identity",
+            "ElectionProviderMultiPhase",
+            "VoterList",
+            "Sudo",
+            "Treasury",
+            "Recovery",
+            "DelegatedStaking",
+        ] {
+            assert!(pallet(&wnd, name).sdk, "{name} should be sdk");
+        }
+
+        let pas = load_paseo();
+        for name in [
+            "Preimage",
+            "Bounties",
+            "ChildBounties",
+            "Sudo",
+            "Treasury",
+            "ElectionProviderMultiPhase",
+            "VoterList",
+            "DelegatedStaking",
+            "StateTrieMigration",
+        ] {
+            assert!(pallet(&pas, name).sdk, "{name} should be sdk");
+        }
+    }
+
+    #[test]
+    fn custom_pallet_events_match_legacy_chain_modules() {
+        let ksm = load_kusama();
+        has_events(
+            &ksm,
+            "Paras",
+            &[
+                "CurrentCodeUpdated",
+                "CurrentHeadUpdated",
+                "CodeUpgradeScheduled",
+                "NewHeadNoted",
+                "ActionQueued",
+                "PvfCheckStarted",
+                "PvfCheckAccepted",
+                "PvfCheckRejected",
+            ],
+        );
+        has_events(
+            &ksm,
+            "Hrmp",
+            &[
+                "OpenChannelRequested",
+                "OpenChannelCanceled",
+                "OpenChannelAccepted",
+                "ChannelClosed",
+                "HrmpChannelForceOpened",
+                "HrmpSystemChannelOpened",
+                "OpenChannelDepositsUpdated",
+            ],
+        );
+
+        let wnd = load_westend();
+        has_events(
+            &wnd,
+            "AssignedSlots",
+            &["PermanentSlotAssigned", "TemporarySlotAssigned"],
+        );
+        has_events(&wnd, "OnDemandAssignmentProvider", &["OnDemandOrderPlaced"]);
+
+        let pas = load_paseo();
+        has_events(&pas, "Claims", &["Claimed"]);
+        has_events(
+            &pas,
+            "ParasDisputes",
+            &["DisputeInitiated", "DisputeConcluded"],
+        );
+    }
+
+    #[test]
+    fn paseo_defaults_match_legacy_values() {
+        let pas = load_paseo();
+        assert_eq!(
+            pas.genesis_hash,
+            "77afd6190f1554ad45fd0d31aee62aacc33c6db0ea801129acb813f913e0764f"
+        );
+        assert_eq!(pas.default_url, "wss://paseo-rpc.polkadot.io:443");
+    }
 }
-
-

@@ -116,10 +116,8 @@ mod shared_tests {
     fn key_json_round_trip_u32_types() {
         for key in [
             Key::AccountIndex(1),
-            Key::AuctionIndex(2),
             Key::BountyIndex(3),
             Key::EraIndex(4),
-            Key::ParaId(1000),
             Key::PoolId(5),
             Key::ProposalIndex(6),
             Key::RefIndex(7),
@@ -137,7 +135,6 @@ mod shared_tests {
     fn key_json_round_trip_bytes32_types() {
         let b = Bytes32([0xFF; 32]);
         for key in [
-            Key::CandidateHash(b),
             Key::MessageId(b),
             Key::PreimageHash(b),
             Key::ProposalHash(b),
@@ -156,6 +153,28 @@ mod shared_tests {
         assert!(json.contains("Variant"));
         let k2: Key = serde_json::from_str(&json).unwrap();
         assert_eq!(k, k2);
+    }
+
+    #[test]
+    fn key_json_round_trip_custom_types() {
+        let bytes = Key::Custom(CustomKey {
+            name: "item_id".into(),
+            value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
+        });
+        let string = Key::Custom(CustomKey {
+            name: "slug".into(),
+            value: CustomValue::String("hello-world".into()),
+        });
+        let big = Key::Custom(CustomKey {
+            name: "revision".into(),
+            value: CustomValue::U128(U128Text(12345678901234567890u128)),
+        });
+
+        for key in [bytes, string, big] {
+            let json = serde_json::to_string(&key).unwrap();
+            let k2: Key = serde_json::from_str(&json).unwrap();
+            assert_eq!(key, k2);
+        }
     }
 
     #[test]
@@ -180,9 +199,26 @@ mod shared_tests {
             Key::SessionIndex(18),
             Key::TipHash(Bytes32([0x05; 32])),
             Key::SpendIndex(19),
-            Key::AuctionIndex(20),
-            Key::CandidateHash(Bytes32([0x06; 32])),
-            Key::ParaId(21),
+            Key::Custom(CustomKey {
+                name: "auction_index".into(),
+                value: CustomValue::U32(20),
+            }),
+            Key::Custom(CustomKey {
+                name: "candidate_hash".into(),
+                value: CustomValue::Bytes32(Bytes32([0x06; 32])),
+            }),
+            Key::Custom(CustomKey {
+                name: "para_id".into(),
+                value: CustomValue::U32(21),
+            }),
+            Key::Custom(CustomKey {
+                name: "item_id".into(),
+                value: CustomValue::Bytes32(Bytes32([0x07; 32])),
+            }),
+            Key::Custom(CustomKey {
+                name: "revision_id".into(),
+                value: CustomValue::U128(U128Text(22)),
+            }),
         ];
 
         for (i, key) in keys.into_iter().enumerate() {
@@ -209,13 +245,18 @@ mod shared_tests {
     }
 
     #[test]
-    fn request_get_events_para_id() {
-        let json = r#"{"type":"GetEvents","key":{"type":"ParaId","value":2000}}"#;
+    fn request_get_events_custom_u32() {
+        let json = r#"{"type":"GetEvents","key":{"type":"Custom","value":{"name":"para_id","kind":"u32","value":2000}}}"#;
         let msg: RequestMessage = serde_json::from_str(json).unwrap();
         match msg {
             RequestMessage::GetEvents {
-                key: Key::ParaId(id),
+                key:
+                    Key::Custom(CustomKey {
+                        name,
+                        value: CustomValue::U32(id),
+                    }),
             } => {
+                assert_eq!(name, "para_id");
                 assert_eq!(id, 2000)
             }
             _ => panic!("wrong variant"),

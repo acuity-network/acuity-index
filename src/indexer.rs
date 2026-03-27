@@ -19,8 +19,11 @@ use tracing::{debug, error, info};
 use zerocopy::{BigEndian, FromBytes, IntoBytes, byteorder::U32};
 
 use crate::{
-    config::{ChainConfig, KeyTypeName, ParamConfig},
-    pallets::{extract_bytes32, extract_u32, get_field, index_sdk_pallet},
+    config::{ChainConfig, KeyTypeName, ParamKey, ResolvedParamConfig},
+    pallets::{
+        extract_bool, extract_bytes32, extract_string, extract_u128, extract_u32, extract_u64,
+        get_field, index_sdk_pallet,
+    },
     shared::*,
     websockets::process_msg_status,
 };
@@ -38,7 +41,7 @@ pub struct Indexer {
     /// sdk_pallets: set of pallet names using built-in SDK rules.
     sdk_pallets: std::collections::HashSet<String>,
     /// custom_index: pallet → event → params mapping from TOML.
-    custom_index: HashMap<String, HashMap<String, Vec<ParamConfig>>>,
+    custom_index: HashMap<String, HashMap<String, Vec<ResolvedParamConfig>>>,
 }
 
 impl Indexer {
@@ -59,7 +62,9 @@ impl Indexer {
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index(),
+            custom_index: config
+                .build_custom_index()
+                .expect("validated chain config"),
         }
     }
 
@@ -74,7 +79,9 @@ impl Indexer {
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index(),
+            custom_index: config
+                .build_custom_index()
+                .expect("validated chain config"),
         }
     }
 
@@ -203,7 +210,7 @@ impl Indexer {
         vec![]
     }
 
-    fn keys_from_params(&self, params: &[ParamConfig], fields: &Composite<()>) -> Vec<Key> {
+    fn keys_from_params(&self, params: &[ResolvedParamConfig], fields: &Composite<()>) -> Vec<Key> {
         let mut keys = Vec::new();
         for param in params {
             let value = match get_field(fields, &param.field) {
@@ -297,18 +304,13 @@ impl Indexer {
 
 // ─── scale_value → Key conversion ────────────────────────────────────────────
 
-fn value_to_key(value: &Value<()>, key_type: &KeyTypeName) -> Option<Key> {
+fn value_to_builtin_key(value: &Value<()>, key_type: &KeyTypeName) -> Option<Key> {
     match key_type {
         KeyTypeName::AccountId => extract_bytes32(value).map(|b| Key::AccountId(Bytes32(b))),
         KeyTypeName::AccountIndex => extract_u32(value).map(Key::AccountIndex),
-        KeyTypeName::AuctionIndex => extract_u32(value).map(Key::AuctionIndex),
         KeyTypeName::BountyIndex => extract_u32(value).map(Key::BountyIndex),
-        KeyTypeName::CandidateHash => {
-            extract_bytes32(value).map(|b| Key::CandidateHash(Bytes32(b)))
-        }
         KeyTypeName::EraIndex => extract_u32(value).map(Key::EraIndex),
         KeyTypeName::MessageId => extract_bytes32(value).map(|b| Key::MessageId(Bytes32(b))),
-        KeyTypeName::ParaId => extract_u32(value).map(Key::ParaId),
         KeyTypeName::PoolId => extract_u32(value).map(Key::PoolId),
         KeyTypeName::PreimageHash => extract_bytes32(value).map(|b| Key::PreimageHash(Bytes32(b))),
         KeyTypeName::ProposalHash => extract_bytes32(value).map(|b| Key::ProposalHash(Bytes32(b))),
@@ -318,6 +320,33 @@ fn value_to_key(value: &Value<()>, key_type: &KeyTypeName) -> Option<Key> {
         KeyTypeName::SessionIndex => extract_u32(value).map(Key::SessionIndex),
         KeyTypeName::SpendIndex => extract_u32(value).map(Key::SpendIndex),
         KeyTypeName::TipHash => extract_bytes32(value).map(|b| Key::TipHash(Bytes32(b))),
+    }
+}
+
+fn value_to_custom_key(value: &Value<()>, name: &str, kind: &crate::config::ScalarKind) -> Option<Key> {
+    let value = match kind {
+        crate::config::ScalarKind::Bytes32 => {
+            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b)))
+        }
+        crate::config::ScalarKind::U32 => extract_u32(value).map(CustomValue::U32),
+        crate::config::ScalarKind::U64 => extract_u64(value).map(|v| CustomValue::U64(U64Text(v))),
+        crate::config::ScalarKind::U128 => {
+            extract_u128(value).map(|v| CustomValue::U128(U128Text(v)))
+        }
+        crate::config::ScalarKind::String => extract_string(value).map(CustomValue::String),
+        crate::config::ScalarKind::Bool => extract_bool(value).map(CustomValue::Bool),
+    }?;
+
+    Some(Key::Custom(CustomKey {
+        name: name.to_owned(),
+        value,
+    }))
+}
+
+fn value_to_key(value: &Value<()>, key: &ParamKey) -> Option<Key> {
+    match key {
+        ParamKey::BuiltIn(key_type) => value_to_builtin_key(value, key_type),
+        ParamKey::Custom { name, kind } => value_to_custom_key(value, name, kind),
     }
 }
 

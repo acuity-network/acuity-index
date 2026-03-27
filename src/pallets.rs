@@ -7,6 +7,37 @@ use scale_value::{Composite, Value, ValueDef};
 
 use crate::shared::{Bytes32, Key};
 
+pub const SUPPORTED_SDK_PALLETS: &[&str] = &[
+    "System",
+    "Balances",
+    "Staking",
+    "Session",
+    "Indices",
+    "Preimage",
+    "Treasury",
+    "Bounties",
+    "ChildBounties",
+    "Vesting",
+    "Proxy",
+    "Multisig",
+    "ElectionProviderMultiPhase",
+    "VoterList",
+    "NominationPools",
+    "FastUnstake",
+    "ConvictionVoting",
+    "Referenda",
+    "TransactionPayment",
+    "DelegatedStaking",
+    "Identity",
+    "Recovery",
+    "Sudo",
+    "StateTrieMigration",
+];
+
+pub fn is_supported_sdk_pallet(pallet_name: &str) -> bool {
+    SUPPORTED_SDK_PALLETS.contains(&pallet_name)
+}
+
 // ─── Value extraction helpers ─────────────────────────────────────────────────
 
 /// Try to extract a `u32` from a scale_value `Value`.
@@ -27,6 +58,72 @@ pub fn extract_u32(v: &Value<()>) -> Option<u32> {
         }
         ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
             extract_u32(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+pub fn extract_u64(v: &Value<()>) -> Option<u64> {
+    match &v.value {
+        ValueDef::Primitive(p) => {
+            use scale_value::Primitive;
+            match p {
+                Primitive::U128(n) => u64::try_from(*n).ok(),
+                Primitive::I128(n) => u64::try_from(*n).ok(),
+                _ => None,
+            }
+        }
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_u64(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_u64(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+pub fn extract_u128(v: &Value<()>) -> Option<u128> {
+    match &v.value {
+        ValueDef::Primitive(p) => {
+            use scale_value::Primitive;
+            match p {
+                Primitive::U128(n) => Some(*n),
+                Primitive::I128(n) => u128::try_from(*n).ok(),
+                _ => None,
+            }
+        }
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_u128(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_u128(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+pub fn extract_string(v: &Value<()>) -> Option<String> {
+    match &v.value {
+        ValueDef::Primitive(scale_value::Primitive::String(s)) => Some(s.clone()),
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_string(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_string(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+pub fn extract_bool(v: &Value<()>) -> Option<bool> {
+    match &v.value {
+        ValueDef::Primitive(scale_value::Primitive::Bool(value)) => Some(*value),
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_bool(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_bool(&fields[0].1)
         }
         _ => None,
     }

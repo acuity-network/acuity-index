@@ -1,20 +1,21 @@
 //! TOML chain configuration parsing.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 /// Key type identifiers used in TOML configs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyTypeName {
     AccountId,
     AccountIndex,
-    AuctionIndex,
     BountyIndex,
-    CandidateHash,
     EraIndex,
     MessageId,
-    ParaId,
     PoolId,
     PreimageHash,
     ProposalHash,
@@ -26,58 +27,141 @@ pub enum KeyTypeName {
     TipHash,
 }
 
+impl KeyTypeName {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "account_id" => Self::AccountId,
+            "account_index" => Self::AccountIndex,
+            "bounty_index" => Self::BountyIndex,
+            "era_index" => Self::EraIndex,
+            "message_id" => Self::MessageId,
+            "pool_id" => Self::PoolId,
+            "preimage_hash" => Self::PreimageHash,
+            "proposal_hash" => Self::ProposalHash,
+            "proposal_index" => Self::ProposalIndex,
+            "ref_index" => Self::RefIndex,
+            "registrar_index" => Self::RegistrarIndex,
+            "session_index" => Self::SessionIndex,
+            "spend_index" => Self::SpendIndex,
+            "tip_hash" => Self::TipHash,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScalarKind {
+    Bytes32,
+    U32,
+    U64,
+    U128,
+    String,
+    Bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParamKey {
+    BuiltIn(KeyTypeName),
+    Custom { name: String, kind: ScalarKind },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedParamConfig {
+    pub field: String,
+    pub key: ParamKey,
+}
+
+pub type CustomIndex = HashMap<String, HashMap<String, Vec<ResolvedParamConfig>>>;
+
 /// A single field→key mapping within an event.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ParamConfig {
     /// Field name (string) or positional index (stringified number, e.g. "0").
     pub field: String,
-    pub key: KeyTypeName,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ScalarKind>,
+}
+
+impl ParamConfig {
+    pub fn resolve(&self) -> Result<ResolvedParamConfig, String> {
+        let key = match &self.kind {
+            Some(kind) => ParamKey::Custom {
+                name: self.key.clone(),
+                kind: kind.clone(),
+            },
+            None => match KeyTypeName::parse(&self.key) {
+                Some(key) => ParamKey::BuiltIn(key),
+                None => {
+                    return Err(format!(
+                        "unknown key '{}' for field '{}' (set kind for custom keys)",
+                        self.key, self.field
+                    ));
+                }
+            },
+        };
+
+        Ok(ResolvedParamConfig {
+            field: self.field.clone(),
+            key,
+        })
+    }
 }
 
 /// Configuration for a single event variant.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EventConfig {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<ParamConfig>,
 }
 
 /// Configuration for a single pallet.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PalletConfig {
     pub name: String,
     /// If true, use built-in Polkadot SDK indexing rules for this pallet.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub sdk: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<EventConfig>,
 }
 
 /// Top-level chain configuration loaded from a TOML file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChainConfig {
     pub name: String,
     pub genesis_hash: String,
     pub default_url: String,
     pub versions: Vec<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pallets: Vec<PalletConfig>,
 }
 
 impl ChainConfig {
     /// Build a fast lookup: pallet_name → event_name → Vec<ParamConfig>.
-    pub fn build_custom_index(&self) -> HashMap<String, HashMap<String, Vec<ParamConfig>>> {
-        let mut map: HashMap<String, HashMap<String, Vec<ParamConfig>>> = HashMap::new();
+    pub fn build_custom_index(&self) -> Result<CustomIndex, String> {
+        let mut map: CustomIndex = HashMap::new();
         for pallet in &self.pallets {
             if pallet.sdk {
                 continue;
             }
             let event_map = map.entry(pallet.name.clone()).or_default();
             for event in &pallet.events {
-                event_map.insert(event.name.clone(), event.params.clone());
+                let mut params = Vec::with_capacity(event.params.len());
+                for param in &event.params {
+                    params.push(param.resolve()?);
+                }
+                event_map.insert(event.name.clone(), params);
             }
         }
-        map
+        Ok(map)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let _ = self.build_custom_index()?;
+        Ok(())
     }
 
     /// Returns the set of pallet names that use built-in SDK indexing.

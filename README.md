@@ -49,6 +49,7 @@ acuity-index [OPTIONS]
 |---|---|---|
 | `-c, --chain <CHAIN>` | `polkadot` | Chain to index (`polkadot`, `kusama`, `westend`, `paseo`) |
 | `--chain-config <PATH>` | — | Path to a custom chain TOML config (overrides `--chain`) |
+| `--generate-chain-config <PATH>` | — | Inspect live metadata and write a starter TOML config |
 | `-d, --db-path <PATH>` | `~/.local/share/acuity-index/<chain>/db` | Database directory |
 | `--db-mode <MODE>` | `low-space` | `low-space` or `high-throughput` |
 | `--db-cache-capacity <SIZE>` | `1024.00 MiB` | Maximum sled page-cache size |
@@ -80,6 +81,12 @@ Use a custom chain config:
 acuity-index --chain-config ./chains/mychain.toml --url wss://mynode:443
 ```
 
+Generate a starter config from a live node:
+
+```bash
+acuity-index --url wss://mynode:443 --generate-chain-config ./chains/mychain.toml
+```
+
 ## Chain Configuration
 
 Each chain is described by a TOML file. Built-in configs are embedded at
@@ -96,7 +103,7 @@ versions = [0]
 name = "Balances"
 sdk = true
 
-# Custom pallet — explicit field → key mappings
+# Custom pallet — built-in and generic scalar mappings
 [[pallets]]
 name = "MyPallet"
 
@@ -105,21 +112,23 @@ name = "SomeEvent"
 
 [[pallets.events.params]]
 field = "who"       # field name, or "0" for positional
-key = "account_id"  # key type (see below)
+key = "account_id"  # built-in key
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"     # custom query key name
+kind = "bytes32"    # generic scalar storage kind
 ```
 
-### Available Key Types
+### Built-in Key Types
 
 | Key type | Description |
 |---|---|
 | `account_id` | 32-byte account identifier |
 | `account_index` | u32 account index |
-| `auction_index` | u32 auction index |
 | `bounty_index` | u32 bounty/child-bounty index |
-| `candidate_hash` | 32-byte candidate hash |
 | `era_index` | u32 era index |
 | `message_id` | 32-byte message identifier |
-| `para_id` | u32 parachain identifier |
 | `pool_id` | u32 nomination pool identifier |
 | `preimage_hash` | 32-byte preimage hash |
 | `proposal_hash` | 32-byte proposal hash |
@@ -129,6 +138,34 @@ key = "account_id"  # key type (see below)
 | `session_index` | u32 session index |
 | `spend_index` | u32 treasury spend index |
 | `tip_hash` | 32-byte tip hash |
+
+### Generic Custom Keys
+
+Custom pallet fields no longer need Rust enum variants or dedicated sled trees.
+Use any key name with one of these scalar kinds:
+
+| Kind | Stored/query value |
+|---|---|
+| `bytes32` | 32-byte hex value |
+| `u32` | 32-bit unsigned integer |
+| `u64` | 64-bit unsigned integer |
+| `u128` | 128-bit unsigned integer |
+| `string` | UTF-8 string |
+| `bool` | boolean |
+
+Example:
+
+```toml
+[[pallets.events.params]]
+field = "para_id"
+key = "para_id"
+kind = "u32"
+
+[[pallets.events.params]]
+field = "candidate_hash"
+key = "candidate_hash"
+kind = "bytes32"
+```
 
 ## WebSocket API
 
@@ -150,7 +187,8 @@ Connect to `ws://localhost:8172` and send/receive JSON messages.
 {"type":"UnsubscribeStatus"}
 
 {"type":"SubscribeEvents","key":{"type":"AccountId","value":"0xabc..."}}
-{"type":"UnsubscribeEvents","key":{"type":"AccountId","value":"0xabc..."}}
+{"type":"SubscribeEvents","key":{"type":"Custom","value":{"name":"item_id","kind":"bytes32","value":"0xabc..."}}}
+{"type":"UnsubscribeEvents","key":{"type":"Custom","value":{"name":"item_id","kind":"bytes32","value":"0xabc..."}}}
 ```
 
 Subscribers receive push messages whenever a matching event is indexed.
@@ -161,9 +199,11 @@ Keys are JSON objects with a `type` discriminant:
 
 ```json
 {"type":"AccountId",    "value":"0x1234..."}
-{"type":"ParaId",       "value":1000}
 {"type":"EraIndex",     "value":1500}
 {"type":"Variant",      "value":[0, 3]}
+{"type":"Custom",       "value":{"name":"para_id","kind":"u32","value":1000}}
+{"type":"Custom",       "value":{"name":"published","kind":"bool","value":true}}
+{"type":"Custom",       "value":{"name":"revision","kind":"u128","value":"42"}}
 ```
 
 ## Architecture

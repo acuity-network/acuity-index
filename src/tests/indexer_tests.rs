@@ -40,8 +40,54 @@ mod indexer_tests {
         Composite::Unnamed(fields)
     }
 
+    fn custom_u32_key(name: &str, value: u32) -> Key {
+        Key::Custom(CustomKey {
+            name: name.to_owned(),
+            value: CustomValue::U32(value),
+        })
+    }
+
+    fn custom_bytes32_key(name: &str, value: [u8; 32]) -> Key {
+        Key::Custom(CustomKey {
+            name: name.to_owned(),
+            value: CustomValue::Bytes32(Bytes32(value)),
+        })
+    }
+
     fn test_config() -> ChainConfig {
         toml::from_str(crate::config::POLKADOT_TOML).unwrap()
+    }
+
+    fn acuity_config() -> ChainConfig {
+        toml::from_str(
+            r#"
+name = "acuity-runtime"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[[pallets]]
+name = "Content"
+
+[[pallets.events]]
+name = "PublishRevision"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "revision_id"
+key = "revision_id"
+kind = "u32"
+"#,
+        )
+        .unwrap()
     }
 
     fn temp_trees() -> Trees {
@@ -86,7 +132,7 @@ mod indexer_tests {
 
         let fields = unnamed(vec![u128_val(2000)]);
         let keys = indexer.keys_for_event("Paras", "CurrentCodeUpdated", &fields);
-        assert_eq!(keys, vec![Key::ParaId(2000)]);
+        assert_eq!(keys, vec![custom_u32_key("para_id", 2000)]);
     }
 
     #[test]
@@ -102,8 +148,28 @@ mod indexer_tests {
         ]);
         let keys = indexer.keys_for_event("Registrar", "Registered", &fields);
         assert_eq!(keys.len(), 2);
-        assert!(keys.contains(&Key::ParaId(1000)));
+        assert!(keys.contains(&custom_u32_key("para_id", 1000)));
         assert!(keys.contains(&Key::AccountId(Bytes32(manager))));
+    }
+
+    #[test]
+    fn keys_for_event_custom_pallet_item_and_revision_keys() {
+        let trees = temp_trees();
+        let config = acuity_config();
+        let indexer = Indexer::new_test(trees, &config);
+
+        let owner = [0xABu8; 32];
+        let item_id = [0xCDu8; 32];
+        let fields = named(vec![
+            ("item_id", bytes32_val(item_id)),
+            ("owner", bytes32_val(owner)),
+            ("revision_id", u128_val(7)),
+        ]);
+        let keys = indexer.keys_for_event("Content", "PublishRevision", &fields);
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains(&custom_bytes32_key("item_id", item_id)));
+        assert!(keys.contains(&Key::AccountId(Bytes32(owner))));
+        assert!(keys.contains(&custom_u32_key("revision_id", 7)));
     }
 
     // ─── keys_for_event: unknown pallet/event ─────────────────────────────
@@ -151,18 +217,51 @@ mod indexer_tests {
     }
 
     #[test]
-    fn index_and_retrieve_para_id() {
+    fn index_and_retrieve_custom_u32_key() {
         let trees = temp_trees();
         let config = test_config();
         let indexer = Indexer::new_test(trees.clone(), &config);
 
-        let key = Key::ParaId(2000);
+        let key = custom_u32_key("para_id", 2000);
         indexer.index_event_key(key.clone(), 50, 0).unwrap();
 
         let events = key.get_events(&trees);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].block_number, 50);
         assert_eq!(events[0].event_index, 0);
+    }
+
+    #[test]
+    fn index_and_retrieve_custom_bytes32_key() {
+        let trees = temp_trees();
+        let config = test_config();
+        let indexer = Indexer::new_test(trees.clone(), &config);
+
+        let key = custom_bytes32_key("item_id", [0x21; 32]);
+        indexer.index_event_key(key.clone(), 75, 2).unwrap();
+
+        let events = key.get_events(&trees);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].block_number, 75);
+        assert_eq!(events[0].event_index, 2);
+    }
+
+    #[test]
+    fn index_and_retrieve_custom_u128_key() {
+        let trees = temp_trees();
+        let config = test_config();
+        let indexer = Indexer::new_test(trees.clone(), &config);
+
+        let key = Key::Custom(CustomKey {
+            name: "revision_id".into(),
+            value: CustomValue::U128(U128Text(42)),
+        });
+        indexer.index_event_key(key.clone(), 88, 1).unwrap();
+
+        let events = key.get_events(&trees);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].block_number, 88);
+        assert_eq!(events[0].event_index, 1);
     }
 
     #[test]

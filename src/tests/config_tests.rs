@@ -104,7 +104,7 @@ mod config_tests {
     #[test]
     fn build_custom_index_excludes_sdk() {
         let cfg = load_polkadot();
-        let idx = cfg.build_custom_index();
+        let idx = cfg.build_custom_index().unwrap();
         // SDK pallets must not appear in the custom index.
         assert!(!idx.contains_key("System"));
         assert!(!idx.contains_key("Balances"));
@@ -116,39 +116,54 @@ mod config_tests {
     #[test]
     fn build_custom_index_event_params() {
         let cfg = load_polkadot();
-        let idx = cfg.build_custom_index();
+        let idx = cfg.build_custom_index().unwrap();
 
         let claims = idx.get("Claims").unwrap();
         let claimed_params = claims.get("Claimed").unwrap();
         assert_eq!(claimed_params.len(), 1);
         assert_eq!(claimed_params[0].field, "who");
-        assert_eq!(claimed_params[0].key, KeyTypeName::AccountId);
+        assert_eq!(
+            claimed_params[0].key,
+            ParamKey::BuiltIn(KeyTypeName::AccountId)
+        );
     }
 
     #[test]
     fn build_custom_index_multi_param_event() {
         let cfg = load_polkadot();
-        let idx = cfg.build_custom_index();
+        let idx = cfg.build_custom_index().unwrap();
 
         let registrar = idx.get("Registrar").unwrap();
         let registered = registrar.get("Registered").unwrap();
         assert_eq!(registered.len(), 2);
         assert_eq!(registered[0].field, "para_id");
-        assert_eq!(registered[0].key, KeyTypeName::ParaId);
+        assert_eq!(
+            registered[0].key,
+            ParamKey::Custom {
+                name: "para_id".into(),
+                kind: ScalarKind::U32,
+            }
+        );
         assert_eq!(registered[1].field, "manager");
-        assert_eq!(registered[1].key, KeyTypeName::AccountId);
+        assert_eq!(registered[1].key, ParamKey::BuiltIn(KeyTypeName::AccountId));
     }
 
     #[test]
     fn build_custom_index_positional_field() {
         let cfg = load_polkadot();
-        let idx = cfg.build_custom_index();
+        let idx = cfg.build_custom_index().unwrap();
 
         let paras = idx.get("Paras").unwrap();
         let code_updated = paras.get("CurrentCodeUpdated").unwrap();
         assert_eq!(code_updated.len(), 1);
         assert_eq!(code_updated[0].field, "0");
-        assert_eq!(code_updated[0].key, KeyTypeName::ParaId);
+        assert_eq!(
+            code_updated[0].key,
+            ParamKey::Custom {
+                name: "para_id".into(),
+                kind: ScalarKind::U32,
+            }
+        );
     }
 
     #[test]
@@ -176,10 +191,76 @@ key = "pool_id"
         assert_eq!(cfg.name, "test");
         assert_eq!(cfg.sdk_pallets().len(), 1);
         assert!(cfg.sdk_pallets().contains("Foo"));
-        let idx = cfg.build_custom_index();
+        let idx = cfg.build_custom_index().unwrap();
         let bar = idx.get("Bar").unwrap();
         let baz = bar.get("Baz").unwrap();
-        assert_eq!(baz[0].key, KeyTypeName::PoolId);
+        assert_eq!(baz[0].key, ParamKey::BuiltIn(KeyTypeName::PoolId));
+    }
+
+    #[test]
+    fn custom_toml_supports_generic_scalar_keys() {
+        let toml_str = r#"
+name = "acuity"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[[pallets]]
+name = "Content"
+
+[[pallets.events]]
+name = "PublishRevision"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events.params]]
+field = "revision_id"
+key = "revision_id"
+kind = "u32"
+"#;
+        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let idx = cfg.build_custom_index().unwrap();
+        let content = idx.get("Content").unwrap();
+        let publish_revision = content.get("PublishRevision").unwrap();
+        assert_eq!(
+            publish_revision[0].key,
+            ParamKey::Custom {
+                name: "item_id".into(),
+                kind: ScalarKind::Bytes32,
+            }
+        );
+        assert_eq!(
+            publish_revision[1].key,
+            ParamKey::Custom {
+                name: "revision_id".into(),
+                kind: ScalarKind::U32,
+            }
+        );
+    }
+
+    #[test]
+    fn custom_toml_rejects_unknown_key_without_kind() {
+        let toml_str = r#"
+name = "acuity"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[[pallets]]
+name = "Content"
+
+[[pallets.events]]
+name = "PublishRevision"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+"#;
+        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.build_custom_index().is_err());
     }
 
     #[test]

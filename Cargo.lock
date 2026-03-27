@@ -15,6 +15,7 @@ dependencies = [
  "hex",
  "home",
  "num-format",
+ "scale-info",
  "scale-value",
  "serde",
  "serde_json",

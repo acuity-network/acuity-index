@@ -69,7 +69,10 @@ mod websocket_tests {
         let trees = temp_trees();
 
         // Insert an index entry.
-        let key = Key::ParaId(1000);
+        let key = Key::Custom(CustomKey {
+            name: "para_id".into(),
+            value: CustomValue::U32(1000),
+        });
         key.write_db_key(&trees, 50, 3).unwrap();
 
         // Insert block events JSON.
@@ -101,9 +104,15 @@ mod websocket_tests {
     }
 
     #[test]
-    fn get_events_u32_empty_tree() {
+    fn get_events_custom_empty_tree() {
         let trees = temp_trees();
-        let events = get_events_u32(&trees.chain.para_id, 999);
+        let events = get_events_custom(
+            &trees.custom,
+            &CustomKey {
+                name: "para_id".into(),
+                value: CustomValue::U32(999),
+            },
+        );
         assert!(events.is_empty());
     }
 

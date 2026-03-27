@@ -22,12 +22,14 @@ use tracing::{error, info};
 use tracing_log::AsTrace;
 
 mod config;
+mod config_gen;
 mod indexer;
 mod pallets;
 mod shared;
 mod websockets;
 
 use config::{ChainConfig, KUSAMA_TOML, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
+use config_gen::write_generated_chain_config;
 use indexer::run_indexer;
 use shared::Trees;
 use websockets::websockets_listen;
@@ -85,6 +87,9 @@ pub struct Args {
     /// Path to a custom chain TOML config (overrides --chain)
     #[arg(long)]
     pub chain_config: Option<String>,
+    /// Generate a starter chain TOML config from live metadata and write it to this path
+    #[arg(long)]
+    pub generate_chain_config: Option<String>,
     /// Database path
     #[arg(short, long)]
     pub db_path: Option<String>,
@@ -116,16 +121,8 @@ pub struct Args {
     verbose: Verbosity<InfoLevel>,
 }
 
-// ─── Entry point ──────────────────────────────────────────────────────────────
-
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
-    let log_level = args.verbose.log_level_filter().as_trace();
-    tracing_subscriber::fmt().with_max_level(log_level).init();
-
-    // Load chain config.
-    let chain_config: ChainConfig = if let Some(path) = &args.chain_config {
+fn load_chain_config(args: &Args) -> ChainConfig {
+    let config: ChainConfig = if let Some(path) = &args.chain_config {
         let toml_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
             error!("Cannot read chain config {path}: {e}");
             exit(1);
@@ -143,6 +140,45 @@ async fn main() {
         };
         toml::from_str(toml_str).expect("Built-in TOML is valid")
     };
+
+    config.validate().unwrap_or_else(|e| {
+        error!("Invalid chain config: {e}");
+        exit(1);
+    });
+
+    config
+}
+
+// ─── Entry point ──────────────────────────────────────────────────────────────
+
+#[tokio::main]
+async fn main() {
+    let args = Args::parse();
+    let log_level = args.verbose.log_level_filter().as_trace();
+    tracing_subscriber::fmt().with_max_level(log_level).init();
+
+    let chain_config = load_chain_config(&args);
+
+    if let Some(output_path) = &args.generate_chain_config {
+        let url = args
+            .url
+            .clone()
+            .unwrap_or_else(|| chain_config.default_url.clone());
+        match write_generated_chain_config(&url, PathBuf::from(output_path).as_path()).await {
+            Ok(config) => {
+                info!(
+                    "Generated chain config for {} at {}",
+                    config.name,
+                    output_path
+                );
+                exit(0);
+            }
+            Err(err) => {
+                error!("Failed to generate chain config: {err}");
+                exit(1);
+            }
+        }
+    }
 
     info!("Indexing chain: {}", chain_config.name);
 

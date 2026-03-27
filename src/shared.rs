@@ -1,13 +1,14 @@
 //! Shared data types for acuity-index.
 
+use crate::config::ScalarKind;
 use serde::{Deserialize, Serialize};
 use sled::{Db, Tree};
 use std::fmt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite;
 use zerocopy::{
-    BigEndian, IntoBytes,
     byteorder::{U16, U32},
+    BigEndian, IntoBytes,
 };
 use zerocopy_derive::*;
 
@@ -37,8 +38,14 @@ pub enum IndexError {
     EventsError(#[from] subxt::error::EventsError),
     #[error("at-block error")]
     OnlineClientAtBlockError(#[from] subxt::error::OnlineClientAtBlockError),
+    #[error("online client error")]
+    OnlineClientError(#[from] subxt::error::OnlineClientError),
     #[error("JSON error")]
     Json(#[from] serde_json::Error),
+    #[error("I/O error")]
+    Io(#[from] std::io::Error),
+    #[error("TOML serialization error")]
+    TomlSer(#[from] toml::ser::Error),
 }
 
 // ─── On-disk key formats ──────────────────────────────────────────────────────
@@ -128,6 +135,180 @@ impl<'de> Deserialize<'de> for Bytes32 {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct U64Text(pub u64);
+
+impl Serialize for U64Text {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for U64Text {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = U64Text;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a u64 string or integer")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(U64Text(value))
+            }
+
+            fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(U64Text(u64::try_from(value).map_err(E::custom)?))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(U64Text(value.parse::<u64>().map_err(E::custom)?))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct U128Text(pub u128);
+
+impl Serialize for U128Text {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for U128Text {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = U128Text;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a u128 string or integer")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(U128Text(value.into()))
+            }
+
+            fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(U128Text(value))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(U128Text(value.parse::<u128>().map_err(E::custom)?))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum CustomValue {
+    Bytes32(Bytes32),
+    U32(u32),
+    U64(U64Text),
+    U128(U128Text),
+    String(String),
+    Bool(bool),
+}
+
+impl CustomValue {
+    pub fn kind(&self) -> ScalarKind {
+        match self {
+            CustomValue::Bytes32(_) => ScalarKind::Bytes32,
+            CustomValue::U32(_) => ScalarKind::U32,
+            CustomValue::U64(_) => ScalarKind::U64,
+            CustomValue::U128(_) => ScalarKind::U128,
+            CustomValue::String(_) => ScalarKind::String,
+            CustomValue::Bool(_) => ScalarKind::Bool,
+        }
+    }
+
+    fn tag(&self) -> u8 {
+        match self.kind() {
+            ScalarKind::Bytes32 => 0,
+            ScalarKind::U32 => 1,
+            ScalarKind::U64 => 2,
+            ScalarKind::U128 => 3,
+            ScalarKind::String => 4,
+            ScalarKind::Bool => 5,
+        }
+    }
+
+    fn db_bytes(&self) -> Vec<u8> {
+        match self {
+            CustomValue::Bytes32(v) => v.0.to_vec(),
+            CustomValue::U32(v) => v.to_be_bytes().to_vec(),
+            CustomValue::U64(v) => v.0.to_be_bytes().to_vec(),
+            CustomValue::U128(v) => v.0.to_be_bytes().to_vec(),
+            CustomValue::String(v) => v.as_bytes().to_vec(),
+            CustomValue::Bool(v) => vec![u8::from(*v)],
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct CustomKey {
+    pub name: String,
+    #[serde(flatten)]
+    pub value: CustomValue,
+}
+
+impl CustomKey {
+    pub(crate) fn db_prefix(&self) -> Vec<u8> {
+        let name_bytes = self.name.as_bytes();
+        let name_len = u16::try_from(name_bytes.len()).expect("custom key name too long");
+        let value_bytes = self.value.db_bytes();
+        let value_len = u32::try_from(value_bytes.len()).expect("custom key value too large");
+
+        let mut prefix = Vec::with_capacity(2 + name_bytes.len() + 1 + 4 + value_bytes.len());
+        prefix.extend_from_slice(&name_len.to_be_bytes());
+        prefix.extend_from_slice(name_bytes);
+        prefix.push(self.value.tag());
+        prefix.extend_from_slice(&value_len.to_be_bytes());
+        prefix.extend_from_slice(&value_bytes);
+        prefix
+    }
+}
+
 // ─── Database trees ───────────────────────────────────────────────────────────
 
 /// Substrate built-in index trees.
@@ -188,31 +369,6 @@ impl SubstrateTrees {
     }
 }
 
-/// Chain-specific index trees (Polkadot/Kusama extras).
-#[derive(Clone)]
-pub struct ChainTrees {
-    pub auction_index: Tree,
-    pub candidate_hash: Tree,
-    pub para_id: Tree,
-}
-
-impl ChainTrees {
-    pub fn open(db: &Db) -> Result<Self, sled::Error> {
-        Ok(ChainTrees {
-            auction_index: db.open_tree(b"auction_index")?,
-            candidate_hash: db.open_tree(b"candidate_hash")?,
-            para_id: db.open_tree(b"para_id")?,
-        })
-    }
-
-    pub fn flush(&self) -> Result<(), sled::Error> {
-        self.auction_index.flush()?;
-        self.candidate_hash.flush()?;
-        self.para_id.flush()?;
-        Ok(())
-    }
-}
-
 /// All database trees.
 #[derive(Clone)]
 pub struct Trees {
@@ -220,7 +376,7 @@ pub struct Trees {
     pub span: Tree,
     pub variant: Tree,
     pub substrate: SubstrateTrees,
-    pub chain: ChainTrees,
+    pub custom: Tree,
     /// Stores JSON-encoded decoded event fields keyed by block number.
     pub block_events: Tree,
 }
@@ -232,7 +388,7 @@ impl Trees {
             span: db.open_tree(b"span")?,
             variant: db.open_tree(b"variant")?,
             substrate: SubstrateTrees::open(&db)?,
-            chain: ChainTrees::open(&db)?,
+            custom: db.open_tree(b"custom")?,
             block_events: db.open_tree(b"block_events")?,
             root: db,
         })
@@ -243,7 +399,7 @@ impl Trees {
         self.span.flush()?;
         self.variant.flush()?;
         self.substrate.flush()?;
-        self.chain.flush()?;
+        self.custom.flush()?;
         self.block_events.flush()?;
         Ok(())
     }
@@ -271,10 +427,8 @@ pub enum Key {
     SessionIndex(u32),
     TipHash(Bytes32),
     SpendIndex(u32),
-    // Chain-specific
-    AuctionIndex(u32),
-    CandidateHash(Bytes32),
-    ParaId(u32),
+    // Config-defined custom keys
+    Custom(CustomKey),
 }
 
 impl Key {
@@ -350,19 +504,18 @@ impl Key {
             Key::SpendIndex(v) => {
                 insert_u32!(trees.substrate.spend_index, v)
             }
-            Key::AuctionIndex(v) => {
-                insert_u32!(trees.chain.auction_index, v)
+            Key::Custom(custom) => {
+                let mut key = custom.db_prefix();
+                key.extend_from_slice(&block_number.to_be_bytes());
+                key.extend_from_slice(&event_index.to_be_bytes());
+                trees.custom.insert(key, &[])?;
             }
-            Key::CandidateHash(v) => {
-                insert_b32!(trees.chain.candidate_hash, v)
-            }
-            Key::ParaId(v) => insert_u32!(trees.chain.para_id, v),
         }
         Ok(())
     }
 
     pub fn get_events(&self, trees: &Trees) -> Vec<EventRef> {
-        use crate::websockets::{get_events_bytes32, get_events_u32};
+        use crate::websockets::{get_events_bytes32, get_events_custom, get_events_u32};
         match self {
             Key::Variant(pi, vi) => get_events_variant(&trees.variant, *pi, *vi),
             Key::AccountId(v) => get_events_bytes32(&trees.substrate.account_id, v),
@@ -379,9 +532,7 @@ impl Key {
             Key::SessionIndex(v) => get_events_u32(&trees.substrate.session_index, *v),
             Key::TipHash(v) => get_events_bytes32(&trees.substrate.tip_hash, v),
             Key::SpendIndex(v) => get_events_u32(&trees.substrate.spend_index, *v),
-            Key::AuctionIndex(v) => get_events_u32(&trees.chain.auction_index, *v),
-            Key::CandidateHash(v) => get_events_bytes32(&trees.chain.candidate_hash, v),
-            Key::ParaId(v) => get_events_u32(&trees.chain.para_id, *v),
+            Key::Custom(custom) => get_events_custom(&trees.custom, custom),
         }
     }
 }

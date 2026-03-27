@@ -50,6 +50,28 @@ pub fn get_events_u32(tree: &Tree, key: u32) -> Vec<EventRef> {
     events
 }
 
+pub fn get_events_custom(tree: &Tree, key: &CustomKey) -> Vec<EventRef> {
+    let mut events = Vec::new();
+    let prefix = key.db_prefix();
+    let mut iter = tree.scan_prefix(prefix).keys();
+    while let Some(Ok(raw)) = iter.next_back() {
+        if raw.len() < 6 {
+            continue;
+        }
+        let suffix = &raw[raw.len() - 6..];
+        let block_number = u32::from_be_bytes(suffix[..4].try_into().unwrap());
+        let event_index = u16::from_be_bytes(suffix[4..].try_into().unwrap());
+        events.push(EventRef {
+            block_number,
+            event_index,
+        });
+        if events.len() == 100 {
+            break;
+        }
+    }
+    events
+}
+
 // ─── Message handlers ─────────────────────────────────────────────────────────
 
 pub fn process_msg_status(span_db: &Tree) -> ResponseMessage {

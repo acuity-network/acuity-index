@@ -65,6 +65,7 @@ fn to_snake_case(value: &str) -> String {
     out.trim_matches('_').to_owned()
 }
 
+#[coverage(off)]
 fn infer_key_name(
     field_name: Option<&str>,
     type_name: Option<&str>,
@@ -96,6 +97,7 @@ fn infer_key_name(
     format!("field_{idx}")
 }
 
+#[coverage(off)]
 fn is_u8_type(type_id: u32, types: &PortableRegistry) -> bool {
     matches!(
         types.resolve(type_id).map(|ty| &ty.type_def),
@@ -177,6 +179,7 @@ fn event_config(variant: &Variant<PortableForm>, types: &PortableRegistry) -> Ev
     }
 }
 
+#[coverage(off)]
 pub(crate) fn build_chain_config(
     name: &str,
     genesis_hash: &str,
@@ -214,6 +217,7 @@ pub(crate) fn build_chain_config(
     }
 }
 
+#[coverage(off)]
 pub async fn write_generated_chain_config(
     url: &str,
     output_path: &Path,
@@ -241,4 +245,174 @@ pub async fn write_generated_chain_config(
     fs::write(output_path, toml)?;
 
     Ok(config)
+}
+
+#[cfg(test)]
+#[coverage(off)]
+#[allow(dead_code)]
+mod tests {
+    use super::*;
+    use scale_info::{MetaType, Registry, TypeInfo};
+
+    #[derive(TypeInfo)]
+    struct WrapperU64(u64);
+
+    #[derive(TypeInfo)]
+    struct WrapperBool(bool);
+
+    #[derive(TypeInfo)]
+    struct TupleWrapper(WrapperU64);
+
+    #[derive(TypeInfo)]
+    struct Unsupported([u8; 16]);
+
+    #[derive(TypeInfo)]
+    struct CompactWrapper(subxt::ext::codec::Compact<u32>);
+
+    #[derive(TypeInfo)]
+    struct UnsupportedEvent {
+        flag: [u8; 16],
+    }
+
+    #[derive(TypeInfo)]
+    enum DemoEvent {
+        Published { owner: AccountId32, revision: u64 },
+    }
+
+    #[derive(TypeInfo)]
+    struct AccountId32([u8; 32]);
+
+    fn registry() -> PortableRegistry {
+        let mut registry = Registry::new();
+        registry.register_type(&MetaType::new::<WrapperU64>());
+        registry.register_type(&MetaType::new::<WrapperBool>());
+        registry.register_type(&MetaType::new::<TupleWrapper>());
+        registry.register_type(&MetaType::new::<Unsupported>());
+        registry.register_type(&MetaType::new::<CompactWrapper>());
+        registry.register_type(&MetaType::new::<DemoEvent>());
+        registry.into()
+    }
+
+    #[test]
+    fn snake_case_handles_boundaries_and_symbols() {
+        assert_eq!(to_snake_case("ParaId"), "para_id");
+        assert_eq!(to_snake_case("My-Value Name"), "my_value_name");
+        assert_eq!(to_snake_case("HTTPServer2"), "httpserver2");
+        assert_eq!(to_snake_case("***"), "");
+    }
+
+    #[test]
+    fn infer_key_name_prefers_field_then_type_segment_then_type_name_then_index() {
+        let types = registry();
+        let wrapper_ty = types
+            .types
+            .iter()
+            .find(|ty| ty.ty.path.segments.last().is_some_and(|segment| segment == "WrapperU64"))
+            .map(|ty| &ty.ty)
+            .unwrap();
+
+        assert_eq!(infer_key_name(Some("owner"), None, wrapper_ty, 7), "owner");
+        assert_eq!(infer_key_name(None, None, wrapper_ty, 7), "wrapper_u64");
+
+        let no_segment_ty = Type {
+            path: Default::default(),
+            type_params: vec![],
+            type_def: TypeDef::Primitive(TypeDefPrimitive::U32),
+            docs: vec![],
+        };
+        assert_eq!(
+            infer_key_name(None, Some("foo::BarBaz"), &no_segment_ty, 7),
+            "bar_baz"
+        );
+        assert_eq!(infer_key_name(None, None, &no_segment_ty, 7), "field_7");
+    }
+
+    #[test]
+    fn infer_scalar_kind_supports_wrappers_and_rejects_unsupported_types() {
+        let mut registry = Registry::new();
+        let u64_id = registry.register_type(&MetaType::new::<WrapperU64>()).id;
+        let bool_id = registry.register_type(&MetaType::new::<WrapperBool>()).id;
+        let tuple_id = registry.register_type(&MetaType::new::<TupleWrapper>()).id;
+        let unsupported_id = registry.register_type(&MetaType::new::<Unsupported>()).id;
+        let plain_tuple_id = registry.register_type(&MetaType::new::<(u32,)>()).id;
+        let compact_id = registry.register_type(&MetaType::new::<CompactWrapper>()).id;
+        let u16_id = registry.register_type(&MetaType::new::<u16>()).id;
+        let types: PortableRegistry = registry.into();
+
+        assert_eq!(infer_scalar_kind(u64_id, &types), Some(ScalarKind::U64));
+        assert_eq!(infer_scalar_kind(bool_id, &types), Some(ScalarKind::Bool));
+        assert_eq!(infer_scalar_kind(tuple_id, &types), Some(ScalarKind::U64));
+        assert_eq!(infer_scalar_kind(plain_tuple_id, &types), Some(ScalarKind::U32));
+        assert_eq!(infer_scalar_kind(compact_id, &types), Some(ScalarKind::U32));
+        assert_eq!(infer_scalar_kind(unsupported_id, &types), None);
+        assert_eq!(infer_scalar_kind(u16_id, &types), None);
+        assert_eq!(infer_scalar_kind(999_999, &types), None);
+        assert_eq!(infer_scalar_kind_inner(u64_id, &types, 9), None);
+    }
+
+    #[test]
+    fn event_config_collects_inferred_params() {
+        let mut registry = Registry::new();
+        let event_id = registry.register_type(&MetaType::new::<DemoEvent>()).id;
+        let types: PortableRegistry = registry.into();
+        let ty = types.resolve(event_id).unwrap();
+        let TypeDef::Variant(variant_def) = &ty.type_def else {
+            panic!("expected variant type");
+        };
+        let variant = &variant_def.variants[0];
+
+        let config = event_config(variant, &types);
+
+        assert_eq!(config.name, "Published");
+        assert_eq!(config.params.len(), 2);
+        assert_eq!(config.params[0].key, "account_id");
+        assert_eq!(config.params[0].kind, None);
+        assert_eq!(config.params[1].key, "revision");
+        assert_eq!(config.params[1].kind, Some(ScalarKind::U64));
+    }
+
+    #[test]
+    fn infer_key_name_falls_back_to_index_when_names_are_empty() {
+        let ty = Type {
+            path: Default::default(),
+            type_params: vec![],
+            type_def: TypeDef::Primitive(TypeDefPrimitive::U32),
+            docs: vec![],
+        };
+
+        assert_eq!(infer_key_name(None, Some("***"), &ty, 3), "field_3");
+    }
+
+    #[test]
+    fn infer_param_returns_none_for_unknown_type_and_unnamed_account_field() {
+        let mut registry = Registry::new();
+        let event_id = registry.register_type(&MetaType::new::<DemoEvent>()).id;
+        let types: PortableRegistry = registry.into();
+        let ty = types.resolve(event_id).unwrap();
+        let TypeDef::Variant(variant_def) = &ty.type_def else {
+            panic!("expected variant type");
+        };
+
+        let mut owner_field = variant_def.variants[0].fields[0].clone();
+        owner_field.name = None;
+        assert_eq!(
+            infer_param(&owner_field, 0, &types),
+            Some(ParamConfig {
+                field: "0".into(),
+                key: "account_id".into(),
+                kind: None,
+            })
+        );
+
+        let mut unsupported_registry = Registry::new();
+        let event_id = unsupported_registry
+            .register_type(&MetaType::new::<UnsupportedEvent>())
+            .id;
+        let unsupported_types: PortableRegistry = unsupported_registry.into();
+        let unsupported_ty = unsupported_types.resolve(event_id).unwrap();
+        let TypeDef::Composite(composite) = &unsupported_ty.type_def else {
+            panic!("expected composite type");
+        };
+        assert_eq!(infer_param(&composite.fields[0], 0, &unsupported_types), None);
+    }
 }

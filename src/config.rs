@@ -185,3 +185,69 @@ pub const POLKADOT_TOML: &str = include_str!("../chains/polkadot.toml");
 pub const KUSAMA_TOML: &str = include_str!("../chains/kusama.toml");
 pub const WESTEND_TOML: &str = include_str!("../chains/westend.toml");
 pub const PASEO_TOML: &str = include_str!("../chains/paseo.toml");
+
+#[cfg(test)]
+#[coverage(off)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_type_name_parse_covers_all_variants() {
+        for (name, expected) in [
+            ("account_id", KeyTypeName::AccountId),
+            ("account_index", KeyTypeName::AccountIndex),
+            ("bounty_index", KeyTypeName::BountyIndex),
+            ("era_index", KeyTypeName::EraIndex),
+            ("message_id", KeyTypeName::MessageId),
+            ("pool_id", KeyTypeName::PoolId),
+            ("preimage_hash", KeyTypeName::PreimageHash),
+            ("proposal_hash", KeyTypeName::ProposalHash),
+            ("proposal_index", KeyTypeName::ProposalIndex),
+            ("ref_index", KeyTypeName::RefIndex),
+            ("registrar_index", KeyTypeName::RegistrarIndex),
+            ("session_index", KeyTypeName::SessionIndex),
+            ("spend_index", KeyTypeName::SpendIndex),
+            ("tip_hash", KeyTypeName::TipHash),
+        ] {
+            assert_eq!(KeyTypeName::parse(name), Some(expected));
+        }
+        assert_eq!(KeyTypeName::parse("unknown"), None);
+    }
+
+    #[test]
+    fn validate_returns_ok_for_valid_custom_config() {
+        let config = ChainConfig {
+            name: "test".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            versions: vec![0],
+            pallets: vec![PalletConfig {
+                name: "Content".into(),
+                sdk: false,
+                events: vec![EventConfig {
+                    name: "Published".into(),
+                    params: vec![ParamConfig {
+                        field: "item_id".into(),
+                        key: "item_id".into(),
+                        kind: Some(ScalarKind::Bytes32),
+                    }],
+                }],
+            }],
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn serializing_non_sdk_pallet_omits_sdk_flag() {
+        let pallet = PalletConfig {
+            name: "Content".into(),
+            sdk: false,
+            events: vec![],
+        };
+
+        let toml = toml::to_string(&pallet).unwrap();
+
+        assert!(!toml.contains("sdk"));
+    }
+}

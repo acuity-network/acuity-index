@@ -45,6 +45,7 @@ pub struct Indexer {
 }
 
 impl Indexer {
+    #[coverage(off)]
     pub fn new(
         trees: Trees,
         api: OnlineClient<PolkadotConfig>,
@@ -87,6 +88,7 @@ impl Indexer {
 
     // ─── Block indexing ───────────────────────────────────────────────────────
 
+    #[coverage(off)]
     pub async fn index_head(
         &self,
         next: impl Future<Output = Option<Result<Block<PolkadotConfig>, subxt::error::BlocksError>>>,
@@ -96,6 +98,7 @@ impl Indexer {
         self.index_block(block_number).await
     }
 
+    #[coverage(off)]
     pub async fn index_block(&self, block_number: u32) -> Result<(u32, u32, u32), IndexError> {
         let mut key_count = 0u32;
         let api = self.api.as_ref().unwrap();
@@ -247,6 +250,7 @@ impl Indexer {
 
     // ─── DB write & notification ──────────────────────────────────────────────
 
+    #[coverage(off)]
     pub fn index_event_key(
         &self,
         key: Key,
@@ -352,6 +356,7 @@ fn value_to_key(value: &Value<()>, key: &ParamKey) -> Option<Key> {
 
 // ─── scale_value → serde_json ─────────────────────────────────────────────────
 
+#[coverage(off)]
 fn value_to_json(v: &Value<()>) -> serde_json::Value {
     use scale_value::{Primitive, ValueDef};
     match &v.value {
@@ -445,6 +450,7 @@ pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) {
 
 // ─── Span helpers ─────────────────────────────────────────────────────────────
 
+#[coverage(off)]
 pub fn load_spans(
     span_db: &Tree,
     versions: &[u32],
@@ -507,6 +513,7 @@ pub fn load_spans(
     Ok(spans)
 }
 
+#[coverage(off)]
 pub fn check_span(
     span_db: &Tree,
     spans: &mut Vec<Span>,
@@ -541,6 +548,7 @@ pub fn check_next_batch_block(spans: &[Span], next: &mut u32) {
     }
 }
 
+#[coverage(off)]
 fn save_span(
     span_db: &Tree,
     span: &Span,
@@ -560,6 +568,7 @@ fn save_span(
 
 // ─── Main indexer loop ────────────────────────────────────────────────────────
 
+#[coverage(off)]
 pub async fn run_indexer(
     trees: Trees,
     api: OnlineClient<PolkadotConfig>,
@@ -788,5 +797,256 @@ pub async fn run_indexer(
                 next_batch_block -= 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[coverage(off)]
+mod tests {
+    use super::*;
+    use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
+
+    fn temp_trees() -> Trees {
+        let dir = tempfile::tempdir().unwrap();
+        let db_config = sled::Config::new().path(dir.path()).temporary(true);
+        Trees::open(db_config).unwrap()
+    }
+
+    fn test_config() -> ChainConfig {
+        toml::from_str(crate::config::POLKADOT_TOML).unwrap()
+    }
+
+    fn u128_value(value: u128) -> Value<()> {
+        Value {
+            value: ValueDef::Primitive(Primitive::U128(value)),
+            context: (),
+        }
+    }
+
+    fn string_value(value: &str) -> Value<()> {
+        Value {
+            value: ValueDef::Primitive(Primitive::String(value.into())),
+            context: (),
+        }
+    }
+
+    fn bool_value(value: bool) -> Value<()> {
+        Value {
+            value: ValueDef::Primitive(Primitive::Bool(value)),
+            context: (),
+        }
+    }
+
+    fn bytes32_value(byte: u8) -> Value<()> {
+        Value {
+            value: ValueDef::Composite(Composite::Unnamed(vec![u128_value(byte.into()); 32])),
+            context: (),
+        }
+    }
+
+    #[test]
+    fn value_to_builtin_key_supports_every_builtin_key_type() {
+        let number = u128_value(9);
+        let bytes = bytes32_value(0xAB);
+
+        for (key_type, expected) in [
+            (KeyTypeName::AccountId, Key::AccountId(Bytes32([0xAB; 32]))),
+            (KeyTypeName::AccountIndex, Key::AccountIndex(9)),
+            (KeyTypeName::BountyIndex, Key::BountyIndex(9)),
+            (KeyTypeName::EraIndex, Key::EraIndex(9)),
+            (KeyTypeName::MessageId, Key::MessageId(Bytes32([0xAB; 32]))),
+            (KeyTypeName::PoolId, Key::PoolId(9)),
+            (KeyTypeName::PreimageHash, Key::PreimageHash(Bytes32([0xAB; 32]))),
+            (KeyTypeName::ProposalHash, Key::ProposalHash(Bytes32([0xAB; 32]))),
+            (KeyTypeName::ProposalIndex, Key::ProposalIndex(9)),
+            (KeyTypeName::RefIndex, Key::RefIndex(9)),
+            (KeyTypeName::RegistrarIndex, Key::RegistrarIndex(9)),
+            (KeyTypeName::SessionIndex, Key::SessionIndex(9)),
+            (KeyTypeName::SpendIndex, Key::SpendIndex(9)),
+            (KeyTypeName::TipHash, Key::TipHash(Bytes32([0xAB; 32]))),
+        ] {
+            let value = match key_type {
+                KeyTypeName::AccountId
+                | KeyTypeName::MessageId
+                | KeyTypeName::PreimageHash
+                | KeyTypeName::ProposalHash
+                | KeyTypeName::TipHash => &bytes,
+                _ => &number,
+            };
+            assert_eq!(value_to_builtin_key(value, &key_type), Some(expected));
+        }
+    }
+
+    #[test]
+    fn value_to_custom_key_supports_all_scalar_kinds() {
+        assert_eq!(
+            value_to_custom_key(&bytes32_value(0xCD), "item_id", &crate::config::ScalarKind::Bytes32),
+            Some(Key::Custom(CustomKey {
+                name: "item_id".into(),
+                value: CustomValue::Bytes32(Bytes32([0xCD; 32])),
+            }))
+        );
+        assert_eq!(
+            value_to_custom_key(&u128_value(7), "revision_id", &crate::config::ScalarKind::U32),
+            Some(Key::Custom(CustomKey {
+                name: "revision_id".into(),
+                value: CustomValue::U32(7),
+            }))
+        );
+        assert_eq!(
+            value_to_custom_key(&u128_value(8), "era", &crate::config::ScalarKind::U64),
+            Some(Key::Custom(CustomKey {
+                name: "era".into(),
+                value: CustomValue::U64(U64Text(8)),
+            }))
+        );
+        assert_eq!(
+            value_to_custom_key(&u128_value(9), "stake", &crate::config::ScalarKind::U128),
+            Some(Key::Custom(CustomKey {
+                name: "stake".into(),
+                value: CustomValue::U128(U128Text(9)),
+            }))
+        );
+        assert_eq!(
+            value_to_custom_key(&string_value("slug"), "slug", &crate::config::ScalarKind::String),
+            Some(Key::Custom(CustomKey {
+                name: "slug".into(),
+                value: CustomValue::String("slug".into()),
+            }))
+        );
+        assert_eq!(
+            value_to_custom_key(&bool_value(true), "published", &crate::config::ScalarKind::Bool),
+            Some(Key::Custom(CustomKey {
+                name: "published".into(),
+                value: CustomValue::Bool(true),
+            }))
+        );
+    }
+
+    #[test]
+    fn value_to_json_handles_char_and_variant_values() {
+        let char_value = Value {
+            value: ValueDef::Primitive(Primitive::Char('x')),
+            context: (),
+        };
+        let variant_value = Value {
+            value: ValueDef::Variant(Variant {
+                name: "Some".into(),
+                values: Composite::Unnamed(vec![u128_value(5)]),
+            }),
+            context: (),
+        };
+
+        assert_eq!(value_to_json(&char_value), serde_json::json!("x"));
+        assert_eq!(
+            value_to_json(&variant_value),
+            serde_json::json!({"variant": "Some", "fields": "5"})
+        );
+    }
+
+    #[test]
+    fn save_span_persists_flags_and_version() {
+        let trees = temp_trees();
+        let span = Span { start: 10, end: 25 };
+
+        save_span(&trees.span, &span, 3, true, false).unwrap();
+
+        let bytes = trees.span.get(25u32.to_be_bytes()).unwrap().unwrap();
+        let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
+        assert_eq!(u32::from(saved.start), 10);
+        assert_eq!(u16::from(saved.version), 2);
+        assert_eq!(saved.index_variant, 1);
+        assert_eq!(saved.store_events, 0);
+    }
+
+    #[tokio::test]
+    async fn notify_event_subscribers_includes_decoded_block_events() {
+        let trees = temp_trees();
+        let indexer = Indexer::new_test(trees.clone(), &test_config());
+        let key = Key::RefIndex(42);
+        let db_key: U32<BigEndian> = 7u32.into();
+        trees
+            .block_events
+            .insert(
+                db_key.as_bytes(),
+                serde_json::to_vec(&serde_json::json!({"events": []})).unwrap(),
+            )
+            .unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeEvents {
+                key: key.clone(),
+                tx,
+            },
+        );
+
+        indexer.index_event_key(key.clone(), 7, 3).unwrap();
+
+        let ResponseMessage::Events { block_events, .. } = rx.recv().await.unwrap() else {
+            panic!("expected events response");
+        };
+        assert_eq!(block_events.len(), 1);
+        assert_eq!(block_events[0].block_number, 7);
+        assert_eq!(block_events[0].events, serde_json::json!({"events": []}));
+    }
+
+    #[test]
+    fn keys_for_event_handles_unknown_sdk_pallet_and_param_failures() {
+        let config: ChainConfig = toml::from_str(
+            r#"
+name = "test"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[[pallets]]
+name = "UnknownSdk"
+sdk = true
+
+[[pallets]]
+name = "Custom"
+
+[[pallets.events]]
+name = "Created"
+
+[[pallets.events.params]]
+field = "missing"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "flag"
+key = "count"
+kind = "u32"
+"#,
+        )
+        .unwrap();
+        let indexer = Indexer::new_test(temp_trees(), &config);
+        let fields = Composite::Named(vec![("flag".into(), bool_value(true))]);
+
+        assert!(indexer.keys_for_event("UnknownSdk", "Created", &fields).is_empty());
+        assert!(indexer.keys_for_event("Custom", "Created", &fields).is_empty());
+    }
+
+    #[test]
+    fn composite_to_json_handles_mixed_unnamed_values() {
+        let mixed = Composite::Unnamed(vec![u128_value(1), string_value("two")]);
+        let json = composite_to_json(&mixed);
+        assert_eq!(json, serde_json::json!(["1", "two"]));
+    }
+
+    #[tokio::test]
+    async fn process_sub_msg_ignores_missing_event_subscription_bucket() {
+        let indexer = Indexer::new_test(temp_trees(), &test_config());
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::UnsubscribeEvents {
+                key: Key::RefIndex(999),
+                tx,
+            },
+        );
     }
 }

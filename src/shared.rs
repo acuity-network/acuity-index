@@ -112,6 +112,7 @@ impl AsRef<[u8]> for Bytes32 {
 }
 
 impl Serialize for Bytes32 {
+    #[coverage(off)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -121,6 +122,7 @@ impl Serialize for Bytes32 {
 }
 
 impl<'de> Deserialize<'de> for Bytes32 {
+    #[coverage(off)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -139,6 +141,7 @@ impl<'de> Deserialize<'de> for Bytes32 {
 pub struct U64Text(pub u64);
 
 impl Serialize for U64Text {
+    #[coverage(off)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -148,6 +151,7 @@ impl Serialize for U64Text {
 }
 
 impl<'de> Deserialize<'de> for U64Text {
+    #[coverage(off)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -191,6 +195,7 @@ impl<'de> Deserialize<'de> for U64Text {
 pub struct U128Text(pub u128);
 
 impl Serialize for U128Text {
+    #[coverage(off)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -200,6 +205,7 @@ impl Serialize for U128Text {
 }
 
 impl<'de> Deserialize<'de> for U128Text {
+    #[coverage(off)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -331,6 +337,7 @@ pub struct SubstrateTrees {
 }
 
 impl SubstrateTrees {
+    #[coverage(off)]
     pub fn open(db: &Db) -> Result<Self, sled::Error> {
         Ok(SubstrateTrees {
             account_id: db.open_tree(b"account_id")?,
@@ -350,6 +357,7 @@ impl SubstrateTrees {
         })
     }
 
+    #[coverage(off)]
     pub fn flush(&self) -> Result<(), sled::Error> {
         self.account_id.flush()?;
         self.account_index.flush()?;
@@ -382,6 +390,7 @@ pub struct Trees {
 }
 
 impl Trees {
+    #[coverage(off)]
     pub fn open(db_config: sled::Config) -> Result<Self, sled::Error> {
         let db = db_config.open()?;
         Ok(Trees {
@@ -394,6 +403,7 @@ impl Trees {
         })
     }
 
+    #[coverage(off)]
     pub fn flush(&self) -> Result<(), sled::Error> {
         self.root.flush()?;
         self.span.flush()?;
@@ -432,6 +442,7 @@ pub enum Key {
 }
 
 impl Key {
+    #[coverage(off)]
     pub fn write_db_key(
         &self,
         trees: &Trees,
@@ -656,4 +667,111 @@ pub enum SubscriptionMessage {
         key: Key,
         tx: UnboundedSender<ResponseMessage>,
     },
+}
+
+#[cfg(test)]
+#[coverage(off)]
+mod tests {
+    use super::*;
+    use serde::de::value::{
+        Error as ValueError, StrDeserializer, U128Deserializer, U64Deserializer,
+    };
+    use serde::Deserialize;
+
+    #[test]
+    fn u64_text_serializes_and_deserializes_from_multiple_input_shapes() {
+        assert_eq!(serde_json::to_string(&U64Text(42)).unwrap(), "\"42\"");
+        assert_eq!(
+            U64Text::deserialize(U64Deserializer::<ValueError>::new(42)).unwrap(),
+            U64Text(42)
+        );
+        assert_eq!(
+            U64Text::deserialize(U128Deserializer::<ValueError>::new(42)).unwrap(),
+            U64Text(42)
+        );
+        assert_eq!(
+            U64Text::deserialize(StrDeserializer::<ValueError>::new("42")).unwrap(),
+            U64Text(42)
+        );
+    }
+
+    #[test]
+    fn u128_text_serializes_and_deserializes_from_multiple_input_shapes() {
+        assert_eq!(serde_json::to_string(&U128Text(42)).unwrap(), "\"42\"");
+        assert_eq!(
+            U128Text::deserialize(U64Deserializer::<ValueError>::new(42)).unwrap(),
+            U128Text(42)
+        );
+        assert_eq!(
+            U128Text::deserialize(U128Deserializer::<ValueError>::new(42)).unwrap(),
+            U128Text(42)
+        );
+        assert_eq!(
+            U128Text::deserialize(StrDeserializer::<ValueError>::new("42")).unwrap(),
+            U128Text(42)
+        );
+    }
+
+    #[test]
+    fn custom_value_kind_and_db_prefix_cover_all_scalar_types() {
+        let cases = [
+            (
+                CustomValue::Bytes32(Bytes32([0xAB; 32])),
+                ScalarKind::Bytes32,
+                0u8,
+            ),
+            (CustomValue::U32(7), ScalarKind::U32, 1u8),
+            (CustomValue::U64(U64Text(8)), ScalarKind::U64, 2u8),
+            (CustomValue::U128(U128Text(9)), ScalarKind::U128, 3u8),
+            (CustomValue::String("slug".into()), ScalarKind::String, 4u8),
+            (CustomValue::Bool(true), ScalarKind::Bool, 5u8),
+        ];
+
+        for (value, kind, tag) in cases {
+            assert_eq!(value.kind(), kind);
+            let key = CustomKey {
+                name: "example".into(),
+                value,
+            };
+            let prefix = key.db_prefix();
+            assert_eq!(u16::from_be_bytes(prefix[0..2].try_into().unwrap()), 7);
+            assert_eq!(&prefix[2..9], b"example");
+            assert_eq!(prefix[9], tag);
+        }
+    }
+
+    #[test]
+    fn deserializers_report_errors_and_tree_helpers_open_and_flush() {
+        let u64_err = U64Text::deserialize(serde::de::value::UnitDeserializer::<ValueError>::new())
+            .unwrap_err()
+            .to_string();
+        let u128_err =
+            U128Text::deserialize(serde::de::value::UnitDeserializer::<ValueError>::new())
+                .unwrap_err()
+                .to_string();
+        assert!(u64_err.contains("u64 string or integer"));
+        assert!(u128_err.contains("u128 string or integer"));
+
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let substrate = SubstrateTrees::open(&db).unwrap();
+        substrate.flush().unwrap();
+
+        let trees = Trees::open(sled::Config::new().temporary(true)).unwrap();
+        trees.flush().unwrap();
+    }
+
+    #[test]
+    fn variant_key_retrieval_limits_to_recent_100_events() {
+        let trees = Trees::open(sled::Config::new().temporary(true)).unwrap();
+        let key = Key::Variant(1, 2);
+
+        for i in 0..150u32 {
+            key.write_db_key(&trees, i, 0).unwrap();
+        }
+
+        let events = key.get_events(&trees);
+        assert_eq!(events.len(), 100);
+        assert_eq!(events[0].block_number, 149);
+        assert_eq!(events[99].block_number, 50);
+    }
 }

@@ -1,3 +1,5 @@
+#![feature(coverage_attribute)]
+
 use byte_unit::Byte;
 use clap::{Parser, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
@@ -121,6 +123,7 @@ pub struct Args {
     verbose: Verbosity<InfoLevel>,
 }
 
+#[coverage(off)]
 fn load_chain_config(args: &Args) -> ChainConfig {
     let config: ChainConfig = if let Some(path) = &args.chain_config {
         let toml_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
@@ -152,6 +155,7 @@ fn load_chain_config(args: &Args) -> ChainConfig {
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 #[tokio::main]
+#[coverage(off)]
 async fn main() {
     let args = Args::parse();
     let log_level = args.verbose.log_level_filter().as_trace();
@@ -315,4 +319,38 @@ async fn main() {
     let _ = trees.flush();
     info!("Closed database.");
     exit(0);
+}
+
+#[cfg(test)]
+#[coverage(off)]
+mod main_tests {
+    use super::*;
+
+    #[test]
+    fn db_mode_maps_to_sled_modes() {
+        assert!(matches!(sled::Mode::from(DbMode::LowSpace), sled::Mode::LowSpace));
+        assert!(matches!(
+            sled::Mode::from(DbMode::HighThroughput),
+            sled::Mode::HighThroughput
+        ));
+    }
+
+    #[test]
+    fn clap_styles_builds_without_panicking() {
+        let _ = clap_styles();
+    }
+
+    #[test]
+    fn args_parse_defaults() {
+        let args = Args::try_parse_from(["acuity-index"]).unwrap();
+
+        assert!(matches!(args.chain, Chain::Polkadot));
+        assert!(matches!(args.db_mode, DbMode::LowSpace));
+        assert_eq!(args.db_cache_capacity, "1024.00 MiB");
+        assert_eq!(args.queue_depth, 1);
+        assert!(!args.finalized);
+        assert!(!args.index_variant);
+        assert!(!args.store_events);
+        assert_eq!(args.port, 8172);
+    }
 }

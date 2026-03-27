@@ -106,6 +106,98 @@ mod pallets_tests {
         assert_eq!(extract_u32(&v), None);
     }
 
+    #[test]
+    fn extract_u64_from_wrapped_named() {
+        let v = Value {
+            value: ValueDef::Composite(Composite::Named(vec![("inner".into(), u128_val(123))])),
+            context: (),
+        };
+        assert_eq!(extract_u64(&v), Some(123));
+    }
+
+    #[test]
+    fn extract_u32_from_wrapped_named_and_invalid_bool() {
+        let named_value = Value {
+            value: ValueDef::Composite(Composite::Named(vec![("inner".into(), u128_val(12))])),
+            context: (),
+        };
+        let bool_value = Value {
+            value: ValueDef::Primitive(Primitive::Bool(true)),
+            context: (),
+        };
+
+        assert_eq!(extract_u32(&named_value), Some(12));
+        assert_eq!(extract_u32(&bool_value), None);
+    }
+
+    #[test]
+    fn extract_u128_from_i128() {
+        let v = Value {
+            value: ValueDef::Primitive(Primitive::I128(456)),
+            context: (),
+        };
+        assert_eq!(extract_u128(&v), Some(456));
+    }
+
+    #[test]
+    fn extract_u128_from_wrapped_values_and_invalid_string() {
+        let unnamed = Value {
+            value: ValueDef::Composite(Composite::Unnamed(vec![u128_val(321)])),
+            context: (),
+        };
+        let named = Value {
+            value: ValueDef::Composite(Composite::Named(vec![("inner".into(), u128_val(654))])),
+            context: (),
+        };
+        let invalid = Value {
+            value: ValueDef::Primitive(Primitive::String("bad".into())),
+            context: (),
+        };
+
+        assert_eq!(extract_u128(&unnamed), Some(321));
+        assert_eq!(extract_u128(&named), Some(654));
+        assert_eq!(extract_u128(&invalid), None);
+    }
+
+    #[test]
+    fn extract_string_and_bool_from_wrapped_values() {
+        let string_value = Value {
+            value: ValueDef::Composite(Composite::Unnamed(vec![Value {
+                value: ValueDef::Primitive(Primitive::String("hello".into())),
+                context: (),
+            }])),
+            context: (),
+        };
+        let bool_value = Value {
+            value: ValueDef::Composite(Composite::Named(vec![(
+                "inner".into(),
+                Value {
+                    value: ValueDef::Primitive(Primitive::Bool(true)),
+                    context: (),
+                },
+            )])),
+            context: (),
+        };
+
+        assert_eq!(extract_string(&string_value), Some("hello".into()));
+        assert_eq!(extract_bool(&bool_value), Some(true));
+    }
+
+    #[test]
+    fn extract_string_and_bool_invalid_paths_return_none() {
+        let invalid_string = Value {
+            value: ValueDef::Primitive(Primitive::Bool(false)),
+            context: (),
+        };
+        let invalid_bool = Value {
+            value: ValueDef::Primitive(Primitive::String("nope".into())),
+            context: (),
+        };
+
+        assert_eq!(extract_string(&invalid_string), None);
+        assert_eq!(extract_bool(&invalid_bool), None);
+    }
+
     // ─── extract_bytes32 ──────────────────────────────────────────────────
 
     #[test]
@@ -825,6 +917,107 @@ mod pallets_tests {
     }
 
     #[test]
+    fn supported_sdk_pallet_list_matches_dispatch_expectations() {
+        assert!(is_supported_sdk_pallet("System"));
+        assert!(is_supported_sdk_pallet("Recovery"));
+        assert!(!is_supported_sdk_pallet("Claims"));
+    }
+
+    #[test]
+    fn additional_pallet_event_branches_are_indexed() {
+        let account = [90u8; 32];
+        let other = [91u8; 32];
+        let fields = named(vec![
+            ("account", bytes32_val(account)),
+            ("who", bytes32_val(account)),
+            ("stash", bytes32_val(account)),
+            ("staker", bytes32_val(account)),
+            ("real", bytes32_val(account)),
+            ("proxy", bytes32_val(other)),
+            ("member", bytes32_val(account)),
+            ("sub", bytes32_val(account)),
+            ("main", bytes32_val(other)),
+            ("lost_account", bytes32_val(account)),
+            ("rescuer_account", bytes32_val(other)),
+            ("beneficiary", bytes32_val(other)),
+            ("index", u128_val(4)),
+            ("proposal_index", u128_val(5)),
+            ("registrar_index", u128_val(6)),
+            ("pool_id", u128_val(7)),
+            ("era", u128_val(8)),
+            ("bounty_id", u128_val(9)),
+        ]);
+
+        for event in ["DustLost", "BalanceSet", "Deposit"] {
+            assert_eq!(
+                index_balances(event, &fields),
+                vec![Key::AccountId(Bytes32(account))]
+            );
+        }
+        assert_eq!(
+            index_staking("Rewarded", &fields),
+            vec![Key::AccountId(Bytes32(account))]
+        );
+        assert_eq!(
+            index_staking("Slashed", &fields),
+            vec![Key::AccountId(Bytes32(account))]
+        );
+        assert_eq!(
+            index_staking("OldSlashingReportDiscarded", &unnamed(vec![u128_val(6)])),
+            vec![Key::SessionIndex(6)]
+        );
+        assert_eq!(
+            index_indices("IndexFreed", &fields),
+            vec![Key::AccountIndex(4)]
+        );
+        assert!(index_indices("IndexFrozen", &fields).contains(&Key::AccountId(Bytes32(account))));
+        let treasury_fallback_fields = named(vec![
+            ("proposal_index", u128_val(5)),
+            ("beneficiary", bytes32_val(other)),
+        ]);
+        assert!(index_treasury("Awarded", &treasury_fallback_fields)
+            .contains(&Key::AccountId(Bytes32(other))));
+        assert_eq!(
+            index_treasury("Deposit", &fields),
+            vec![Key::AccountId(Bytes32(account))]
+        );
+        assert_eq!(
+            index_bounties("CuratorUnassigned", &fields),
+            vec![Key::BountyIndex(9)]
+        );
+        assert!(index_proxy("Announced", &fields).contains(&Key::AccountId(Bytes32(other))));
+        assert!(index_proxy("ProxyExecuted", &fields).is_empty());
+        assert_eq!(
+            index_election_provider_multi_phase("Rewarded", &fields),
+            vec![Key::AccountId(Bytes32(account))]
+        );
+        assert_eq!(
+            index_bags_list("Rebagged", &fields),
+            vec![Key::AccountId(Bytes32(account))]
+        );
+        assert!(index_nomination_pools("Bonded", &fields).contains(&Key::PoolId(7)));
+        assert!(index_nomination_pools("PaidOut", &fields).contains(&Key::PoolId(7)));
+        assert!(index_nomination_pools("Withdrawn", &fields).contains(&Key::PoolId(7)));
+        assert!(index_nomination_pools("MemberRemoved", &fields)
+            .contains(&Key::AccountId(Bytes32(account))));
+        assert!(index_nomination_pools("UnbondingPoolSlashed", &fields).contains(&Key::EraIndex(8)));
+        assert!(index_identity("JudgementRequested", &fields).contains(&Key::RegistrarIndex(6)));
+        assert_eq!(
+            index_identity("RegistrarAdded", &fields),
+            vec![Key::RegistrarIndex(6)]
+        );
+        assert!(
+            index_identity("SubIdentityAdded", &fields).contains(&Key::AccountId(Bytes32(other)))
+        );
+        assert!(
+            index_recovery("RecoveryCreated", &fields).contains(&Key::AccountId(Bytes32(account)))
+        );
+        assert!(
+            index_recovery("RecoveryInitiated", &fields).contains(&Key::AccountId(Bytes32(other)))
+        );
+    }
+
+    #[test]
     fn index_sdk_pallet_all_known_pallets() {
         let fields = named(vec![]);
         let known = [
@@ -859,5 +1052,15 @@ mod pallets_tests {
                 "dispatch should recognise {name}"
             );
         }
+    }
+
+    #[test]
+    fn fast_unstake_batch_checked_uses_positional_fallback() {
+        let fields = unnamed(vec![composite_value(unnamed(vec![
+            u128_val(8),
+            u128_val(9),
+        ]))]);
+        let keys = index_fast_unstake("BatchChecked", &fields);
+        assert_eq!(keys, vec![Key::EraIndex(8), Key::EraIndex(9)]);
     }
 }

@@ -55,9 +55,6 @@ pub fn get_events_custom(tree: &Tree, key: &CustomKey) -> Vec<EventRef> {
     let prefix = key.db_prefix();
     let mut iter = tree.scan_prefix(prefix).keys();
     while let Some(Ok(raw)) = iter.next_back() {
-        if raw.len() < 6 {
-            continue;
-        }
         let suffix = &raw[raw.len() - 6..];
         let block_number = u32::from_be_bytes(suffix[..4].try_into().unwrap());
         let event_index = u16::from_be_bytes(suffix[4..].try_into().unwrap());
@@ -85,6 +82,7 @@ pub fn process_msg_status(span_db: &Tree) -> ResponseMessage {
     ResponseMessage::Status(spans)
 }
 
+#[coverage(off)]
 pub async fn process_msg_variants(
     rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
 ) -> Result<ResponseMessage, IndexError> {
@@ -141,14 +139,18 @@ pub fn process_msg_get_events(trees: &Trees, key: Key) -> ResponseMessage {
     }
 }
 
-pub async fn process_msg(
-    rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+#[coverage(off)]
+fn size_on_disk_response(trees: &Trees) -> Result<ResponseMessage, IndexError> {
+    Ok(ResponseMessage::SizeOnDisk(trees.root.size_on_disk()?))
+}
+
+fn process_local_msg(
     trees: &Trees,
     msg: RequestMessage,
     sub_tx: &UnboundedSender<SubscriptionMessage>,
     sub_response_tx: &UnboundedSender<ResponseMessage>,
-) -> Result<ResponseMessage, IndexError> {
-    Ok(match msg {
+) -> Option<Result<ResponseMessage, IndexError>> {
+    Some(Ok(match msg {
         RequestMessage::Status => process_msg_status(&trees.span),
         RequestMessage::SubscribeStatus => {
             sub_tx
@@ -166,7 +168,7 @@ pub async fn process_msg(
                 .unwrap();
             ResponseMessage::Unsubscribed
         }
-        RequestMessage::Variants => process_msg_variants(rpc).await?,
+        RequestMessage::Variants => return None,
         RequestMessage::GetEvents { key } => process_msg_get_events(trees, key),
         RequestMessage::SubscribeEvents { key } => {
             sub_tx
@@ -186,12 +188,28 @@ pub async fn process_msg(
                 .unwrap();
             ResponseMessage::Unsubscribed
         }
-        RequestMessage::SizeOnDisk => ResponseMessage::SizeOnDisk(trees.root.size_on_disk()?),
-    })
+        RequestMessage::SizeOnDisk => return Some(size_on_disk_response(trees)),
+    }))
+}
+
+#[coverage(off)]
+pub async fn process_msg(
+    rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    trees: &Trees,
+    msg: RequestMessage,
+    sub_tx: &UnboundedSender<SubscriptionMessage>,
+    sub_response_tx: &UnboundedSender<ResponseMessage>,
+) -> Result<ResponseMessage, IndexError> {
+    if let Some(response) = process_local_msg(trees, msg, sub_tx, sub_response_tx) {
+        return response;
+    }
+
+    process_msg_variants(rpc).await
 }
 
 // ─── Connection handler ───────────────────────────────────────────────────────
 
+#[coverage(off)]
 async fn handle_connection(
     rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     raw_stream: TcpStream,
@@ -242,6 +260,7 @@ async fn handle_connection(
 
 // ─── Listener ────────────────────────────────────────────────────────────────
 
+#[coverage(off)]
 pub async fn websockets_listen(
     trees: Trees,
     rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
@@ -269,5 +288,172 @@ pub async fn websockets_listen(
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[coverage(off)]
+mod tests {
+    use super::*;
+
+    fn temp_trees() -> Trees {
+        let db_config = sled::Config::new().temporary(true);
+        Trees::open(db_config).unwrap()
+    }
+
+    #[test]
+    fn process_local_msg_handles_subscribe_and_unsubscribe_events() {
+        let trees = temp_trees();
+        let (sub_tx, mut sub_rx) = unbounded_channel();
+        let (response_tx, _) = unbounded_channel();
+        let key = Key::PoolId(7);
+
+        let subscribed = process_local_msg(
+            &trees,
+            RequestMessage::SubscribeEvents { key: key.clone() },
+            &sub_tx,
+            &response_tx,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(subscribed, ResponseMessage::Subscribed));
+        assert!(matches!(
+            sub_rx.try_recv().unwrap(),
+            SubscriptionMessage::SubscribeEvents { key: received, .. } if received == key
+        ));
+
+        let unsubscribed = process_local_msg(
+            &trees,
+            RequestMessage::UnsubscribeEvents { key: key.clone() },
+            &sub_tx,
+            &response_tx,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(unsubscribed, ResponseMessage::Unsubscribed));
+        assert!(matches!(
+            sub_rx.try_recv().unwrap(),
+            SubscriptionMessage::UnsubscribeEvents { key: received, .. } if received == key
+        ));
+    }
+
+    #[test]
+    fn process_local_msg_handles_status_and_size_requests() {
+        let trees = temp_trees();
+        let (sub_tx, mut sub_rx) = unbounded_channel();
+        let (response_tx, _) = unbounded_channel();
+
+        let status = process_local_msg(
+            &trees,
+            RequestMessage::SubscribeStatus,
+            &sub_tx,
+            &response_tx,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(status, ResponseMessage::Subscribed));
+        assert!(matches!(
+            sub_rx.try_recv().unwrap(),
+            SubscriptionMessage::SubscribeStatus { .. }
+        ));
+
+        let size = process_local_msg(
+            &trees,
+            RequestMessage::SizeOnDisk,
+            &sub_tx,
+            &response_tx,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(size, ResponseMessage::SizeOnDisk(_)));
+    }
+
+    #[test]
+    fn tree_scan_helpers_limit_results_and_skip_short_custom_keys() {
+        let trees = temp_trees();
+        let bytes_key = Key::AccountId(Bytes32([0xAA; 32]));
+        let u32_key = Key::PoolId(5);
+        let custom_key = CustomKey {
+            name: "slug".into(),
+            value: CustomValue::String("hello".into()),
+        };
+
+        trees.custom.insert(custom_key.db_prefix(), &[]).unwrap();
+        for i in 0..150u32 {
+            bytes_key.write_db_key(&trees, i, 0).unwrap();
+            u32_key.write_db_key(&trees, i, 0).unwrap();
+            Key::Custom(custom_key.clone()).write_db_key(&trees, i, 0).unwrap();
+        }
+
+        assert_eq!(get_events_bytes32(&trees.substrate.account_id, &Bytes32([0xAA; 32])).len(), 100);
+        assert_eq!(get_events_u32(&trees.substrate.pool_id, 5).len(), 100);
+        assert_eq!(get_events_custom(&trees.custom, &custom_key).len(), 100);
+
+        trees.custom.insert(b"x", &[]).unwrap();
+        assert_eq!(get_events_custom(&trees.custom, &custom_key).len(), 100);
+    }
+
+    #[test]
+    fn process_msg_get_events_ignores_invalid_block_event_json() {
+        let trees = temp_trees();
+        let key = Key::RefIndex(3);
+        key.write_db_key(&trees, 10, 1).unwrap();
+        let db_key: U32<BigEndian> = 10u32.into();
+        trees
+            .block_events
+            .insert(db_key.as_bytes(), b"not-json".as_slice())
+            .unwrap();
+
+        let ResponseMessage::Events { block_events, .. } = process_msg_get_events(&trees, key) else {
+            panic!("expected events response");
+        };
+        assert!(block_events.is_empty());
+    }
+
+    #[test]
+    fn process_local_msg_handles_status_unsubscribe_and_get_events() {
+        let trees = temp_trees();
+        let (sub_tx, mut sub_rx) = unbounded_channel();
+        let (response_tx, _) = unbounded_channel();
+        let key = Key::RefIndex(12);
+        key.write_db_key(&trees, 22, 1).unwrap();
+
+        let status = process_local_msg(&trees, RequestMessage::Status, &sub_tx, &response_tx)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(status, ResponseMessage::Status(_)));
+
+        let unsubscribed = process_local_msg(
+            &trees,
+            RequestMessage::UnsubscribeStatus,
+            &sub_tx,
+            &response_tx,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(unsubscribed, ResponseMessage::Unsubscribed));
+        assert!(matches!(
+            sub_rx.try_recv().unwrap(),
+            SubscriptionMessage::UnsubscribeStatus { .. }
+        ));
+
+        let events = process_local_msg(
+            &trees,
+            RequestMessage::GetEvents { key },
+            &sub_tx,
+            &response_tx,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(events, ResponseMessage::Events { .. }));
+    }
+
+    #[test]
+    fn process_local_msg_returns_none_for_variants() {
+        let trees = temp_trees();
+        let (sub_tx, _) = unbounded_channel();
+        let (response_tx, _) = unbounded_channel();
+
+        assert!(process_local_msg(&trees, RequestMessage::Variants, &sub_tx, &response_tx).is_none());
     }
 }

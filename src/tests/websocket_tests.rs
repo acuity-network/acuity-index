@@ -104,6 +104,30 @@ mod websocket_tests {
     }
 
     #[test]
+    fn process_msg_get_events_without_stored_block_events() {
+        let trees = temp_trees();
+
+        let key = Key::RefIndex(42);
+        key.write_db_key(&trees, 50, 3).unwrap();
+
+        let msg = process_msg_get_events(&trees, key.clone());
+        match msg {
+            ResponseMessage::Events {
+                key: returned_key,
+                events,
+                block_events,
+            } => {
+                assert_eq!(returned_key, key);
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].block_number, 50);
+                assert_eq!(events[0].event_index, 3);
+                assert!(block_events.is_empty());
+            }
+            _ => panic!("wrong response type"),
+        }
+    }
+
+    #[test]
     fn get_events_custom_empty_tree() {
         let trees = temp_trees();
         let events = get_events_custom(

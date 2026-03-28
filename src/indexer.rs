@@ -21,7 +21,7 @@ use zerocopy::{BigEndian, FromBytes, IntoBytes, byteorder::U32};
 use crate::{
     config::{ChainConfig, KeyTypeName, ParamKey, ResolvedParamConfig},
     pallets::{
-        extract_bool, extract_bytes32, extract_string, extract_u128, extract_u32, extract_u64,
+        extract_bool, extract_bytes32, extract_string, extract_u32, extract_u64, extract_u128,
         get_field, index_sdk_pallet,
     },
     shared::*,
@@ -63,9 +63,7 @@ impl Indexer {
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
-            custom_index: config
-                .build_custom_index()
-                .expect("validated chain config"),
+            custom_index: config.build_custom_index().expect("validated chain config"),
         }
     }
 
@@ -80,9 +78,7 @@ impl Indexer {
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
-            custom_index: config
-                .build_custom_index()
-                .expect("validated chain config"),
+            custom_index: config.build_custom_index().expect("validated chain config"),
         }
     }
 
@@ -175,19 +171,31 @@ impl Indexer {
             }
         }
 
-        if self.store_events {
-            let db_key: U32<BigEndian> = block_number.into();
-            let spec_be: U32<BigEndian> = spec.into();
-            let json_bytes = serde_json::to_vec(&json!({
-                "specVersion": u32::from(spec_be),
-                "events": decoded_events,
-            }))?;
-            self.trees
-                .block_events
-                .insert(db_key.as_bytes(), json_bytes.as_slice())?;
-        }
+        self.store_block_events(block_number, spec, decoded_events)?;
 
         Ok((block_number, events.len() as u32, key_count))
+    }
+
+    fn store_block_events(
+        &self,
+        block_number: u32,
+        spec: u32,
+        decoded_events: Vec<serde_json::Value>,
+    ) -> Result<(), IndexError> {
+        if !self.store_events {
+            return Ok(());
+        }
+
+        let db_key: U32<BigEndian> = block_number.into();
+        let spec_be: U32<BigEndian> = spec.into();
+        let json_bytes = serde_json::to_vec(&json!({
+            "specVersion": u32::from(spec_be),
+            "events": decoded_events,
+        }))?;
+        self.trees
+            .block_events
+            .insert(db_key.as_bytes(), json_bytes.as_slice())?;
+        Ok(())
     }
 
     // ─── Key derivation ───────────────────────────────────────────────────────
@@ -327,7 +335,11 @@ fn value_to_builtin_key(value: &Value<()>, key_type: &KeyTypeName) -> Option<Key
     }
 }
 
-fn value_to_custom_key(value: &Value<()>, name: &str, kind: &crate::config::ScalarKind) -> Option<Key> {
+fn value_to_custom_key(
+    value: &Value<()>,
+    name: &str,
+    kind: &crate::config::ScalarKind,
+) -> Option<Key> {
     let value = match kind {
         crate::config::ScalarKind::Bytes32 => {
             extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b)))
@@ -805,6 +817,7 @@ pub async fn run_indexer(
 mod tests {
     use super::*;
     use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
+    use serde_json::json;
 
     fn temp_trees() -> Trees {
         let dir = tempfile::tempdir().unwrap();
@@ -814,6 +827,21 @@ mod tests {
 
     fn test_config() -> ChainConfig {
         toml::from_str(crate::config::POLKADOT_TOML).unwrap()
+    }
+
+    fn test_indexer(trees: Trees, store_events: bool) -> Indexer {
+        let config = test_config();
+        Indexer {
+            trees,
+            api: None,
+            rpc: None,
+            index_variant: true,
+            store_events,
+            status_subs: Mutex::new(Vec::new()),
+            events_subs: Mutex::new(HashMap::new()),
+            sdk_pallets: config.sdk_pallets(),
+            custom_index: config.build_custom_index().expect("validated chain config"),
+        }
     }
 
     fn u128_value(value: u128) -> Value<()> {
@@ -856,8 +884,14 @@ mod tests {
             (KeyTypeName::EraIndex, Key::EraIndex(9)),
             (KeyTypeName::MessageId, Key::MessageId(Bytes32([0xAB; 32]))),
             (KeyTypeName::PoolId, Key::PoolId(9)),
-            (KeyTypeName::PreimageHash, Key::PreimageHash(Bytes32([0xAB; 32]))),
-            (KeyTypeName::ProposalHash, Key::ProposalHash(Bytes32([0xAB; 32]))),
+            (
+                KeyTypeName::PreimageHash,
+                Key::PreimageHash(Bytes32([0xAB; 32])),
+            ),
+            (
+                KeyTypeName::ProposalHash,
+                Key::ProposalHash(Bytes32([0xAB; 32])),
+            ),
             (KeyTypeName::ProposalIndex, Key::ProposalIndex(9)),
             (KeyTypeName::RefIndex, Key::RefIndex(9)),
             (KeyTypeName::RegistrarIndex, Key::RegistrarIndex(9)),
@@ -880,14 +914,22 @@ mod tests {
     #[test]
     fn value_to_custom_key_supports_all_scalar_kinds() {
         assert_eq!(
-            value_to_custom_key(&bytes32_value(0xCD), "item_id", &crate::config::ScalarKind::Bytes32),
+            value_to_custom_key(
+                &bytes32_value(0xCD),
+                "item_id",
+                &crate::config::ScalarKind::Bytes32
+            ),
             Some(Key::Custom(CustomKey {
                 name: "item_id".into(),
                 value: CustomValue::Bytes32(Bytes32([0xCD; 32])),
             }))
         );
         assert_eq!(
-            value_to_custom_key(&u128_value(7), "revision_id", &crate::config::ScalarKind::U32),
+            value_to_custom_key(
+                &u128_value(7),
+                "revision_id",
+                &crate::config::ScalarKind::U32
+            ),
             Some(Key::Custom(CustomKey {
                 name: "revision_id".into(),
                 value: CustomValue::U32(7),
@@ -908,14 +950,22 @@ mod tests {
             }))
         );
         assert_eq!(
-            value_to_custom_key(&string_value("slug"), "slug", &crate::config::ScalarKind::String),
+            value_to_custom_key(
+                &string_value("slug"),
+                "slug",
+                &crate::config::ScalarKind::String
+            ),
             Some(Key::Custom(CustomKey {
                 name: "slug".into(),
                 value: CustomValue::String("slug".into()),
             }))
         );
         assert_eq!(
-            value_to_custom_key(&bool_value(true), "published", &crate::config::ScalarKind::Bool),
+            value_to_custom_key(
+                &bool_value(true),
+                "published",
+                &crate::config::ScalarKind::Bool
+            ),
             Some(Key::Custom(CustomKey {
                 name: "published".into(),
                 value: CustomValue::Bool(true),
@@ -959,6 +1009,47 @@ mod tests {
         assert_eq!(saved.store_events, 0);
     }
 
+    #[test]
+    fn store_block_events_persists_spec_version_and_decoded_events() {
+        let trees = temp_trees();
+        let indexer = test_indexer(trees.clone(), true);
+        let decoded_events = vec![json!({
+            "palletName": "Balances",
+            "eventName": "Deposit",
+            "fields": {"amount": "999"},
+        })];
+
+        indexer
+            .store_block_events(42, 1234, decoded_events)
+            .unwrap();
+
+        let db_key: U32<BigEndian> = 42u32.into();
+        let bytes = trees.block_events.get(db_key.as_bytes()).unwrap().unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(stored["specVersion"], json!(1234));
+        assert_eq!(
+            stored["events"],
+            json!([{
+                "palletName": "Balances",
+                "eventName": "Deposit",
+                "fields": {"amount": "999"},
+            }])
+        );
+    }
+
+    #[test]
+    fn store_block_events_skips_writes_when_disabled() {
+        let trees = temp_trees();
+        let indexer = test_indexer(trees.clone(), false);
+
+        indexer
+            .store_block_events(42, 1234, vec![json!({"eventName": "Ignored"})])
+            .unwrap();
+
+        let db_key: U32<BigEndian> = 42u32.into();
+        assert!(trees.block_events.get(db_key.as_bytes()).unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn notify_event_subscribers_includes_decoded_block_events() {
         let trees = temp_trees();
@@ -990,6 +1081,60 @@ mod tests {
         assert_eq!(block_events.len(), 1);
         assert_eq!(block_events[0].block_number, 7);
         assert_eq!(block_events[0].events, serde_json::json!({"events": []}));
+    }
+
+    #[tokio::test]
+    async fn notify_event_subscribers_omits_block_events_when_not_stored() {
+        let trees = temp_trees();
+        let indexer = test_indexer(trees, false);
+        let key = Key::RefIndex(42);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeEvents {
+                key: key.clone(),
+                tx,
+            },
+        );
+
+        indexer.index_event_key(key.clone(), 7, 3).unwrap();
+
+        let ResponseMessage::Events {
+            events,
+            block_events,
+            ..
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected events response");
+        };
+        assert_eq!(
+            events,
+            vec![EventRef {
+                block_number: 7,
+                event_index: 3,
+            }]
+        );
+        assert!(block_events.is_empty());
+    }
+
+    #[test]
+    fn load_spans_keeps_span_when_event_storage_remains_disabled() {
+        let trees = temp_trees();
+        let sv = SpanDbValue {
+            start: 5u32.into(),
+            version: 0u16.into(),
+            index_variant: 1,
+            store_events: 0,
+        };
+        trees
+            .span
+            .insert(15u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
+            .unwrap();
+
+        let spans = load_spans(&trees.span, &[0], true, false).unwrap();
+        assert_eq!(spans, vec![Span { start: 5, end: 15 }]);
+        assert!(trees.span.get(15u32.to_be_bytes()).unwrap().is_some());
     }
 
     #[test]
@@ -1025,8 +1170,16 @@ kind = "u32"
         let indexer = Indexer::new_test(temp_trees(), &config);
         let fields = Composite::Named(vec![("flag".into(), bool_value(true))]);
 
-        assert!(indexer.keys_for_event("UnknownSdk", "Created", &fields).is_empty());
-        assert!(indexer.keys_for_event("Custom", "Created", &fields).is_empty());
+        assert!(
+            indexer
+                .keys_for_event("UnknownSdk", "Created", &fields)
+                .is_empty()
+        );
+        assert!(
+            indexer
+                .keys_for_event("Custom", "Created", &fields)
+                .is_empty()
+        );
     }
 
     #[test]

@@ -172,8 +172,7 @@ async fn main() {
             Ok(config) => {
                 info!(
                     "Generated chain config for {} at {}",
-                    config.name,
-                    output_path
+                    config.name, output_path
                 );
                 exit(0);
             }
@@ -328,7 +327,10 @@ mod main_tests {
 
     #[test]
     fn db_mode_maps_to_sled_modes() {
-        assert!(matches!(sled::Mode::from(DbMode::LowSpace), sled::Mode::LowSpace));
+        assert!(matches!(
+            sled::Mode::from(DbMode::LowSpace),
+            sled::Mode::LowSpace
+        ));
         assert!(matches!(
             sled::Mode::from(DbMode::HighThroughput),
             sled::Mode::HighThroughput
@@ -352,5 +354,12 @@ mod main_tests {
         assert!(!args.index_variant);
         assert!(!args.store_events);
         assert_eq!(args.port, 8172);
+    }
+
+    #[test]
+    fn args_parse_store_events_flag() {
+        let args = Args::try_parse_from(["acuity-index", "--store-events"]).unwrap();
+
+        assert!(args.store_events);
     }
 }

@@ -1,0 +1,194 @@
+name = "acuity-runtime"
+genesis_hash = "311940d013f8dd3069f30c733a0c73f948a847f7dc39db9270fd0bb81b4256b7"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[[pallets]]
+name = "System"
+sdk = true
+
+[[pallets]]
+name = "Balances"
+sdk = true
+
+[[pallets]]
+name = "Sudo"
+sdk = true
+
+[[pallets]]
+name = "TransactionPayment"
+sdk = true
+
+[[pallets]]
+name = "Content"
+
+[[pallets.events]]
+name = "PublishItem"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets.events]]
+name = "PublishRevision"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "revision_id"
+key = "revision_id"
+kind = "u32"
+
+[[pallets.events.params]]
+field = "mentions"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "ipfs_hash"
+key = "ipfs_hash"
+kind = "bytes32"
+
+[[pallets.events]]
+name = "RetractItem"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets.events]]
+name = "SetNotRevsionable"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets.events]]
+name = "SetNotRetractable"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets]]
+name = "AccountContent"
+
+[[pallets.events]]
+name = "AddItem"
+
+[[pallets.events.params]]
+field = "account"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events]]
+name = "RemoveItem"
+
+[[pallets.events.params]]
+field = "account"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets]]
+name = "AccountProfile"
+
+[[pallets.events]]
+name = "ProfileSet"
+
+[[pallets.events.params]]
+field = "account"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets]]
+name = "ContentReactions"
+
+[[pallets.events]]
+name = "AddReaction"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events.params]]
+field = "revision_id"
+key = "revision_id"
+kind = "u32"
+
+[[pallets.events.params]]
+field = "item_owner"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "reactor"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "emoji"
+key = "emoji"
+kind = "u32"
+
+[[pallets.events]]
+name = "RemoveReaction"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+kind = "bytes32"
+
+[[pallets.events.params]]
+field = "revision_id"
+key = "revision_id"
+kind = "u32"
+
+[[pallets.events.params]]
+field = "item_owner"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "reactor"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "emoji"
+key = "emoji"
+kind = "u32"

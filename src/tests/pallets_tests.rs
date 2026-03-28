@@ -975,8 +975,10 @@ mod pallets_tests {
             ("proposal_index", u128_val(5)),
             ("beneficiary", bytes32_val(other)),
         ]);
-        assert!(index_treasury("Awarded", &treasury_fallback_fields)
-            .contains(&Key::AccountId(Bytes32(other))));
+        assert!(
+            index_treasury("Awarded", &treasury_fallback_fields)
+                .contains(&Key::AccountId(Bytes32(other)))
+        );
         assert_eq!(
             index_treasury("Deposit", &fields),
             vec![Key::AccountId(Bytes32(account))]
@@ -998,9 +1000,13 @@ mod pallets_tests {
         assert!(index_nomination_pools("Bonded", &fields).contains(&Key::PoolId(7)));
         assert!(index_nomination_pools("PaidOut", &fields).contains(&Key::PoolId(7)));
         assert!(index_nomination_pools("Withdrawn", &fields).contains(&Key::PoolId(7)));
-        assert!(index_nomination_pools("MemberRemoved", &fields)
-            .contains(&Key::AccountId(Bytes32(account))));
-        assert!(index_nomination_pools("UnbondingPoolSlashed", &fields).contains(&Key::EraIndex(8)));
+        assert!(
+            index_nomination_pools("MemberRemoved", &fields)
+                .contains(&Key::AccountId(Bytes32(account)))
+        );
+        assert!(
+            index_nomination_pools("UnbondingPoolSlashed", &fields).contains(&Key::EraIndex(8))
+        );
         assert!(index_identity("JudgementRequested", &fields).contains(&Key::RegistrarIndex(6)));
         assert_eq!(
             index_identity("RegistrarAdded", &fields),

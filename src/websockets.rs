@@ -357,14 +357,9 @@ mod tests {
             SubscriptionMessage::SubscribeStatus { .. }
         ));
 
-        let size = process_local_msg(
-            &trees,
-            RequestMessage::SizeOnDisk,
-            &sub_tx,
-            &response_tx,
-        )
-        .unwrap()
-        .unwrap();
+        let size = process_local_msg(&trees, RequestMessage::SizeOnDisk, &sub_tx, &response_tx)
+            .unwrap()
+            .unwrap();
         assert!(matches!(size, ResponseMessage::SizeOnDisk(_)));
     }
 
@@ -382,10 +377,15 @@ mod tests {
         for i in 0..150u32 {
             bytes_key.write_db_key(&trees, i, 0).unwrap();
             u32_key.write_db_key(&trees, i, 0).unwrap();
-            Key::Custom(custom_key.clone()).write_db_key(&trees, i, 0).unwrap();
+            Key::Custom(custom_key.clone())
+                .write_db_key(&trees, i, 0)
+                .unwrap();
         }
 
-        assert_eq!(get_events_bytes32(&trees.substrate.account_id, &Bytes32([0xAA; 32])).len(), 100);
+        assert_eq!(
+            get_events_bytes32(&trees.substrate.account_id, &Bytes32([0xAA; 32])).len(),
+            100
+        );
         assert_eq!(get_events_u32(&trees.substrate.pool_id, 5).len(), 100);
         assert_eq!(get_events_custom(&trees.custom, &custom_key).len(), 100);
 
@@ -404,7 +404,8 @@ mod tests {
             .insert(db_key.as_bytes(), b"not-json".as_slice())
             .unwrap();
 
-        let ResponseMessage::Events { block_events, .. } = process_msg_get_events(&trees, key) else {
+        let ResponseMessage::Events { block_events, .. } = process_msg_get_events(&trees, key)
+        else {
             panic!("expected events response");
         };
         assert!(block_events.is_empty());
@@ -454,6 +455,8 @@ mod tests {
         let (sub_tx, _) = unbounded_channel();
         let (response_tx, _) = unbounded_channel();
 
-        assert!(process_local_msg(&trees, RequestMessage::Variants, &sub_tx, &response_tx).is_none());
+        assert!(
+            process_local_msg(&trees, RequestMessage::Variants, &sub_tx, &response_tx).is_none()
+        );
     }
 }

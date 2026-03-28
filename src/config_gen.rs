@@ -4,8 +4,7 @@ use crate::{
     shared::IndexError,
 };
 use scale_info::{
-    Field, PortableRegistry, Type, TypeDef, TypeDefPrimitive, Variant,
-    form::PortableForm,
+    Field, PortableRegistry, Type, TypeDef, TypeDefPrimitive, Variant, form::PortableForm,
 };
 use std::{fs, path::Path};
 use subxt::{
@@ -105,7 +104,11 @@ fn is_u8_type(type_id: u32, types: &PortableRegistry) -> bool {
     )
 }
 
-fn infer_scalar_kind_inner(type_id: u32, types: &PortableRegistry, depth: usize) -> Option<ScalarKind> {
+fn infer_scalar_kind_inner(
+    type_id: u32,
+    types: &PortableRegistry,
+    depth: usize,
+) -> Option<ScalarKind> {
     if depth > 8 {
         return None;
     }
@@ -129,7 +132,9 @@ fn infer_scalar_kind_inner(type_id: u32, types: &PortableRegistry, depth: usize)
         TypeDef::Tuple(tuple) if tuple.fields.len() == 1 => {
             infer_scalar_kind_inner(tuple.fields[0].id, types, depth + 1)
         }
-        TypeDef::Compact(compact) => infer_scalar_kind_inner(compact.type_param.id, types, depth + 1),
+        TypeDef::Compact(compact) => {
+            infer_scalar_kind_inner(compact.type_param.id, types, depth + 1)
+        }
         _ => None,
     }
 }
@@ -138,7 +143,11 @@ pub(crate) fn infer_scalar_kind(type_id: u32, types: &PortableRegistry) -> Optio
     infer_scalar_kind_inner(type_id, types, 0)
 }
 
-pub(crate) fn infer_param(field: &Field<PortableForm>, idx: usize, types: &PortableRegistry) -> Option<ParamConfig> {
+pub(crate) fn infer_param(
+    field: &Field<PortableForm>,
+    idx: usize,
+    types: &PortableRegistry,
+) -> Option<ParamConfig> {
     let field_name = field.name.as_deref();
     let type_name = field.type_name.as_deref();
     let ty = types.resolve(field.ty.id)?;
@@ -199,7 +208,10 @@ pub(crate) fn build_chain_config(
                 });
             }
 
-            let events = variants.iter().map(|variant| event_config(variant, types)).collect();
+            let events = variants
+                .iter()
+                .map(|variant| event_config(variant, types))
+                .collect();
             Some(PalletConfig {
                 name: pallet.name().to_owned(),
                 sdk: false,
@@ -227,7 +239,11 @@ pub async fn write_generated_chain_config(
     let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client);
 
     let runtime_version = rpc.state_get_runtime_version(None).await?;
-    let metadata: Metadata = rpc.state_get_metadata(None).await?.to_frame_metadata()?.try_into()?;
+    let metadata: Metadata = rpc
+        .state_get_metadata(None)
+        .await?
+        .to_frame_metadata()?
+        .try_into()?;
     let genesis_hash = hex::encode(api.genesis_hash().as_ref());
     let chain_name = runtime_version
         .other
@@ -307,7 +323,13 @@ mod tests {
         let wrapper_ty = types
             .types
             .iter()
-            .find(|ty| ty.ty.path.segments.last().is_some_and(|segment| segment == "WrapperU64"))
+            .find(|ty| {
+                ty.ty
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment == "WrapperU64")
+            })
             .map(|ty| &ty.ty)
             .unwrap();
 
@@ -335,14 +357,19 @@ mod tests {
         let tuple_id = registry.register_type(&MetaType::new::<TupleWrapper>()).id;
         let unsupported_id = registry.register_type(&MetaType::new::<Unsupported>()).id;
         let plain_tuple_id = registry.register_type(&MetaType::new::<(u32,)>()).id;
-        let compact_id = registry.register_type(&MetaType::new::<CompactWrapper>()).id;
+        let compact_id = registry
+            .register_type(&MetaType::new::<CompactWrapper>())
+            .id;
         let u16_id = registry.register_type(&MetaType::new::<u16>()).id;
         let types: PortableRegistry = registry.into();
 
         assert_eq!(infer_scalar_kind(u64_id, &types), Some(ScalarKind::U64));
         assert_eq!(infer_scalar_kind(bool_id, &types), Some(ScalarKind::Bool));
         assert_eq!(infer_scalar_kind(tuple_id, &types), Some(ScalarKind::U64));
-        assert_eq!(infer_scalar_kind(plain_tuple_id, &types), Some(ScalarKind::U32));
+        assert_eq!(
+            infer_scalar_kind(plain_tuple_id, &types),
+            Some(ScalarKind::U32)
+        );
         assert_eq!(infer_scalar_kind(compact_id, &types), Some(ScalarKind::U32));
         assert_eq!(infer_scalar_kind(unsupported_id, &types), None);
         assert_eq!(infer_scalar_kind(u16_id, &types), None);
@@ -413,6 +440,9 @@ mod tests {
         let TypeDef::Composite(composite) = &unsupported_ty.type_def else {
             panic!("expected composite type");
         };
-        assert_eq!(infer_param(&composite.fields[0], 0, &unsupported_types), None);
+        assert_eq!(
+            infer_param(&composite.fields[0], 0, &unsupported_types),
+            None
+        );
     }
 }

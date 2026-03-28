@@ -7,8 +7,8 @@ use std::fmt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite;
 use zerocopy::{
-    byteorder::{U16, U32},
     BigEndian, IntoBytes,
+    byteorder::{U16, U32},
 };
 use zerocopy_derive::*;
 
@@ -673,10 +673,10 @@ pub enum SubscriptionMessage {
 #[coverage(off)]
 mod tests {
     use super::*;
-    use serde::de::value::{
-        Error as ValueError, StrDeserializer, U128Deserializer, U64Deserializer,
-    };
     use serde::Deserialize;
+    use serde::de::value::{
+        Error as ValueError, StrDeserializer, U64Deserializer, U128Deserializer,
+    };
 
     #[test]
     fn u64_text_serializes_and_deserializes_from_multiple_input_shapes() {

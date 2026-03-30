@@ -101,6 +101,14 @@ pub enum Command {
         #[command(flatten)]
         args: PurgeIndexArgs,
     },
+    /// Generate a starter chain TOML config from live node metadata
+    GenerateChainConfig {
+        /// URL of Substrate node to connect to
+        #[arg(short, long)]
+        url: String,
+        /// Path to write the generated chain TOML config
+        output: String,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -111,9 +119,6 @@ pub struct RunArgs {
     /// Path to a custom chain TOML config (overrides --chain)
     #[arg(long)]
     pub chain_config: Option<String>,
-    /// Generate a starter chain TOML config from live metadata and write it to this path
-    #[arg(long)]
-    pub generate_chain_config: Option<String>,
     /// Database path
     #[arg(short, long)]
     pub db_path: Option<String>,
@@ -241,33 +246,26 @@ async fn main() {
     let log_level = args.verbose.log_level_filter().as_trace();
     tracing_subscriber::fmt().with_max_level(log_level).init();
 
-    if let Some(Command::PurgeIndex { args: purge_args }) = &args.command {
-        purge_index(purge_args);
+    match &args.command {
+        Some(Command::PurgeIndex { args: purge_args }) => purge_index(purge_args),
+        Some(Command::GenerateChainConfig { url, output }) => {
+            match write_generated_chain_config(url, PathBuf::from(output).as_path()).await {
+                Ok(config) => {
+                    info!("Generated chain config for {} at {}", config.name, output);
+                    exit(0);
+                }
+                Err(err) => {
+                    error!("Failed to generate chain config: {err}");
+                    exit(1);
+                }
+            }
+        }
+        None => {}
     }
 
     let run_args = &args.run;
 
     let chain_config = load_chain_config(run_args.chain, run_args.chain_config.as_deref());
-
-    if let Some(output_path) = &run_args.generate_chain_config {
-        let url = run_args
-            .url
-            .clone()
-            .unwrap_or_else(|| chain_config.default_url.clone());
-        match write_generated_chain_config(&url, PathBuf::from(output_path).as_path()).await {
-            Ok(config) => {
-                info!(
-                    "Generated chain config for {} at {}",
-                    config.name, output_path
-                );
-                exit(0);
-            }
-            Err(err) => {
-                error!("Failed to generate chain config: {err}");
-                exit(1);
-            }
-        }
-    }
 
     info!("Indexing chain: {}", chain_config.name);
 

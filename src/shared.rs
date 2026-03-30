@@ -7,8 +7,8 @@ use std::fmt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite;
 use zerocopy::{
-    BigEndian, IntoBytes,
     byteorder::{U16, U32},
+    BigEndian, IntoBytes,
 };
 use zerocopy_derive::*;
 
@@ -112,7 +112,6 @@ impl AsRef<[u8]> for Bytes32 {
 }
 
 impl Serialize for Bytes32 {
-    #[coverage(off)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -122,7 +121,6 @@ impl Serialize for Bytes32 {
 }
 
 impl<'de> Deserialize<'de> for Bytes32 {
-    #[coverage(off)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -141,7 +139,6 @@ impl<'de> Deserialize<'de> for Bytes32 {
 pub struct U64Text(pub u64);
 
 impl Serialize for U64Text {
-    #[coverage(off)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -151,7 +148,6 @@ impl Serialize for U64Text {
 }
 
 impl<'de> Deserialize<'de> for U64Text {
-    #[coverage(off)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -195,7 +191,6 @@ impl<'de> Deserialize<'de> for U64Text {
 pub struct U128Text(pub u128);
 
 impl Serialize for U128Text {
-    #[coverage(off)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -205,7 +200,6 @@ impl Serialize for U128Text {
 }
 
 impl<'de> Deserialize<'de> for U128Text {
-    #[coverage(off)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -337,7 +331,6 @@ pub struct SubstrateTrees {
 }
 
 impl SubstrateTrees {
-    #[coverage(off)]
     pub fn open(db: &Db) -> Result<Self, sled::Error> {
         Ok(SubstrateTrees {
             account_id: db.open_tree(b"account_id")?,
@@ -357,7 +350,6 @@ impl SubstrateTrees {
         })
     }
 
-    #[coverage(off)]
     pub fn flush(&self) -> Result<(), sled::Error> {
         self.account_id.flush()?;
         self.account_index.flush()?;
@@ -390,7 +382,6 @@ pub struct Trees {
 }
 
 impl Trees {
-    #[coverage(off)]
     pub fn open(db_config: sled::Config) -> Result<Self, sled::Error> {
         let db = db_config.open()?;
         Ok(Trees {
@@ -403,7 +394,6 @@ impl Trees {
         })
     }
 
-    #[coverage(off)]
     pub fn flush(&self) -> Result<(), sled::Error> {
         self.root.flush()?;
         self.span.flush()?;
@@ -442,7 +432,6 @@ pub enum Key {
 }
 
 impl Key {
-    #[coverage(off)]
     pub fn write_db_key(
         &self,
         trees: &Trees,
@@ -670,13 +659,12 @@ pub enum SubscriptionMessage {
 }
 
 #[cfg(test)]
-#[coverage(off)]
 mod tests {
     use super::*;
-    use serde::Deserialize;
     use serde::de::value::{
-        Error as ValueError, StrDeserializer, U64Deserializer, U128Deserializer,
+        Error as ValueError, StrDeserializer, U128Deserializer, U64Deserializer,
     };
+    use serde::Deserialize;
 
     #[test]
     fn u64_text_serializes_and_deserializes_from_multiple_input_shapes() {

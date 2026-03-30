@@ -28,7 +28,7 @@ Any Substrate chain can be supported by providing a custom TOML config with `--c
 
 ## Requirements
 
-- Rust **nightly** (see `rust-toolchain.toml`)
+- Rust **stable** (see `rust-toolchain.toml`)
 - A running Substrate node with WebSocket RPC enabled
 
 ## Installation

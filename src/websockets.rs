@@ -82,7 +82,6 @@ pub fn process_msg_status(span_db: &Tree) -> ResponseMessage {
     ResponseMessage::Status(spans)
 }
 
-#[coverage(off)]
 pub async fn process_msg_variants(
     rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
 ) -> Result<ResponseMessage, IndexError> {
@@ -139,7 +138,6 @@ pub fn process_msg_get_events(trees: &Trees, key: Key) -> ResponseMessage {
     }
 }
 
-#[coverage(off)]
 fn size_on_disk_response(trees: &Trees) -> Result<ResponseMessage, IndexError> {
     Ok(ResponseMessage::SizeOnDisk(trees.root.size_on_disk()?))
 }
@@ -192,7 +190,6 @@ fn process_local_msg(
     }))
 }
 
-#[coverage(off)]
 pub async fn process_msg(
     rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     trees: &Trees,
@@ -209,7 +206,6 @@ pub async fn process_msg(
 
 // ─── Connection handler ───────────────────────────────────────────────────────
 
-#[coverage(off)]
 async fn handle_connection(
     rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     raw_stream: TcpStream,
@@ -260,7 +256,6 @@ async fn handle_connection(
 
 // ─── Listener ────────────────────────────────────────────────────────────────
 
-#[coverage(off)]
 pub async fn websockets_listen(
     trees: Trees,
     rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
@@ -292,7 +287,6 @@ pub async fn websockets_listen(
 }
 
 #[cfg(test)]
-#[coverage(off)]
 mod tests {
     use super::*;
 

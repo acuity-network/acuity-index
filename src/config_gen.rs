@@ -64,7 +64,6 @@ fn to_snake_case(value: &str) -> String {
     out.trim_matches('_').to_owned()
 }
 
-#[coverage(off)]
 fn infer_key_name(
     field_name: Option<&str>,
     type_name: Option<&str>,
@@ -96,7 +95,6 @@ fn infer_key_name(
     format!("field_{idx}")
 }
 
-#[coverage(off)]
 fn is_u8_type(type_id: u32, types: &PortableRegistry) -> bool {
     matches!(
         types.resolve(type_id).map(|ty| &ty.type_def),
@@ -188,7 +186,6 @@ fn event_config(variant: &Variant<PortableForm>, types: &PortableRegistry) -> Ev
     }
 }
 
-#[coverage(off)]
 pub(crate) fn build_chain_config(
     name: &str,
     genesis_hash: &str,
@@ -229,7 +226,6 @@ pub(crate) fn build_chain_config(
     }
 }
 
-#[coverage(off)]
 pub async fn write_generated_chain_config(
     url: &str,
     output_path: &Path,
@@ -264,7 +260,6 @@ pub async fn write_generated_chain_config(
 }
 
 #[cfg(test)]
-#[coverage(off)]
 #[allow(dead_code)]
 mod tests {
     use super::*;

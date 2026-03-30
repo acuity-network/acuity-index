@@ -1,5 +1,3 @@
-#![feature(coverage_attribute)]
-
 use byte_unit::Byte;
 use clap::{Parser, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
@@ -123,7 +121,6 @@ pub struct Args {
     verbose: Verbosity<InfoLevel>,
 }
 
-#[coverage(off)]
 fn load_chain_config(args: &Args) -> ChainConfig {
     let config: ChainConfig = if let Some(path) = &args.chain_config {
         let toml_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
@@ -155,7 +152,6 @@ fn load_chain_config(args: &Args) -> ChainConfig {
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 #[tokio::main]
-#[coverage(off)]
 async fn main() {
     let args = Args::parse();
     let log_level = args.verbose.log_level_filter().as_trace();
@@ -321,7 +317,6 @@ async fn main() {
 }
 
 #[cfg(test)]
-#[coverage(off)]
 mod main_tests {
     use super::*;
 

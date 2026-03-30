@@ -187,7 +187,6 @@ pub const WESTEND_TOML: &str = include_str!("../chains/westend.toml");
 pub const PASEO_TOML: &str = include_str!("../chains/paseo.toml");
 
 #[cfg(test)]
-#[coverage(off)]
 mod tests {
     use super::*;
 

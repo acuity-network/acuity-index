@@ -43,7 +43,6 @@ pub fn is_supported_sdk_pallet(pallet_name: &str) -> bool {
 /// Try to extract a `u32` from a scale_value `Value`.
 /// Handles `Primitive::U128` (most Substrate u32 fields decode this way)
 /// and single-element `Composite::Unnamed` wrappers.
-#[coverage(off)]
 pub fn extract_u32(v: &Value<()>) -> Option<u32> {
     match &v.value {
         ValueDef::Primitive(p) => {
@@ -64,7 +63,6 @@ pub fn extract_u32(v: &Value<()>) -> Option<u32> {
     }
 }
 
-#[coverage(off)]
 pub fn extract_u64(v: &Value<()>) -> Option<u64> {
     match &v.value {
         ValueDef::Primitive(p) => {
@@ -85,7 +83,6 @@ pub fn extract_u64(v: &Value<()>) -> Option<u64> {
     }
 }
 
-#[coverage(off)]
 pub fn extract_u128(v: &Value<()>) -> Option<u128> {
     match &v.value {
         ValueDef::Primitive(p) => {
@@ -106,7 +103,6 @@ pub fn extract_u128(v: &Value<()>) -> Option<u128> {
     }
 }
 
-#[coverage(off)]
 pub fn extract_string(v: &Value<()>) -> Option<String> {
     match &v.value {
         ValueDef::Primitive(scale_value::Primitive::String(s)) => Some(s.clone()),
@@ -120,7 +116,6 @@ pub fn extract_string(v: &Value<()>) -> Option<String> {
     }
 }
 
-#[coverage(off)]
 pub fn extract_bool(v: &Value<()>) -> Option<bool> {
     match &v.value {
         ValueDef::Primitive(scale_value::Primitive::Bool(value)) => Some(*value),
@@ -138,7 +133,6 @@ pub fn extract_bool(v: &Value<()>) -> Option<bool> {
 ///
 /// Substrate encodes fixed-size byte arrays as `Composite::Unnamed` where
 /// every element is a `Primitive::U128` holding a single byte.
-#[coverage(off)]
 pub fn extract_bytes32(v: &Value<()>) -> Option<[u8; 32]> {
     match &v.value {
         ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 32 => {
@@ -165,7 +159,6 @@ pub fn extract_bytes32(v: &Value<()>) -> Option<[u8; 32]> {
 }
 
 /// Try to extract `Vec<u32>` from a scale_value `Value`.
-#[coverage(off)]
 pub fn extract_vec_u32(v: &Value<()>) -> Option<Vec<u32>> {
     match &v.value {
         ValueDef::Composite(Composite::Unnamed(fields)) => {
@@ -191,7 +184,6 @@ pub fn extract_vec_u32(v: &Value<()>) -> Option<Vec<u32>> {
     }
 }
 
-#[coverage(off)]
 fn composite_single_value(composite: &Composite<()>) -> Option<&Value<()>> {
     match composite {
         Composite::Unnamed(values) if values.len() == 1 => Some(&values[0]),
@@ -200,7 +192,6 @@ fn composite_single_value(composite: &Composite<()>) -> Option<&Value<()>> {
     }
 }
 
-#[coverage(off)]
 fn extract_option_bytes32(v: &Value<()>) -> Option<Option<[u8; 32]>> {
     if let Some(bytes) = extract_bytes32(v) {
         return Some(Some(bytes));
@@ -218,7 +209,6 @@ fn extract_option_bytes32(v: &Value<()>) -> Option<Option<[u8; 32]>> {
     }
 }
 
-#[coverage(off)]
 fn extract_tuple_second_bytes32(v: &Value<()>) -> Option<[u8; 32]> {
     match &v.value {
         ValueDef::Composite(Composite::Unnamed(values)) if values.len() >= 2 => {
@@ -234,7 +224,6 @@ fn extract_tuple_second_bytes32(v: &Value<()>) -> Option<[u8; 32]> {
     }
 }
 
-#[coverage(off)]
 fn extract_option_tuple_second_bytes32(v: &Value<()>) -> Option<Option<[u8; 32]>> {
     if let Some(bytes) = extract_tuple_second_bytes32(v) {
         return Some(Some(bytes));
@@ -792,7 +781,6 @@ pub fn index_sdk_pallet(
 }
 
 #[cfg(test)]
-#[coverage(off)]
 mod tests {
     use super::*;
     use scale_value::{Primitive, Variant};

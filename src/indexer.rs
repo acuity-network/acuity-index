@@ -45,7 +45,6 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    #[coverage(off)]
     pub fn new(
         trees: Trees,
         api: OnlineClient<PolkadotConfig>,
@@ -84,7 +83,6 @@ impl Indexer {
 
     // ─── Block indexing ───────────────────────────────────────────────────────
 
-    #[coverage(off)]
     pub async fn index_head(
         &self,
         next: impl Future<Output = Option<Result<Block<PolkadotConfig>, subxt::error::BlocksError>>>,
@@ -94,7 +92,6 @@ impl Indexer {
         self.index_block(block_number).await
     }
 
-    #[coverage(off)]
     pub async fn index_block(&self, block_number: u32) -> Result<(u32, u32, u32), IndexError> {
         let mut key_count = 0u32;
         let api = self.api.as_ref().unwrap();
@@ -258,7 +255,6 @@ impl Indexer {
 
     // ─── DB write & notification ──────────────────────────────────────────────
 
-    #[coverage(off)]
     pub fn index_event_key(
         &self,
         key: Key,
@@ -368,7 +364,6 @@ fn value_to_key(value: &Value<()>, key: &ParamKey) -> Option<Key> {
 
 // ─── scale_value → serde_json ─────────────────────────────────────────────────
 
-#[coverage(off)]
 fn value_to_json(v: &Value<()>) -> serde_json::Value {
     use scale_value::{Primitive, ValueDef};
     match &v.value {
@@ -462,7 +457,6 @@ pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) {
 
 // ─── Span helpers ─────────────────────────────────────────────────────────────
 
-#[coverage(off)]
 pub fn load_spans(
     span_db: &Tree,
     versions: &[u32],
@@ -525,7 +519,6 @@ pub fn load_spans(
     Ok(spans)
 }
 
-#[coverage(off)]
 pub fn check_span(
     span_db: &Tree,
     spans: &mut Vec<Span>,
@@ -560,7 +553,6 @@ pub fn check_next_batch_block(spans: &[Span], next: &mut u32) {
     }
 }
 
-#[coverage(off)]
 fn save_span(
     span_db: &Tree,
     span: &Span,
@@ -580,7 +572,6 @@ fn save_span(
 
 // ─── Main indexer loop ────────────────────────────────────────────────────────
 
-#[coverage(off)]
 pub async fn run_indexer(
     trees: Trees,
     api: OnlineClient<PolkadotConfig>,
@@ -813,7 +804,6 @@ pub async fn run_indexer(
 }
 
 #[cfg(test)]
-#[coverage(off)]
 mod tests {
     use super::*;
     use scale_value::{Composite, Primitive, Value, ValueDef, Variant};

@@ -106,8 +106,8 @@ pub enum Command {
 #[derive(Parser, Debug)]
 pub struct RunArgs {
     /// Chain to index
-    #[arg(short, long, value_enum, default_value_t = Chain::Polkadot)]
-    pub chain: Chain,
+    #[arg(short, long, value_enum)]
+    pub chain: Option<Chain>,
     /// Path to a custom chain TOML config (overrides --chain)
     #[arg(long)]
     pub chain_config: Option<String>,
@@ -146,8 +146,8 @@ pub struct RunArgs {
 #[derive(Parser, Debug)]
 pub struct PurgeIndexArgs {
     /// Chain whose index should be deleted
-    #[arg(short, long, value_enum, default_value_t = Chain::Polkadot)]
-    pub chain: Chain,
+    #[arg(short, long, value_enum)]
+    pub chain: Option<Chain>,
     /// Path to a custom chain TOML config (overrides --chain)
     #[arg(long)]
     pub chain_config: Option<String>,
@@ -156,7 +156,7 @@ pub struct PurgeIndexArgs {
     pub db_path: Option<String>,
 }
 
-fn load_chain_config(chain: Chain, chain_config_path: Option<&str>) -> ChainConfig {
+fn load_chain_config(chain: Option<Chain>, chain_config_path: Option<&str>) -> ChainConfig {
     let config: ChainConfig = if let Some(path) = chain_config_path {
         let toml_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
             error!("Cannot read chain config {path}: {e}");
@@ -168,10 +168,14 @@ fn load_chain_config(chain: Chain, chain_config_path: Option<&str>) -> ChainConf
         })
     } else {
         let toml_str = match chain {
-            Chain::Polkadot => POLKADOT_TOML,
-            Chain::Kusama => KUSAMA_TOML,
-            Chain::Westend => WESTEND_TOML,
-            Chain::Paseo => PASEO_TOML,
+            Some(Chain::Polkadot) => POLKADOT_TOML,
+            Some(Chain::Kusama) => KUSAMA_TOML,
+            Some(Chain::Westend) => WESTEND_TOML,
+            Some(Chain::Paseo) => PASEO_TOML,
+            None => {
+                error!("Either --chain or --chain-config must be specified.");
+                exit(1);
+            }
         };
         toml::from_str(toml_str).expect("Built-in TOML is valid")
     };
@@ -413,7 +417,7 @@ mod main_tests {
     fn args_parse_defaults() {
         let args = Args::try_parse_from(normalize_args(["acuity-index".to_string()])).unwrap();
         assert!(args.command.is_none());
-        assert!(matches!(args.run.chain, Chain::Polkadot));
+        assert!(args.run.chain.is_none());
         assert!(matches!(args.run.db_mode, DbMode::LowSpace));
         assert_eq!(args.run.db_cache_capacity, "1024.00 MiB");
         assert_eq!(args.run.queue_depth, 1);
@@ -437,7 +441,7 @@ mod main_tests {
 
         match args.command {
             Some(Command::PurgeIndex { args: purge_args }) => {
-                assert!(matches!(purge_args.chain, Chain::Kusama));
+                assert!(matches!(purge_args.chain, Some(Chain::Kusama)));
                 assert!(purge_args.db_path.is_none());
             }
             _ => panic!("expected purge-index command"),

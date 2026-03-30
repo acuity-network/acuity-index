@@ -1,5 +1,5 @@
 use byte_unit::Byte;
-use clap::{Parser, ValueEnum};
+use clap::{ArgGroup, Parser, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use futures::StreamExt;
 use signal_hook::{consts::TERM_SIGNALS, flag};
@@ -112,6 +112,7 @@ pub enum Command {
 }
 
 #[derive(Parser, Debug)]
+#[command(group(ArgGroup::new("chain_source").required(true).args(["chain", "chain_config"])))]
 pub struct RunArgs {
     /// Chain to index
     #[arg(short, long, value_enum)]
@@ -149,6 +150,7 @@ pub struct RunArgs {
 }
 
 #[derive(Parser, Debug)]
+#[command(group(ArgGroup::new("chain_source").required(true).args(["chain", "chain_config"])))]
 pub struct PurgeIndexArgs {
     /// Chain whose index should be deleted
     #[arg(short, long, value_enum)]
@@ -177,10 +179,7 @@ fn load_chain_config(chain: Option<Chain>, chain_config_path: Option<&str>) -> C
             Some(Chain::Kusama) => KUSAMA_TOML,
             Some(Chain::Westend) => WESTEND_TOML,
             Some(Chain::Paseo) => PASEO_TOML,
-            None => {
-                error!("Either --chain or --chain-config must be specified.");
-                exit(1);
-            }
+            None => unreachable!("clap requires --chain or --chain-config"),
         };
         toml::from_str(toml_str).expect("Built-in TOML is valid")
     };
@@ -413,9 +412,14 @@ mod main_tests {
 
     #[test]
     fn args_parse_defaults() {
-        let args = Args::try_parse_from(normalize_args(["acuity-index".to_string()])).unwrap();
+        let args = Args::try_parse_from(normalize_args([
+            "acuity-index".to_string(),
+            "--chain".to_string(),
+            "polkadot".to_string(),
+        ]))
+        .unwrap();
         assert!(args.command.is_none());
-        assert!(args.run.chain.is_none());
+        assert!(matches!(args.run.chain, Some(Chain::Polkadot)));
         assert!(matches!(args.run.db_mode, DbMode::LowSpace));
         assert_eq!(args.run.db_cache_capacity, "1024.00 MiB");
         assert_eq!(args.run.queue_depth, 1);
@@ -427,7 +431,7 @@ mod main_tests {
 
     #[test]
     fn args_parse_store_events_flag() {
-        let args = Args::try_parse_from(["acuity-index", "--store-events"]).unwrap();
+        let args = Args::try_parse_from(["acuity-index", "--chain", "polkadot", "--store-events"]).unwrap();
 
         assert!(args.run.store_events);
     }
@@ -451,6 +455,8 @@ mod main_tests {
         let args = Args::try_parse_from([
             "acuity-index",
             "purge-index",
+            "--chain",
+            "polkadot",
             "--db-path",
             "/tmp/test-db",
         ])

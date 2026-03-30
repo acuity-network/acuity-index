@@ -5,6 +5,7 @@ use futures::StreamExt;
 use signal_hook::{consts::TERM_SIGNALS, flag};
 use signal_hook_tokio::Signals;
 use std::{
+    io::ErrorKind,
     path::PathBuf,
     process::exit,
     sync::{Arc, atomic::AtomicBool},
@@ -77,10 +78,33 @@ fn clap_styles() -> clap::builder::Styles {
     author,
     version,
     about,
+    disable_help_subcommand = true,
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true,
+    next_line_help = true,
     color = clap::ColorChoice::Always,
     styles = clap_styles()
 )]
 pub struct Args {
+    #[command(flatten)]
+    pub run: RunArgs,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+    #[command(flatten)]
+    verbose: Verbosity<InfoLevel>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum Command {
+    /// Delete the index database for the specified chain
+    PurgeIndex {
+        #[command(flatten)]
+        args: PurgeIndexArgs,
+    },
+}
+
+#[derive(Parser, Debug)]
+pub struct RunArgs {
     /// Chain to index
     #[arg(short, long, value_enum, default_value_t = Chain::Polkadot)]
     pub chain: Chain,
@@ -117,12 +141,23 @@ pub struct Args {
     /// WebSocket port
     #[arg(short, long, default_value_t = 8172)]
     pub port: u16,
-    #[command(flatten)]
-    verbose: Verbosity<InfoLevel>,
 }
 
-fn load_chain_config(args: &Args) -> ChainConfig {
-    let config: ChainConfig = if let Some(path) = &args.chain_config {
+#[derive(Parser, Debug)]
+pub struct PurgeIndexArgs {
+    /// Chain whose index should be deleted
+    #[arg(short, long, value_enum, default_value_t = Chain::Polkadot)]
+    pub chain: Chain,
+    /// Path to a custom chain TOML config (overrides --chain)
+    #[arg(long)]
+    pub chain_config: Option<String>,
+    /// Database path
+    #[arg(short, long)]
+    pub db_path: Option<String>,
+}
+
+fn load_chain_config(chain: Chain, chain_config_path: Option<&str>) -> ChainConfig {
+    let config: ChainConfig = if let Some(path) = chain_config_path {
         let toml_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
             error!("Cannot read chain config {path}: {e}");
             exit(1);
@@ -132,7 +167,7 @@ fn load_chain_config(args: &Args) -> ChainConfig {
             exit(1);
         })
     } else {
-        let toml_str = match args.chain {
+        let toml_str = match chain {
             Chain::Polkadot => POLKADOT_TOML,
             Chain::Kusama => KUSAMA_TOML,
             Chain::Westend => WESTEND_TOML,
@@ -149,18 +184,69 @@ fn load_chain_config(args: &Args) -> ChainConfig {
     config
 }
 
+fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
+    match db_path {
+        Some(path) => PathBuf::from(path),
+        None => match home::home_dir() {
+            Some(mut p) => {
+                p.push(".local/share/acuity-index");
+                p.push(chain_name);
+                p.push("db");
+                p
+            }
+            None => {
+                error!("No home directory.");
+                exit(1);
+            }
+        },
+    }
+}
+
+fn purge_index(args: &PurgeIndexArgs) {
+    let chain_config = load_chain_config(args.chain, args.chain_config.as_deref());
+    let db_path = resolve_db_path(&chain_config.name, args.db_path.as_deref());
+
+    match std::fs::remove_dir_all(&db_path) {
+        Ok(()) => {
+            info!("Purged index at {}", db_path.display());
+            exit(0);
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            info!("Index path does not exist: {}", db_path.display());
+            exit(0);
+        }
+        Err(err) => {
+            error!("Failed to purge index at {}: {err}", db_path.display());
+            exit(1);
+        }
+    }
+}
+
+fn normalize_args<I>(args: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    args.into_iter().collect()
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    let args = Args::parse_from(normalize_args(std::env::args()));
     let log_level = args.verbose.log_level_filter().as_trace();
     tracing_subscriber::fmt().with_max_level(log_level).init();
 
-    let chain_config = load_chain_config(&args);
+    if let Some(Command::PurgeIndex { args: purge_args }) = &args.command {
+        purge_index(purge_args);
+    }
 
-    if let Some(output_path) = &args.generate_chain_config {
-        let url = args
+    let run_args = &args.run;
+
+    let chain_config = load_chain_config(run_args.chain, run_args.chain_config.as_deref());
+
+    if let Some(output_path) = &run_args.generate_chain_config {
+        let url = run_args
             .url
             .clone()
             .unwrap_or_else(|| chain_config.default_url.clone());
@@ -187,31 +273,17 @@ async fn main() {
     });
 
     // Open database.
-    let db_path = match &args.db_path {
-        Some(p) => PathBuf::from(p),
-        None => match home::home_dir() {
-            Some(mut p) => {
-                p.push(".local/share/acuity-index");
-                p.push(&chain_config.name);
-                p.push("db");
-                p
-            }
-            None => {
-                error!("No home directory.");
-                exit(1);
-            }
-        },
-    };
+    let db_path = resolve_db_path(&chain_config.name, run_args.db_path.as_deref());
     info!("Database path: {}", db_path.display());
 
-    let db_cache_capacity = Byte::parse_str(&args.db_cache_capacity, true)
+    let db_cache_capacity = Byte::parse_str(&run_args.db_cache_capacity, true)
         .unwrap()
         .as_u64_checked()
         .unwrap();
 
     let db_config = sled::Config::new()
         .path(db_path)
-        .mode(args.db_mode.into())
+        .mode(run_args.db_mode.clone().into())
         .cache_capacity(db_cache_capacity);
 
     let trees = Trees::open(db_config).unwrap_or_else(|e| {
@@ -241,7 +313,7 @@ async fn main() {
     }
 
     // Connect to node.
-    let url = args
+    let url = run_args
         .url
         .clone()
         .unwrap_or_else(|| chain_config.default_url.clone());
@@ -290,10 +362,10 @@ async fn main() {
         api,
         rpc.clone(),
         chain_config,
-        args.finalized,
-        args.queue_depth.into(),
-        args.index_variant,
-        args.store_events,
+        run_args.finalized,
+        run_args.queue_depth.into(),
+        run_args.index_variant,
+        run_args.store_events,
         exit_rx.clone(),
         sub_rx,
     ));
@@ -301,7 +373,7 @@ async fn main() {
     let ws_task = spawn(websockets_listen(
         trees.clone(),
         rpc,
-        args.port,
+        run_args.port,
         exit_rx,
         sub_tx,
     ));
@@ -339,22 +411,91 @@ mod main_tests {
 
     #[test]
     fn args_parse_defaults() {
-        let args = Args::try_parse_from(["acuity-index"]).unwrap();
-
-        assert!(matches!(args.chain, Chain::Polkadot));
-        assert!(matches!(args.db_mode, DbMode::LowSpace));
-        assert_eq!(args.db_cache_capacity, "1024.00 MiB");
-        assert_eq!(args.queue_depth, 1);
-        assert!(!args.finalized);
-        assert!(!args.index_variant);
-        assert!(!args.store_events);
-        assert_eq!(args.port, 8172);
+        let args = Args::try_parse_from(normalize_args(["acuity-index".to_string()])).unwrap();
+        assert!(args.command.is_none());
+        assert!(matches!(args.run.chain, Chain::Polkadot));
+        assert!(matches!(args.run.db_mode, DbMode::LowSpace));
+        assert_eq!(args.run.db_cache_capacity, "1024.00 MiB");
+        assert_eq!(args.run.queue_depth, 1);
+        assert!(!args.run.finalized);
+        assert!(!args.run.index_variant);
+        assert!(!args.run.store_events);
+        assert_eq!(args.run.port, 8172);
     }
 
     #[test]
     fn args_parse_store_events_flag() {
         let args = Args::try_parse_from(["acuity-index", "--store-events"]).unwrap();
 
-        assert!(args.store_events);
+        assert!(args.run.store_events);
+    }
+
+    #[test]
+    fn args_parse_purge_index_chain() {
+        let args = Args::try_parse_from(["acuity-index", "purge-index", "--chain", "kusama"])
+            .unwrap();
+
+        match args.command {
+            Some(Command::PurgeIndex { args: purge_args }) => {
+                assert!(matches!(purge_args.chain, Chain::Kusama));
+                assert!(purge_args.db_path.is_none());
+            }
+            _ => panic!("expected purge-index command"),
+        }
+    }
+
+    #[test]
+    fn args_parse_purge_index_db_path() {
+        let args = Args::try_parse_from([
+            "acuity-index",
+            "purge-index",
+            "--db-path",
+            "/tmp/test-db",
+        ])
+        .unwrap();
+
+        match args.command {
+            Some(Command::PurgeIndex { args: purge_args }) => {
+                assert_eq!(purge_args.db_path.as_deref(), Some("/tmp/test-db"));
+            }
+            _ => panic!("expected purge-index command"),
+        }
+    }
+
+    #[test]
+    fn args_reject_help_subcommand() {
+        let err = Args::try_parse_from(["acuity-index", "help"]).unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn resolve_db_path_uses_chain_name() {
+        let path = resolve_db_path("kusama", None);
+
+        assert!(path.ends_with(".local/share/acuity-index/kusama/db"));
+    }
+
+    #[test]
+    fn purge_index_removes_existing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("db");
+        std::fs::create_dir_all(&db_path).unwrap();
+        std::fs::write(db_path.join("data"), b"x").unwrap();
+
+        let result = std::fs::remove_dir_all(&db_path);
+
+        assert!(result.is_ok());
+        assert!(!db_path.exists());
+    }
+
+    #[test]
+    fn purge_index_missing_directory_is_ok() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("missing-db");
+
+        let result = std::fs::remove_dir_all(&db_path);
+
+        assert!(matches!(result, Err(err) if err.kind() == ErrorKind::NotFound));
     }
 }

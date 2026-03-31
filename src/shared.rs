@@ -60,24 +60,6 @@ pub struct VariantKey {
     pub event_index: U16<BigEndian>,
 }
 
-/// On-disk format for 32-byte keys.
-#[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
-#[repr(C)]
-pub struct Bytes32Key {
-    pub key: [u8; 32],
-    pub block_number: U32<BigEndian>,
-    pub event_index: U16<BigEndian>,
-}
-
-/// On-disk format for u32 keys.
-#[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
-#[repr(C)]
-pub struct U32Key {
-    pub key: U32<BigEndian>,
-    pub block_number: U32<BigEndian>,
-    pub event_index: U16<BigEndian>,
-}
-
 /// On-disk format for stored event keys.
 #[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
 #[repr(C)]

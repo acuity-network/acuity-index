@@ -79,27 +79,30 @@ mod shared_tests {
     }
 
     #[test]
-    fn bytes32_key_layout() {
-        let key = Bytes32Key {
-            key: [0xAA; 32],
-            block_number: 500u32.into(),
-            event_index: 2u16.into(),
+    fn custom_key_prefix_layout() {
+        let bytes32_key = CustomKey {
+            name: "item_id".into(),
+            value: CustomValue::Bytes32(Bytes32([0xAA; 32])),
         };
-        let bytes = key.as_bytes();
-        // 32 + 4 + 2 = 38 bytes
-        assert_eq!(bytes.len(), 38);
-    }
+        let u32_key = CustomKey {
+            name: "index".into(),
+            value: CustomValue::U32(42),
+        };
 
-    #[test]
-    fn u32_key_layout() {
-        let key = U32Key {
-            key: 42u32.into(),
-            block_number: 100u32.into(),
-            event_index: 1u16.into(),
-        };
-        let bytes = key.as_bytes();
-        // 4 + 4 + 2 = 10 bytes
-        assert_eq!(bytes.len(), 10);
+        let bytes32_prefix = bytes32_key.db_prefix();
+        let u32_prefix = u32_key.db_prefix();
+
+        assert_eq!(&bytes32_prefix[..2], &(7u16).to_be_bytes());
+        assert_eq!(&bytes32_prefix[2..9], b"item_id");
+        assert_eq!(bytes32_prefix[9], 0);
+        assert_eq!(&bytes32_prefix[10..14], &(32u32).to_be_bytes());
+        assert_eq!(bytes32_prefix.len(), 46);
+
+        assert_eq!(&u32_prefix[..2], &(5u16).to_be_bytes());
+        assert_eq!(&u32_prefix[2..7], b"index");
+        assert_eq!(u32_prefix[7], 1);
+        assert_eq!(&u32_prefix[8..12], &(4u32).to_be_bytes());
+        assert_eq!(&u32_prefix[12..16], &42u32.to_be_bytes());
     }
 
     #[test]

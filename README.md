@@ -103,6 +103,10 @@ versions = [0]
 name = "Balances"
 sdk = true
 
+# Custom keys must be declared once at schema level
+[custom_keys]
+item_id = "bytes32"
+
 # Custom pallet — built-in and generic scalar mappings
 [[pallets]]
 name = "MyPallet"
@@ -117,7 +121,6 @@ key = "account_id"  # built-in key
 [[pallets.events.params]]
 field = "item_id"
 key = "item_id"     # custom query key name
-kind = "bytes32"    # generic scalar storage kind
 ```
 
 ### Built-in Key Types
@@ -156,15 +159,17 @@ Use any key name with one of these scalar kinds:
 Example:
 
 ```toml
+[custom_keys]
+para_id = "u32"
+candidate_hash = "bytes32"
+
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events.params]]
 field = "candidate_hash"
 key = "candidate_hash"
-kind = "bytes32"
 ```
 
 ## WebSocket API

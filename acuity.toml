@@ -1,0 +1,216 @@
+name = "acuity-runtime"
+genesis_hash = "b360614a893a1a11112df69de740c06db5ee215f848f039e0fb81d656fdc8517"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[custom_keys]
+item_id = "bytes32"
+revision_id = "u32"
+ipfs_hash = "bytes32"
+index = "u32"
+emoji = "u32"
+
+[[pallets]]
+name = "System"
+sdk = true
+
+[[pallets]]
+name = "Balances"
+sdk = true
+
+[[pallets]]
+name = "Sudo"
+sdk = true
+
+[[pallets]]
+name = "TransactionPayment"
+sdk = true
+
+[[pallets]]
+name = "Content"
+
+[[pallets.events]]
+name = "PublishItem"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets.events]]
+name = "PublishRevision"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "revision_id"
+key = "revision_id"
+
+[[pallets.events.params]]
+field = "mentions"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "ipfs_hash"
+key = "ipfs_hash"
+
+[[pallets.events]]
+name = "RetractItem"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets.events]]
+name = "SetNotRevsionable"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets.events]]
+name = "SetNotRetractable"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets.events.params]]
+field = "owner"
+key = "account_id"
+
+[[pallets]]
+name = "AccountContent"
+
+[[pallets.events]]
+name = "AddItem"
+
+[[pallets.events.params]]
+field = "account"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets.events]]
+name = "RemoveItem"
+
+[[pallets.events.params]]
+field = "account"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets]]
+name = "AccountProfile"
+
+[[pallets.events]]
+name = "ProfileSet"
+
+[[pallets.events.params]]
+field = "account"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets]]
+name = "ContentReactions"
+
+[[pallets.events]]
+name = "AddReaction"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets.events.params]]
+field = "revision_id"
+key = "revision_id"
+
+[[pallets.events.params]]
+field = "item_owner"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "reactor"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "emoji"
+key = "emoji"
+
+[[pallets.events]]
+name = "RemoveReaction"
+
+[[pallets.events.params]]
+field = "item_id"
+key = "item_id"
+
+[[pallets.events.params]]
+field = "revision_id"
+key = "revision_id"
+
+[[pallets.events.params]]
+field = "item_owner"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "reactor"
+key = "account_id"
+
+[[pallets.events.params]]
+field = "emoji"
+key = "emoji"
+
+[[pallets]]
+name = "Utility"
+
+[[pallets.events]]
+name = "BatchInterrupted"
+
+[[pallets.events.params]]
+field = "index"
+key = "index"
+
+[[pallets.events]]
+name = "BatchCompleted"
+
+[[pallets.events]]
+name = "BatchCompletedWithErrors"
+
+[[pallets.events]]
+name = "ItemCompleted"
+
+[[pallets.events]]
+name = "ItemFailed"
+
+[[pallets.events]]
+name = "DispatchedAs"
+
+[[pallets.events]]
+name = "IfElseMainSuccess"
+
+[[pallets.events]]
+name = "IfElseFallbackCalled"

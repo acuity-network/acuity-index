@@ -52,48 +52,60 @@ mod config_gen_tests {
         let param = infer_param(&fields[0], 0, &types).unwrap();
         assert_eq!(
             param,
-            ParamConfig {
-                field: "owner".into(),
-                key: "account_id".into(),
-                kind: None,
-            }
+            (
+                ParamConfig {
+                    field: "owner".into(),
+                    key: "account_id".into(),
+                },
+                None,
+            )
         );
     }
 
     #[test]
     fn infer_param_detects_scalar_wrapper_and_primitives() {
         let (types, fields) = event_fields::<PublishEvent>();
-        let params: Vec<ParamConfig> = fields
+        let params: Vec<(ParamConfig, Option<ScalarKind>)> = fields
             .iter()
             .enumerate()
             .filter_map(|(idx, field)| infer_param(field, idx, &types))
             .collect();
 
-        assert!(params.contains(&ParamConfig {
-            field: "para_id".into(),
-            key: "para_id".into(),
-            kind: Some(ScalarKind::U32),
-        }));
-        assert!(params.contains(&ParamConfig {
-            field: "revision".into(),
-            key: "revision".into(),
-            kind: Some(ScalarKind::U128),
-        }));
-        assert!(params.contains(&ParamConfig {
-            field: "slug".into(),
-            key: "slug".into(),
-            kind: Some(ScalarKind::String),
-        }));
-        assert!(params.contains(&ParamConfig {
-            field: "published".into(),
-            key: "published".into(),
-            kind: Some(ScalarKind::Bool),
-        }));
-        assert!(params.contains(&ParamConfig {
-            field: "hash".into(),
-            key: "hash".into(),
-            kind: Some(ScalarKind::Bytes32),
-        }));
+        assert!(params.contains(&(
+            ParamConfig {
+                field: "para_id".into(),
+                key: "para_id".into(),
+            },
+            Some(ScalarKind::U32)
+        )));
+        assert!(params.contains(&(
+            ParamConfig {
+                field: "revision".into(),
+                key: "revision".into(),
+            },
+            Some(ScalarKind::U128)
+        )));
+        assert!(params.contains(&(
+            ParamConfig {
+                field: "slug".into(),
+                key: "slug".into(),
+            },
+            Some(ScalarKind::String)
+        )));
+        assert!(params.contains(&(
+            ParamConfig {
+                field: "published".into(),
+                key: "published".into(),
+            },
+            Some(ScalarKind::Bool)
+        )));
+        assert!(params.contains(&(
+            ParamConfig {
+                field: "hash".into(),
+                key: "hash".into(),
+            },
+            Some(ScalarKind::Bytes32)
+        )));
     }
 
     #[test]
@@ -102,11 +114,13 @@ mod config_gen_tests {
         let param = infer_param(&fields[0], 0, &types).unwrap();
         assert_eq!(
             param,
-            ParamConfig {
-                field: "0".into(),
-                key: "para_id".into(),
-                kind: Some(ScalarKind::U32),
-            }
+            (
+                ParamConfig {
+                    field: "0".into(),
+                    key: "para_id".into(),
+                },
+                Some(ScalarKind::U32),
+            )
         );
     }
 }

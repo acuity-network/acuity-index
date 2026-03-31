@@ -80,22 +80,23 @@ pub struct ParamConfig {
     /// Field name (string) or positional index (stringified number, e.g. "0").
     pub field: String,
     pub key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<ScalarKind>,
 }
 
 impl ParamConfig {
-    pub fn resolve(&self) -> Result<ResolvedParamConfig, String> {
-        let key = match &self.kind {
-            Some(kind) => ParamKey::Custom {
-                name: self.key.clone(),
-                kind: kind.clone(),
-            },
-            None => match KeyTypeName::parse(&self.key) {
-                Some(key) => ParamKey::BuiltIn(key),
+    pub fn resolve(
+        &self,
+        custom_keys: &HashMap<String, ScalarKind>,
+    ) -> Result<ResolvedParamConfig, String> {
+        let key = match KeyTypeName::parse(&self.key) {
+            Some(key) => ParamKey::BuiltIn(key),
+            None => match custom_keys.get(&self.key) {
+                Some(kind) => ParamKey::Custom {
+                    name: self.key.clone(),
+                    kind: kind.clone(),
+                },
                 None => {
                     return Err(format!(
-                        "unknown key '{}' for field '{}' (set kind for custom keys)",
+                        "unknown key '{}' for field '{}' (define it in custom_keys)",
                         self.key, self.field
                     ));
                 }
@@ -135,6 +136,8 @@ pub struct ChainConfig {
     pub genesis_hash: String,
     pub default_url: String,
     pub versions: Vec<u32>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub custom_keys: HashMap<String, ScalarKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pallets: Vec<PalletConfig>,
 }
@@ -151,7 +154,7 @@ impl ChainConfig {
             for event in &pallet.events {
                 let mut params = Vec::with_capacity(event.params.len());
                 for param in &event.params {
-                    params.push(param.resolve()?);
+                    params.push(param.resolve(&self.custom_keys)?);
                 }
                 event_map.insert(event.name.clone(), params);
             }
@@ -220,6 +223,7 @@ mod tests {
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
             versions: vec![0],
+            custom_keys: HashMap::from([("item_id".into(), ScalarKind::Bytes32)]),
             pallets: vec![PalletConfig {
                 name: "Content".into(),
                 sdk: false,
@@ -228,7 +232,6 @@ mod tests {
                     params: vec![ParamConfig {
                         field: "item_id".into(),
                         key: "item_id".into(),
-                        kind: Some(ScalarKind::Bytes32),
                     }],
                 }],
             }],

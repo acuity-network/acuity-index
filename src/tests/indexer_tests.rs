@@ -74,6 +74,10 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 versions = [0]
 
+[custom_keys]
+item_id = "bytes32"
+revision_id = "u32"
+
 [[pallets]]
 name = "Content"
 
@@ -83,7 +87,6 @@ name = "PublishRevision"
 [[pallets.events.params]]
 field = "item_id"
 key = "item_id"
-kind = "bytes32"
 
 [[pallets.events.params]]
 field = "owner"
@@ -92,7 +95,6 @@ key = "account_id"
 [[pallets.events.params]]
 field = "revision_id"
 key = "revision_id"
-kind = "u32"
 "#,
         )
         .unwrap()

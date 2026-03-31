@@ -1277,6 +1277,9 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 versions = [0]
 
+[custom_keys]
+count = "u32"
+
 [[pallets]]
 name = "UnknownSdk"
 sdk = true
@@ -1294,7 +1297,6 @@ key = "account_id"
 [[pallets.events.params]]
 field = "flag"
 key = "count"
-kind = "u32"
 "#,
         )
         .unwrap();

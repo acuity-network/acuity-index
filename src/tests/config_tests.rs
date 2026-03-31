@@ -71,6 +71,7 @@ mod config_tests {
             genesis_hash: "zzzz".into(),
             default_url: "wss://x".into(),
             versions: vec![0],
+            custom_keys: Default::default(),
             pallets: vec![],
         };
         assert!(cfg.genesis_hash_bytes().is_err());
@@ -83,6 +84,7 @@ mod config_tests {
             genesis_hash: "aabb".into(),
             default_url: "wss://x".into(),
             versions: vec![0],
+            custom_keys: Default::default(),
             pallets: vec![],
         };
         assert!(cfg.genesis_hash_bytes().is_err());
@@ -205,6 +207,10 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 versions = [0]
 
+[custom_keys]
+item_id = "bytes32"
+revision_id = "u32"
+
 [[pallets]]
 name = "Content"
 
@@ -214,12 +220,10 @@ name = "PublishRevision"
 [[pallets.events.params]]
 field = "item_id"
 key = "item_id"
-kind = "bytes32"
 
 [[pallets.events.params]]
 field = "revision_id"
 key = "revision_id"
-kind = "u32"
 "#;
         let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
         let idx = cfg.build_custom_index().unwrap();
@@ -242,7 +246,7 @@ kind = "u32"
     }
 
     #[test]
-    fn custom_toml_rejects_unknown_key_without_kind() {
+    fn custom_toml_rejects_unknown_key_without_definition() {
         let toml_str = r#"
 name = "acuity"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"

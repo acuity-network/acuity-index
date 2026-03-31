@@ -3,6 +3,11 @@ genesis_hash = "b0a8d493285c2df73290dfb7e61f870f17b41801197a149ca93654499ea3dafe
 default_url = "wss://kusama-rpc.polkadot.io:443"
 versions = [0]
 
+[custom_keys]
+auction_index = "u32"
+candidate_hash = "bytes32"
+para_id = "u32"
+
 [[pallets]]
 name = "System"
 sdk = true
@@ -104,35 +109,30 @@ name = "CurrentCodeUpdated"
 [[pallets.events.params]]
 field = "0"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "CurrentHeadUpdated"
 [[pallets.events.params]]
 field = "0"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "CodeUpgradeScheduled"
 [[pallets.events.params]]
 field = "0"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "NewHeadNoted"
 [[pallets.events.params]]
 field = "0"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "ActionQueued"
 [[pallets.events.params]]
 field = "0"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "1"
 key = "session_index"
@@ -142,21 +142,18 @@ name = "PvfCheckStarted"
 [[pallets.events.params]]
 field = "1"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "PvfCheckAccepted"
 [[pallets.events.params]]
 field = "1"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "PvfCheckRejected"
 [[pallets.events.params]]
 field = "1"
 key = "para_id"
-kind = "u32"
 
 [[pallets]]
 name = "Hrmp"
@@ -166,69 +163,57 @@ name = "OpenChannelRequested"
 [[pallets.events.params]]
 field = "sender"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "recipient"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "OpenChannelCanceled"
 [[pallets.events.params]]
 field = "by_parachain"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "OpenChannelAccepted"
 [[pallets.events.params]]
 field = "sender"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "recipient"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "ChannelClosed"
 [[pallets.events.params]]
 field = "by_parachain"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "HrmpChannelForceOpened"
 [[pallets.events.params]]
 field = "sender"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "recipient"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "HrmpSystemChannelOpened"
 [[pallets.events.params]]
 field = "sender"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "recipient"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "OpenChannelDepositsUpdated"
 [[pallets.events.params]]
 field = "sender"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "recipient"
 key = "para_id"
-kind = "u32"
 
 [[pallets]]
 name = "ParasDisputes"
@@ -238,14 +223,12 @@ name = "DisputeInitiated"
 [[pallets.events.params]]
 field = "0"
 key = "candidate_hash"
-kind = "bytes32"
 
 [[pallets.events]]
 name = "DisputeConcluded"
 [[pallets.events.params]]
 field = "0"
 key = "candidate_hash"
-kind = "bytes32"
 
 [[pallets]]
 name = "Registrar"
@@ -255,7 +238,6 @@ name = "Registered"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "manager"
 key = "account_id"
@@ -265,14 +247,12 @@ name = "Deregistered"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "Reserved"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "who"
 key = "account_id"
@@ -282,11 +262,9 @@ name = "Swapped"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "other_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets]]
 name = "Slots"
@@ -296,7 +274,6 @@ name = "Leased"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "leaser"
 key = "account_id"
@@ -309,14 +286,12 @@ name = "AuctionStarted"
 [[pallets.events.params]]
 field = "auction_index"
 key = "auction_index"
-kind = "u32"
 
 [[pallets.events]]
 name = "AuctionClosed"
 [[pallets.events.params]]
 field = "auction_index"
 key = "auction_index"
-kind = "u32"
 
 [[pallets.events]]
 name = "Reserved"
@@ -335,7 +310,6 @@ name = "ReserveConfiscated"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 [[pallets.events.params]]
 field = "leaser"
 key = "account_id"
@@ -348,14 +322,12 @@ key = "account_id"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "WinningOffset"
 [[pallets.events.params]]
 field = "auction_index"
 key = "auction_index"
-kind = "u32"
 
 [[pallets]]
 name = "Crowdloan"
@@ -365,7 +337,6 @@ name = "Created"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "Contributed"
@@ -375,7 +346,6 @@ key = "account_id"
 [[pallets.events.params]]
 field = "fund_index"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "Withdrew"
@@ -385,42 +355,36 @@ key = "account_id"
 [[pallets.events.params]]
 field = "fund_index"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "PartiallyRefunded"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "AllRefunded"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "Dissolved"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "HandleBidResult"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "Edited"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "MemoUpdated"
@@ -430,14 +394,12 @@ key = "account_id"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets.events]]
 name = "AddedToNewRaise"
 [[pallets.events.params]]
 field = "para_id"
 key = "para_id"
-kind = "u32"
 
 [[pallets]]
 name = "ParaInclusion"
@@ -447,4 +409,3 @@ name = "UpwardMessagesReceived"
 [[pallets.events.params]]
 field = "from"
 key = "para_id"
-kind = "u32"

@@ -6,7 +6,7 @@ use crate::{
 use scale_info::{
     Field, PortableRegistry, Type, TypeDef, TypeDefPrimitive, Variant, form::PortableForm,
 };
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 use subxt::{
     Metadata, OnlineClient, PolkadotConfig,
     config::RpcConfigFor,
@@ -145,7 +145,7 @@ pub(crate) fn infer_param(
     field: &Field<PortableForm>,
     idx: usize,
     types: &PortableRegistry,
-) -> Option<ParamConfig> {
+) -> Option<(ParamConfig, Option<ScalarKind>)> {
     let field_name = field.name.as_deref();
     let type_name = field.type_name.as_deref();
     let ty = types.resolve(field.ty.id)?;
@@ -154,27 +154,35 @@ pub(crate) fn infer_param(
         || type_name.is_some_and(is_account_type_name)
         || type_last_segment(ty).is_some_and(is_account_type_name)
     {
-        return Some(ParamConfig {
-            field: field_name
-                .map(str::to_owned)
-                .unwrap_or_else(|| idx.to_string()),
-            key: "account_id".to_owned(),
-            kind: None,
-        });
+        return Some((
+            ParamConfig {
+                field: field_name
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| idx.to_string()),
+                key: "account_id".to_owned(),
+            },
+            None,
+        ));
     }
 
     let kind = infer_scalar_kind(field.ty.id, types)?;
 
-    Some(ParamConfig {
-        field: field_name
-            .map(str::to_owned)
-            .unwrap_or_else(|| idx.to_string()),
-        key: infer_key_name(field_name, type_name, ty, idx),
-        kind: Some(kind),
-    })
+    Some((
+        ParamConfig {
+            field: field_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| idx.to_string()),
+            key: infer_key_name(field_name, type_name, ty, idx),
+        },
+        Some(kind),
+    ))
 }
 
-fn event_config(variant: &Variant<PortableForm>, types: &PortableRegistry) -> EventConfig {
+fn event_config(
+    variant: &Variant<PortableForm>,
+    types: &PortableRegistry,
+    custom_keys: &mut HashMap<String, ScalarKind>,
+) -> EventConfig {
     EventConfig {
         name: variant.name.clone(),
         params: variant
@@ -182,6 +190,12 @@ fn event_config(variant: &Variant<PortableForm>, types: &PortableRegistry) -> Ev
             .iter()
             .enumerate()
             .filter_map(|(idx, field)| infer_param(field, idx, types))
+            .map(|(param, kind)| {
+                if let Some(kind) = kind {
+                    custom_keys.insert(param.key.clone(), kind);
+                }
+                param
+            })
             .collect(),
     }
 }
@@ -193,6 +207,7 @@ pub(crate) fn build_chain_config(
     metadata: &Metadata,
 ) -> ChainConfig {
     let types = metadata.types();
+    let mut custom_keys = HashMap::new();
     let pallets = metadata
         .pallets()
         .filter_map(|pallet| {
@@ -207,7 +222,7 @@ pub(crate) fn build_chain_config(
 
             let events = variants
                 .iter()
-                .map(|variant| event_config(variant, types))
+                .map(|variant| event_config(variant, types, &mut custom_keys))
                 .collect();
             Some(PalletConfig {
                 name: pallet.name().to_owned(),
@@ -222,6 +237,7 @@ pub(crate) fn build_chain_config(
         genesis_hash: genesis_hash.to_owned(),
         default_url: default_url.to_owned(),
         versions: vec![0],
+        custom_keys,
         pallets,
     }
 }
@@ -383,14 +399,14 @@ mod tests {
         };
         let variant = &variant_def.variants[0];
 
-        let config = event_config(variant, &types);
+        let mut custom_keys = HashMap::new();
+        let config = event_config(variant, &types, &mut custom_keys);
 
         assert_eq!(config.name, "Published");
         assert_eq!(config.params.len(), 2);
         assert_eq!(config.params[0].key, "account_id");
-        assert_eq!(config.params[0].kind, None);
         assert_eq!(config.params[1].key, "revision");
-        assert_eq!(config.params[1].kind, Some(ScalarKind::U64));
+        assert_eq!(custom_keys.get("revision"), Some(&ScalarKind::U64));
     }
 
     #[test]
@@ -419,11 +435,13 @@ mod tests {
         owner_field.name = None;
         assert_eq!(
             infer_param(&owner_field, 0, &types),
-            Some(ParamConfig {
-                field: "0".into(),
-                key: "account_id".into(),
-                kind: None,
-            })
+            Some((
+                ParamConfig {
+                    field: "0".into(),
+                    key: "account_id".into(),
+                },
+                None,
+            ))
         );
 
         let mut unsupported_registry = Registry::new();

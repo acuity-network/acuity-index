@@ -78,23 +78,15 @@ versions = [0]
 item_id = "bytes32"
 revision_id = "u32"
 
-[[pallets]]
-name = "Content"
-
-[[pallets.events]]
-name = "PublishRevision"
-
-[[pallets.events.params]]
-field = "item_id"
-key = "item_id"
-
-[[pallets.events.params]]
-field = "owner"
-key = "account_id"
-
-[[pallets.events.params]]
-field = "revision_id"
-key = "revision_id"
+            [[pallets]]
+            name = "Content"
+            events = [
+              { name = "PublishRevision", params = [
+                { field = "item_id", key = "item_id" },
+                { field = "owner", key = "account_id" },
+                { field = "revision_id", key = "revision_id" },
+              ]},
+            ]
 "#,
         )
         .unwrap()

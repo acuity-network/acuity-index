@@ -242,6 +242,113 @@ pub(crate) fn build_chain_config(
     }
 }
 
+fn inline_string(value: &str) -> Result<String, IndexError> {
+    Ok(toml::Value::String(value.to_owned()).to_string())
+}
+
+fn scalar_kind_name(kind: &ScalarKind) -> &'static str {
+    match kind {
+        ScalarKind::Bytes32 => "bytes32",
+        ScalarKind::U32 => "u32",
+        ScalarKind::U64 => "u64",
+        ScalarKind::U128 => "u128",
+        ScalarKind::String => "string",
+        ScalarKind::Bool => "bool",
+    }
+}
+
+fn inline_params(params: &[ParamConfig]) -> Result<String, IndexError> {
+    if params.is_empty() {
+        return Ok("[]".to_owned());
+    }
+
+    let mut out = String::from("[");
+    for param in params {
+        out.push_str("\n    { field = ");
+        out.push_str(&inline_string(&param.field)?);
+        out.push_str(", key = ");
+        out.push_str(&inline_string(&param.key)?);
+        out.push_str(" },");
+    }
+    out.push_str("\n  ]");
+    Ok(out)
+}
+
+fn inline_events(events: &[EventConfig]) -> Result<String, IndexError> {
+    if events.is_empty() {
+        return Ok("[]".to_owned());
+    }
+
+    let mut out = String::from("[");
+    for event in events {
+        out.push_str("\n  { name = ");
+        out.push_str(&inline_string(&event.name)?);
+        if event.params.is_empty() {
+            out.push_str(" },");
+        } else {
+            out.push_str(", params = ");
+            out.push_str(&inline_params(&event.params)?);
+            out.push_str(" },");
+        }
+    }
+    out.push_str("\n]");
+    Ok(out)
+}
+
+pub(crate) fn render_chain_config_toml(config: &ChainConfig) -> Result<String, IndexError> {
+    let mut out = String::new();
+    out.push_str("name = ");
+    out.push_str(&inline_string(&config.name)?);
+    out.push('\n');
+    out.push_str("genesis_hash = ");
+    out.push_str(&inline_string(&config.genesis_hash)?);
+    out.push('\n');
+    out.push_str("default_url = ");
+    out.push_str(&inline_string(&config.default_url)?);
+    out.push('\n');
+    out.push_str("versions = ");
+    out.push('[');
+    for (index, version) in config.versions.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&version.to_string());
+    }
+    out.push(']');
+    out.push_str("\n\n");
+
+    if !config.custom_keys.is_empty() {
+        out.push_str("[custom_keys]\n");
+        for (name, kind) in &config.custom_keys {
+            out.push_str(name);
+            out.push_str(" = ");
+            out.push_str(&inline_string(scalar_kind_name(kind))?);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
+    for (index, pallet) in config.pallets.iter().enumerate() {
+        out.push_str("[[pallets]]\n");
+        out.push_str("name = ");
+        out.push_str(&inline_string(&pallet.name)?);
+        out.push('\n');
+        if pallet.sdk {
+            out.push_str("sdk = true\n");
+        }
+        if !pallet.events.is_empty() {
+            out.push_str("events = ");
+            out.push_str(&inline_events(&pallet.events)?);
+            out.push('\n');
+        }
+        if index + 1 != config.pallets.len() {
+            out.push('\n');
+        }
+    }
+
+    Ok(out)
+}
+
 pub async fn write_generated_chain_config(
     url: &str,
     output_path: &Path,
@@ -265,7 +372,7 @@ pub async fn write_generated_chain_config(
         .to_owned();
 
     let config = build_chain_config(&chain_name, &genesis_hash, url, &metadata);
-    let toml = toml::to_string_pretty(&config)?;
+    let toml = render_chain_config_toml(&config)?;
 
     if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
@@ -457,5 +564,63 @@ mod tests {
             infer_param(&composite.fields[0], 0, &unsupported_types),
             None
         );
+    }
+
+    #[test]
+    fn render_chain_config_toml_inlines_events_and_params() {
+        let config = ChainConfig {
+            name: "acuity-runtime".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            versions: vec![0],
+            custom_keys: HashMap::from([
+                ("item_id".into(), ScalarKind::Bytes32),
+                ("revision_id".into(), ScalarKind::U32),
+            ]),
+            pallets: vec![PalletConfig {
+                name: "Content".into(),
+                sdk: false,
+                events: vec![
+                    EventConfig {
+                        name: "PublishItem".into(),
+                        params: vec![
+                            ParamConfig {
+                                field: "item_id".into(),
+                                key: "item_id".into(),
+                            },
+                            ParamConfig {
+                                field: "owner".into(),
+                                key: "account_id".into(),
+                            },
+                        ],
+                    },
+                    EventConfig {
+                        name: "PublishRevision".into(),
+                        params: vec![
+                            ParamConfig {
+                                field: "item_id".into(),
+                                key: "item_id".into(),
+                            },
+                            ParamConfig {
+                                field: "owner".into(),
+                                key: "account_id".into(),
+                            },
+                            ParamConfig {
+                                field: "revision_id".into(),
+                                key: "revision_id".into(),
+                            },
+                        ],
+                    },
+                ],
+            }],
+        };
+
+        let toml = render_chain_config_toml(&config).unwrap();
+
+        assert!(toml.contains("[[pallets]]\nname = \"Content\"\nevents = ["));
+        assert!(toml.contains("{ name = \"PublishItem\", params = ["));
+        assert!(toml.contains("{ field = \"item_id\", key = \"item_id\" }"));
+        assert!(toml.contains("{ field = \"owner\", key = \"account_id\" }"));
+        assert!(toml.contains("{ name = \"PublishRevision\", params = ["));
     }
 }

@@ -4,11 +4,10 @@ default_url = "wss://rpc.polkadot.io:443"
 versions = [0]
 
 [custom_keys]
+para_id = "u32"
 auction_index = "u32"
 candidate_hash = "bytes32"
-para_id = "u32"
 
-# Substrate SDK built-in pallets — indexing rules are handled internally.
 [[pallets]]
 name = "System"
 sdk = true
@@ -93,334 +92,194 @@ sdk = true
 name = "StateTrieMigration"
 sdk = true
 
-# Custom pallets with explicit field→key mappings.
-
 [[pallets]]
 name = "Claims"
-
-[[pallets.events]]
-name = "Claimed"
-[[pallets.events.params]]
-field = "who"
-key = "account_id"
+events = [
+  { name = "Claimed", params = [
+    { field = "who", key = "account_id" },
+  ] },
+]
 
 [[pallets]]
 name = "Paras"
-
-[[pallets.events]]
-name = "CurrentCodeUpdated"
-[[pallets.events.params]]
-field = "0"
-key = "para_id"
-
-[[pallets.events]]
-name = "CurrentHeadUpdated"
-[[pallets.events.params]]
-field = "0"
-key = "para_id"
-
-[[pallets.events]]
-name = "CodeUpgradeScheduled"
-[[pallets.events.params]]
-field = "0"
-key = "para_id"
-
-[[pallets.events]]
-name = "NewHeadNoted"
-[[pallets.events.params]]
-field = "0"
-key = "para_id"
-
-[[pallets.events]]
-name = "ActionQueued"
-[[pallets.events.params]]
-field = "0"
-key = "para_id"
-[[pallets.events.params]]
-field = "1"
-key = "session_index"
-
-[[pallets.events]]
-name = "PvfCheckStarted"
-[[pallets.events.params]]
-field = "1"
-key = "para_id"
-
-[[pallets.events]]
-name = "PvfCheckAccepted"
-[[pallets.events.params]]
-field = "1"
-key = "para_id"
-
-[[pallets.events]]
-name = "PvfCheckRejected"
-[[pallets.events.params]]
-field = "1"
-key = "para_id"
+events = [
+  { name = "CurrentCodeUpdated", params = [
+    { field = "0", key = "para_id" },
+  ] },
+  { name = "CurrentHeadUpdated", params = [
+    { field = "0", key = "para_id" },
+  ] },
+  { name = "CodeUpgradeScheduled", params = [
+    { field = "0", key = "para_id" },
+  ] },
+  { name = "NewHeadNoted", params = [
+    { field = "0", key = "para_id" },
+  ] },
+  { name = "ActionQueued", params = [
+    { field = "0", key = "para_id" },
+    { field = "1", key = "session_index" },
+  ] },
+  { name = "PvfCheckStarted", params = [
+    { field = "1", key = "para_id" },
+  ] },
+  { name = "PvfCheckAccepted", params = [
+    { field = "1", key = "para_id" },
+  ] },
+  { name = "PvfCheckRejected", params = [
+    { field = "1", key = "para_id" },
+  ] },
+]
 
 [[pallets]]
 name = "Hrmp"
-
-[[pallets.events]]
-name = "OpenChannelRequested"
-[[pallets.events.params]]
-field = "sender"
-key = "para_id"
-[[pallets.events.params]]
-field = "recipient"
-key = "para_id"
-
-[[pallets.events]]
-name = "OpenChannelCanceled"
-[[pallets.events.params]]
-field = "by_parachain"
-key = "para_id"
-
-[[pallets.events]]
-name = "OpenChannelAccepted"
-[[pallets.events.params]]
-field = "sender"
-key = "para_id"
-[[pallets.events.params]]
-field = "recipient"
-key = "para_id"
-
-[[pallets.events]]
-name = "ChannelClosed"
-[[pallets.events.params]]
-field = "by_parachain"
-key = "para_id"
-
-[[pallets.events]]
-name = "HrmpChannelForceOpened"
-[[pallets.events.params]]
-field = "sender"
-key = "para_id"
-[[pallets.events.params]]
-field = "recipient"
-key = "para_id"
-
-[[pallets.events]]
-name = "HrmpSystemChannelOpened"
-[[pallets.events.params]]
-field = "sender"
-key = "para_id"
-[[pallets.events.params]]
-field = "recipient"
-key = "para_id"
-
-[[pallets.events]]
-name = "OpenChannelDepositsUpdated"
-[[pallets.events.params]]
-field = "sender"
-key = "para_id"
-[[pallets.events.params]]
-field = "recipient"
-key = "para_id"
+events = [
+  { name = "OpenChannelRequested", params = [
+    { field = "sender", key = "para_id" },
+    { field = "recipient", key = "para_id" },
+  ] },
+  { name = "OpenChannelCanceled", params = [
+    { field = "by_parachain", key = "para_id" },
+  ] },
+  { name = "OpenChannelAccepted", params = [
+    { field = "sender", key = "para_id" },
+    { field = "recipient", key = "para_id" },
+  ] },
+  { name = "ChannelClosed", params = [
+    { field = "by_parachain", key = "para_id" },
+  ] },
+  { name = "HrmpChannelForceOpened", params = [
+    { field = "sender", key = "para_id" },
+    { field = "recipient", key = "para_id" },
+  ] },
+  { name = "HrmpSystemChannelOpened", params = [
+    { field = "sender", key = "para_id" },
+    { field = "recipient", key = "para_id" },
+  ] },
+  { name = "OpenChannelDepositsUpdated", params = [
+    { field = "sender", key = "para_id" },
+    { field = "recipient", key = "para_id" },
+  ] },
+]
 
 [[pallets]]
 name = "ParasDisputes"
-
-[[pallets.events]]
-name = "DisputeInitiated"
-[[pallets.events.params]]
-field = "0"
-key = "candidate_hash"
-
-[[pallets.events]]
-name = "DisputeConcluded"
-[[pallets.events.params]]
-field = "0"
-key = "candidate_hash"
+events = [
+  { name = "DisputeInitiated", params = [
+    { field = "0", key = "candidate_hash" },
+  ] },
+  { name = "DisputeConcluded", params = [
+    { field = "0", key = "candidate_hash" },
+  ] },
+]
 
 [[pallets]]
 name = "Registrar"
-
-[[pallets.events]]
-name = "Registered"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-[[pallets.events.params]]
-field = "manager"
-key = "account_id"
-
-[[pallets.events]]
-name = "Deregistered"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-
-[[pallets.events]]
-name = "Reserved"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-[[pallets.events.params]]
-field = "who"
-key = "account_id"
-
-[[pallets.events]]
-name = "Swapped"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-[[pallets.events.params]]
-field = "other_id"
-key = "para_id"
+events = [
+  { name = "Registered", params = [
+    { field = "para_id", key = "para_id" },
+    { field = "manager", key = "account_id" },
+  ] },
+  { name = "Deregistered", params = [
+    { field = "para_id", key = "para_id" },
+  ] },
+  { name = "Reserved", params = [
+    { field = "para_id", key = "para_id" },
+    { field = "who", key = "account_id" },
+  ] },
+  { name = "Swapped", params = [
+    { field = "para_id", key = "para_id" },
+    { field = "other_id", key = "para_id" },
+  ] },
+]
 
 [[pallets]]
 name = "Slots"
-
-[[pallets.events]]
-name = "Leased"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-[[pallets.events.params]]
-field = "leaser"
-key = "account_id"
+events = [
+  { name = "Leased", params = [
+    { field = "para_id", key = "para_id" },
+    { field = "leaser", key = "account_id" },
+  ] },
+]
 
 [[pallets]]
 name = "Auctions"
-
-[[pallets.events]]
-name = "AuctionStarted"
-[[pallets.events.params]]
-field = "auction_index"
-key = "auction_index"
-
-[[pallets.events]]
-name = "AuctionClosed"
-[[pallets.events.params]]
-field = "auction_index"
-key = "auction_index"
-
-[[pallets.events]]
-name = "Reserved"
-[[pallets.events.params]]
-field = "bidder"
-key = "account_id"
-
-[[pallets.events]]
-name = "Unreserved"
-[[pallets.events.params]]
-field = "bidder"
-key = "account_id"
-
-[[pallets.events]]
-name = "ReserveConfiscated"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-[[pallets.events.params]]
-field = "leaser"
-key = "account_id"
-
-[[pallets.events]]
-name = "BidAccepted"
-[[pallets.events.params]]
-field = "bidder"
-key = "account_id"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-
-[[pallets.events]]
-name = "WinningOffset"
-[[pallets.events.params]]
-field = "auction_index"
-key = "auction_index"
+events = [
+  { name = "AuctionStarted", params = [
+    { field = "auction_index", key = "auction_index" },
+  ] },
+  { name = "AuctionClosed", params = [
+    { field = "auction_index", key = "auction_index" },
+  ] },
+  { name = "Reserved", params = [
+    { field = "bidder", key = "account_id" },
+  ] },
+  { name = "Unreserved", params = [
+    { field = "bidder", key = "account_id" },
+  ] },
+  { name = "ReserveConfiscated", params = [
+    { field = "para_id", key = "para_id" },
+    { field = "leaser", key = "account_id" },
+  ] },
+  { name = "BidAccepted", params = [
+    { field = "bidder", key = "account_id" },
+    { field = "para_id", key = "para_id" },
+  ] },
+  { name = "WinningOffset", params = [
+    { field = "auction_index", key = "auction_index" },
+  ] },
+]
 
 [[pallets]]
 name = "Crowdloan"
-
-[[pallets.events]]
-name = "Created"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-
-[[pallets.events]]
-name = "Contributed"
-[[pallets.events.params]]
-field = "who"
-key = "account_id"
-[[pallets.events.params]]
-field = "fund_index"
-key = "para_id"
-
-[[pallets.events]]
-name = "Withdrew"
-[[pallets.events.params]]
-field = "who"
-key = "account_id"
-[[pallets.events.params]]
-field = "fund_index"
-key = "para_id"
-
-[[pallets.events]]
-name = "PartiallyRefunded"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-
-[[pallets.events]]
-name = "AllRefunded"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-
-[[pallets.events]]
-name = "Dissolved"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-
-[[pallets.events]]
-name = "HandleBidResult"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-
-[[pallets.events]]
-name = "Edited"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-
-[[pallets.events]]
-name = "MemoUpdated"
-[[pallets.events.params]]
-field = "who"
-key = "account_id"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-
-[[pallets.events]]
-name = "AddedToNewRaise"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
+events = [
+  { name = "Created", params = [
+    { field = "para_id", key = "para_id" },
+  ] },
+  { name = "Contributed", params = [
+    { field = "who", key = "account_id" },
+    { field = "fund_index", key = "para_id" },
+  ] },
+  { name = "Withdrew", params = [
+    { field = "who", key = "account_id" },
+    { field = "fund_index", key = "para_id" },
+  ] },
+  { name = "PartiallyRefunded", params = [
+    { field = "para_id", key = "para_id" },
+  ] },
+  { name = "AllRefunded", params = [
+    { field = "para_id", key = "para_id" },
+  ] },
+  { name = "Dissolved", params = [
+    { field = "para_id", key = "para_id" },
+  ] },
+  { name = "HandleBidResult", params = [
+    { field = "para_id", key = "para_id" },
+  ] },
+  { name = "Edited", params = [
+    { field = "para_id", key = "para_id" },
+  ] },
+  { name = "MemoUpdated", params = [
+    { field = "who", key = "account_id" },
+    { field = "para_id", key = "para_id" },
+  ] },
+  { name = "AddedToNewRaise", params = [
+    { field = "para_id", key = "para_id" },
+  ] },
+]
 
 [[pallets]]
 name = "ParaInclusion"
-
-[[pallets.events]]
-name = "UpwardMessagesReceived"
-[[pallets.events.params]]
-field = "from"
-key = "para_id"
+events = [
+  { name = "UpwardMessagesReceived", params = [
+    { field = "from", key = "para_id" },
+  ] },
+]
 
 [[pallets]]
 name = "OnDemand"
-
-[[pallets.events]]
-name = "OnDemandOrderPlaced"
-[[pallets.events.params]]
-field = "para_id"
-key = "para_id"
-[[pallets.events.params]]
-field = "ordered_by"
-key = "account_id"
+events = [
+  { name = "OnDemandOrderPlaced", params = [
+    { field = "para_id", key = "para_id" },
+    { field = "ordered_by", key = "account_id" },
+  ] },
+]

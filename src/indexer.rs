@@ -1280,23 +1280,18 @@ versions = [0]
 [custom_keys]
 count = "u32"
 
-[[pallets]]
-name = "UnknownSdk"
-sdk = true
+        [[pallets]]
+        name = "UnknownSdk"
+        sdk = true
 
-[[pallets]]
-name = "Custom"
-
-[[pallets.events]]
-name = "Created"
-
-[[pallets.events.params]]
-field = "missing"
-key = "account_id"
-
-[[pallets.events.params]]
-field = "flag"
-key = "count"
+        [[pallets]]
+        name = "Custom"
+        events = [
+          { name = "Created", params = [
+            { field = "missing", key = "account_id" },
+            { field = "flag", key = "count" },
+          ]},
+        ]
 "#,
         )
         .unwrap();

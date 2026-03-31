@@ -176,18 +176,17 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "wss://test:443"
 versions = [0]
 
-[[pallets]]
-name = "Foo"
-sdk = true
+        [[pallets]]
+        name = "Foo"
+        sdk = true
 
-[[pallets]]
-name = "Bar"
-
-[[pallets.events]]
-name = "Baz"
-[[pallets.events.params]]
-field = "x"
-key = "pool_id"
+        [[pallets]]
+        name = "Bar"
+        events = [
+          { name = "Baz", params = [
+            { field = "x", key = "pool_id" },
+          ]},
+        ]
 "#;
         let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.name, "test");
@@ -211,19 +210,14 @@ versions = [0]
 item_id = "bytes32"
 revision_id = "u32"
 
-[[pallets]]
-name = "Content"
-
-[[pallets.events]]
-name = "PublishRevision"
-
-[[pallets.events.params]]
-field = "item_id"
-key = "item_id"
-
-[[pallets.events.params]]
-field = "revision_id"
-key = "revision_id"
+        [[pallets]]
+        name = "Content"
+        events = [
+          { name = "PublishRevision", params = [
+            { field = "item_id", key = "item_id" },
+            { field = "revision_id", key = "revision_id" },
+          ]},
+        ]
 "#;
         let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
         let idx = cfg.build_custom_index().unwrap();
@@ -253,15 +247,13 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 versions = [0]
 
-[[pallets]]
-name = "Content"
-
-[[pallets.events]]
-name = "PublishRevision"
-
-[[pallets.events.params]]
-field = "item_id"
-key = "item_id"
+        [[pallets]]
+        name = "Content"
+        events = [
+          { name = "PublishRevision", params = [
+            { field = "item_id", key = "item_id" },
+          ]},
+        ]
 "#;
         let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
         assert!(cfg.build_custom_index().is_err());

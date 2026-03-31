@@ -96,6 +96,10 @@ kind = "u32"
         Trees::open(db_config).unwrap()
     }
 
+    fn should_store_event(index_variant: bool, keys: &[Key]) -> bool {
+        index_variant || !keys.is_empty()
+    }
+
     // ─── keys_for_event: SDK pallet ───────────────────────────────────────
 
     #[test]
@@ -229,6 +233,22 @@ kind = "u32"
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].block_number, 50);
         assert_eq!(events[0].event_index, 0);
+    }
+
+    #[test]
+    fn should_store_event_when_configured_keys_exist() {
+        let keys = vec![Key::RefIndex(7)];
+        assert!(should_store_event(false, &keys));
+    }
+
+    #[test]
+    fn should_store_event_when_variant_indexing_enabled() {
+        assert!(should_store_event(true, &[]));
+    }
+
+    #[test]
+    fn should_not_store_unindexed_event() {
+        assert!(!should_store_event(false, &[]));
     }
 
     #[test]

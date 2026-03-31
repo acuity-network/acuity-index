@@ -146,6 +146,7 @@ impl Indexer {
 
             // Determine indexing keys from config.
             let keys = self.keys_for_event(pallet_name, event_name, &field_values);
+            let should_store_event = self.index_variant || !keys.is_empty();
 
             for key in &keys {
                 self.index_event_key(key.clone(), block_number, event_index)?;
@@ -153,7 +154,7 @@ impl Indexer {
             }
 
             // Persist the decoded event row for direct retrieval.
-            if self.store_events {
+            if self.store_events && should_store_event {
                 self.store_event(
                     block_number,
                     event_index,

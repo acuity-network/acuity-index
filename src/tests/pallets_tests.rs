@@ -25,6 +25,13 @@ mod pallets_tests {
         }
     }
 
+    fn bool_value(value: bool) -> Value<()> {
+        Value {
+            value: ValueDef::Primitive(Primitive::Bool(value)),
+            context: (),
+        }
+    }
+
     fn bytes32_val(b: [u8; 32]) -> Value<()> {
         Value {
             value: ValueDef::Composite(Composite::Unnamed(
@@ -1026,6 +1033,244 @@ mod pallets_tests {
         assert_eq!(keys, vec![key_bytes32("account_id", who)]);
     }
 
+    #[test]
+    fn para_inclusion_candidate_backed_indexes_core_and_group() {
+        let fields = unnamed(vec![u128_val(0), u128_val(1), u128_val(9), u128_val(12)]);
+        let keys = index_para_inclusion("CandidateBacked", &fields);
+        assert!(keys.contains(&key_u32("core_index", 9)));
+        assert!(keys.contains(&key_u32("group_index", 12)));
+    }
+
+    #[test]
+    fn paras_pvf_check_started_indexes_hash_and_id() {
+        let code_hash = [0x41; 32];
+        let para_id = [0x42; 32];
+        let fields = unnamed(vec![bytes32_val(code_hash), bytes32_val(para_id)]);
+        let keys = index_paras("PvfCheckStarted", &fields);
+        assert!(keys.contains(&key_bytes32("validation_code_hash", code_hash)));
+        assert!(keys.contains(&key_bytes32("id", para_id)));
+    }
+
+    #[test]
+    fn paras_code_authorized_indexes_para_id_code_hash_and_expiry() {
+        let code_hash = [0x43; 32];
+        let fields = named(vec![
+            ("para_id", u128_val(1000)),
+            ("code_hash", bytes32_val(code_hash)),
+            ("expire_at", u128_val(55)),
+        ]);
+        let keys = index_paras("CodeAuthorized", &fields);
+        assert!(keys.contains(&key_u32("para_id", 1000)));
+        assert!(keys.contains(&key_bytes32("code_hash", code_hash)));
+        assert!(keys.contains(&key_u32("expire_at", 55)));
+    }
+
+    #[test]
+    fn hrmp_open_channel_requested_indexes_sender_and_limits() {
+        let sender = [0x44; 32];
+        let fields = named(vec![
+            ("sender", bytes32_val(sender)),
+            ("recipient", u128_val(2000)),
+            ("proposed_max_capacity", u128_val(8)),
+            ("proposed_max_message_size", u128_val(16)),
+        ]);
+        let keys = index_hrmp("OpenChannelRequested", &fields);
+        assert!(keys.contains(&key_bytes32("account_id", sender)));
+        assert!(keys.contains(&key_u32("recipient", 2000)));
+        assert!(keys.contains(&key_u32("proposed_max_capacity", 8)));
+        assert!(keys.contains(&key_u32("proposed_max_message_size", 16)));
+    }
+
+    #[test]
+    fn paras_disputes_revert_indexes_block_number() {
+        let fields = unnamed(vec![u128_val(321)]);
+        let keys = index_paras_disputes("Revert", &fields);
+        assert_eq!(keys, vec![key_u32("block_number_for", 321)]);
+    }
+
+    #[test]
+    fn on_demand_order_placed_indexes_para_price_and_account() {
+        let who = [0x45; 32];
+        let fields = named(vec![
+            ("para_id", u128_val(77)),
+            ("spot_price", u128_val(999)),
+            ("ordered_by", bytes32_val(who)),
+        ]);
+        let keys = index_on_demand("OnDemandOrderPlaced", &fields);
+        assert!(keys.contains(&key_u32("para_id", 77)));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "spot_price".into(),
+            value: CustomValue::U128(crate::shared::U128Text(999))
+        })));
+        assert!(keys.contains(&key_bytes32("account_id", who)));
+    }
+
+    #[test]
+    fn registrar_registered_indexes_para_and_manager() {
+        let manager = [0x46; 32];
+        let fields = named(vec![
+            ("para_id", u128_val(88)),
+            ("manager", bytes32_val(manager)),
+        ]);
+        let keys = index_registrar("Registered", &fields);
+        assert!(keys.contains(&key_u32("para_id", 88)));
+        assert!(keys.contains(&key_bytes32("account_id", manager)));
+    }
+
+    #[test]
+    fn slots_leased_indexes_all_stable_fields() {
+        let leaser = [0x47; 32];
+        let fields = named(vec![
+            ("para_id", u128_val(89)),
+            ("leaser", bytes32_val(leaser)),
+            ("period_begin", u128_val(4)),
+            ("period_count", u128_val(2)),
+            ("extra_reserved", u128_val(123)),
+            ("total_amount", u128_val(456)),
+        ]);
+        let keys = index_slots("Leased", &fields);
+        assert!(keys.contains(&key_u32("para_id", 89)));
+        assert!(keys.contains(&key_bytes32("account_id", leaser)));
+        assert!(keys.contains(&key_u32("period_begin", 4)));
+        assert!(keys.contains(&key_u32("period_count", 2)));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "extra_reserved".into(),
+            value: CustomValue::U128(crate::shared::U128Text(123))
+        })));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "total_amount".into(),
+            value: CustomValue::U128(crate::shared::U128Text(456))
+        })));
+    }
+
+    #[test]
+    fn auctions_bid_accepted_indexes_bidder_para_amount_and_slots() {
+        let bidder = [0x48; 32];
+        let fields = named(vec![
+            ("bidder", bytes32_val(bidder)),
+            ("para_id", u128_val(90)),
+            ("amount", u128_val(500)),
+            ("first_slot", u128_val(10)),
+            ("last_slot", u128_val(20)),
+        ]);
+        let keys = index_auctions("BidAccepted", &fields);
+        assert!(keys.contains(&key_bytes32("account_id", bidder)));
+        assert!(keys.contains(&key_u32("para_id", 90)));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "amount".into(),
+            value: CustomValue::U128(crate::shared::U128Text(500))
+        })));
+        assert!(keys.contains(&key_u32("first_slot", 10)));
+        assert!(keys.contains(&key_u32("last_slot", 20)));
+    }
+
+    #[test]
+    fn crowdloan_contributed_indexes_account_fund_and_amount() {
+        let who = [0x49; 32];
+        let fields = named(vec![
+            ("who", bytes32_val(who)),
+            ("fund_index", u128_val(7)),
+            ("amount", u128_val(333)),
+        ]);
+        let keys = index_crowdloan("Contributed", &fields);
+        assert!(keys.contains(&key_bytes32("account_id", who)));
+        assert!(keys.contains(&key_u32("fund_index", 7)));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "amount".into(),
+            value: CustomValue::U128(crate::shared::U128Text(333))
+        })));
+    }
+
+    #[test]
+    fn assigned_slots_temporary_slot_assigned_indexes_id() {
+        let id = [0x4A; 32];
+        let fields = unnamed(vec![bytes32_val(id)]);
+        let keys = index_assigned_slots("TemporarySlotAssigned", &fields);
+        assert_eq!(keys, vec![key_bytes32("id", id)]);
+    }
+
+    #[test]
+    fn coretime_events_index_when_and_core() {
+        let revenue = index_coretime("RevenueInfoRequested", &named(vec![("when", u128_val(50))]));
+        assert_eq!(revenue, vec![key_u32("when", 50)]);
+
+        let assigned = index_coretime("CoreAssigned", &named(vec![("core", u128_val(6))]));
+        assert_eq!(assigned, vec![key_u32("core", 6)]);
+    }
+
+    #[test]
+    fn xcm_events_index_message_query_hash_and_version_keys() {
+        let message_id = [0x4B; 32];
+        let hash = [0x4C; 32];
+
+        assert_eq!(
+            index_xcm(
+                "Sent",
+                &named(vec![("message_id", bytes32_val(message_id))])
+            ),
+            vec![key_bytes32("message_id", message_id)]
+        );
+
+        assert_eq!(
+            index_xcm(
+                "UnexpectedResponse",
+                &named(vec![("query_id", u128_val(44))])
+            ),
+            vec![Key::Custom(CustomKey {
+                name: "query_id".into(),
+                value: CustomValue::U64(crate::shared::U64Text(44))
+            })]
+        );
+
+        assert_eq!(
+            index_xcm("AssetsTrapped", &named(vec![("hash", bytes32_val(hash))])),
+            vec![key_bytes32("hash", hash)]
+        );
+
+        let version_changed = index_xcm(
+            "VersionChangeNotified",
+            &named(vec![
+                ("result", u128_val(2)),
+                ("message_id", bytes32_val(message_id)),
+            ]),
+        );
+        assert!(version_changed.contains(&key_u32("result", 2)));
+        assert!(version_changed.contains(&key_bytes32("message_id", message_id)));
+
+        assert_eq!(
+            index_xcm(
+                "SupportedVersionChanged",
+                &named(vec![("version", u128_val(5))])
+            ),
+            vec![key_u32("version", 5)]
+        );
+    }
+
+    #[test]
+    fn staking_ah_client_indexes_validator_set_and_stash_events() {
+        let stash = [0x4D; 32];
+        let received = index_staking_ah_client(
+            "ValidatorSetReceived",
+            &named(vec![
+                ("id", u128_val(3)),
+                ("new_validator_set_count", u128_val(11)),
+                ("leftover", bool_value(true)),
+            ]),
+        );
+        assert!(received.contains(&key_u32("id", 3)));
+        assert!(received.contains(&key_u32("new_validator_set_count", 11)));
+        assert!(received.contains(&Key::Custom(CustomKey {
+            name: "leftover".into(),
+            value: CustomValue::Bool(true)
+        })));
+
+        let updated = index_staking_ah_client(
+            "SessionKeysUpdated",
+            &named(vec![("stash", bytes32_val(stash))]),
+        );
+        assert_eq!(updated, vec![key_bytes32("account_id", stash)]);
+    }
+
     // ─── SDK dispatch ─────────────────────────────────────────────────────
 
     #[test]
@@ -1046,6 +1291,9 @@ mod pallets_tests {
     fn supported_sdk_pallet_list_matches_dispatch_expectations() {
         assert!(is_supported_sdk_pallet("System"));
         assert!(is_supported_sdk_pallet("Recovery"));
+        assert!(is_supported_sdk_pallet("OnDemandAssignmentProvider"));
+        assert!(is_supported_sdk_pallet("StakingAhClient"));
+        assert!(is_supported_sdk_pallet("XcmPallet"));
         assert!(!is_supported_sdk_pallet("Claims"));
     }
 
@@ -1172,6 +1420,20 @@ mod pallets_tests {
             "Recovery",
             "Sudo",
             "StateTrieMigration",
+            "ParaInclusion",
+            "Paras",
+            "Hrmp",
+            "ParasDisputes",
+            "OnDemand",
+            "OnDemandAssignmentProvider",
+            "Registrar",
+            "Slots",
+            "Auctions",
+            "Crowdloan",
+            "AssignedSlots",
+            "Coretime",
+            "Xcm",
+            "XcmPallet",
         ];
         for name in known {
             assert!(

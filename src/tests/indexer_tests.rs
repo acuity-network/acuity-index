@@ -145,18 +145,18 @@ revision_id = "u32"
     }
 
     #[test]
-    fn keys_for_event_custom_pallet_paras_positional() {
+    fn keys_for_event_sdk_pallet_paras_positional() {
         let trees = temp_trees();
         let config = test_config();
         let indexer = Indexer::new_test(trees, &config);
 
-        let fields = unnamed(vec![u128_val(2000)]);
+        let fields = unnamed(vec![bytes32_val([0x77; 32])]);
         let keys = indexer.keys_for_event("Paras", "CurrentCodeUpdated", &fields);
-        assert_eq!(keys, vec![custom_u32_key("para_id", 2000)]);
+        assert_eq!(keys, vec![custom_bytes32_key("id", [0x77; 32])]);
     }
 
     #[test]
-    fn keys_for_event_custom_pallet_registrar_multi() {
+    fn keys_for_event_sdk_pallet_registrar_multi() {
         let trees = temp_trees();
         let config = test_config();
         let indexer = Indexer::new_test(trees, &config);

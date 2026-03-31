@@ -4,59 +4,18 @@ default_url = "wss://rpc.polkadot.io:443"
 versions = [0]
 
 [custom_keys]
-session_index = "u32"
-index = "u32"
-count = "u32"
-validation_code_hash = "bytes32"
-spot_price = "u128"
-rate = "u128"
-cycle_block = "u32"
-proposed_max_capacity = "u32"
-call_hash = "bytes32"
-by_parachain = "u32"
-message_index = "u32"
-prioritized = "bool"
-lease_period = "u32"
-migrated = "u128"
-cycle_period = "u32"
-leftover = "bool"
-block_number_for = "u32"
-success = "bool"
-kept = "u128"
 num_pure_accounts = "u32"
-period = "u32"
-group_index = "u32"
-recipient = "u32"
-candidate_hash = "bytes32"
-query_id = "u64"
-version = "u32"
-code_hash = "bytes32"
-id = "bytes32"
-extra_reserved = "u128"
-ending = "u32"
-core_index = "u32"
-result = "u32"
-up_to = "u32"
-period_begin = "u32"
-page_index = "u32"
-block_number = "u32"
-proposed_max_message_size = "u32"
-para_id = "u32"
-core = "u32"
-hash = "bytes32"
-other_id = "u32"
-total_amount = "u128"
-votes = "u32"
-new_validator_set_count = "u32"
-when = "u32"
-last_slot = "u32"
-fund_index = "u32"
+cycle_block = "u32"
 message_id = "bytes32"
-auction_index = "u32"
+kept = "u128"
+migrated = "u128"
 amount = "u128"
-expire_at = "u32"
-first_slot = "u32"
-period_count = "u32"
+query_id = "u64"
+index = "u32"
+up_to = "u32"
+votes = "u32"
+prioritized = "bool"
+cycle_period = "u32"
 
 [[pallets]]
 name = "System"
@@ -64,28 +23,7 @@ sdk = true
 
 [[pallets]]
 name = "Scheduler"
-events = [
-  { name = "Scheduled", params = [
-    { field = "when", key = "when" },
-    { field = "index", key = "index" },
-  ] },
-  { name = "Canceled", params = [
-    { field = "when", key = "when" },
-    { field = "index", key = "index" },
-  ] },
-  { name = "Dispatched" },
-  { name = "RetrySet", params = [
-    { field = "period", key = "period" },
-  ] },
-  { name = "RetryCancelled" },
-  { name = "CallUnavailable" },
-  { name = "PeriodicFailed" },
-  { name = "RetryFailed" },
-  { name = "PermanentlyOverweight" },
-  { name = "AgendaIncomplete", params = [
-    { field = "when", key = "when" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "Preimage"
@@ -130,11 +68,7 @@ sdk = true
 
 [[pallets]]
 name = "Grandpa"
-events = [
-  { name = "NewAuthorities" },
-  { name = "Paused" },
-  { name = "Resumed" },
-]
+sdk = true
 
 [[pallets]]
 name = "Treasury"
@@ -150,17 +84,7 @@ sdk = true
 
 [[pallets]]
 name = "Whitelist"
-events = [
-  { name = "CallWhitelisted", params = [
-    { field = "call_hash", key = "call_hash" },
-  ] },
-  { name = "WhitelistedCallRemoved", params = [
-    { field = "call_hash", key = "call_hash" },
-  ] },
-  { name = "WhitelistedCallDispatched", params = [
-    { field = "call_hash", key = "call_hash" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "Claims"
@@ -177,18 +101,7 @@ sdk = true
 
 [[pallets]]
 name = "Utility"
-events = [
-  { name = "BatchInterrupted", params = [
-    { field = "index", key = "index" },
-  ] },
-  { name = "BatchCompleted" },
-  { name = "BatchCompletedWithErrors" },
-  { name = "ItemCompleted" },
-  { name = "ItemFailed" },
-  { name = "DispatchedAs" },
-  { name = "IfElseMainSuccess" },
-  { name = "IfElseFallbackCalled" },
-]
+sdk = true
 
 [[pallets]]
 name = "Proxy"
@@ -228,276 +141,47 @@ sdk = true
 
 [[pallets]]
 name = "StakingAhClient"
-events = [
-  { name = "ValidatorSetReceived", params = [
-    { field = "id", key = "id" },
-    { field = "new_validator_set_count", key = "new_validator_set_count" },
-    { field = "leftover", key = "leftover" },
-  ] },
-  { name = "CouldNotMergeAndDropped" },
-  { name = "SetTooSmallAndDropped" },
-  { name = "Unexpected" },
-  { name = "SessionKeysUpdated", params = [
-    { field = "stash", key = "account_id" },
-  ] },
-  { name = "SessionKeysUpdateFailed", params = [
-    { field = "stash", key = "account_id" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "ParaInclusion"
-events = [
-  { name = "CandidateBacked", params = [
-    { field = "2", key = "core_index" },
-    { field = "3", key = "group_index" },
-  ] },
-  { name = "CandidateIncluded", params = [
-    { field = "2", key = "core_index" },
-    { field = "3", key = "group_index" },
-  ] },
-  { name = "CandidateTimedOut", params = [
-    { field = "2", key = "core_index" },
-  ] },
-  { name = "UpwardMessagesReceived", params = [
-    { field = "from", key = "account_id" },
-    { field = "count", key = "count" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "Paras"
-events = [
-  { name = "CurrentCodeUpdated", params = [
-    { field = "0", key = "id" },
-  ] },
-  { name = "CurrentHeadUpdated", params = [
-    { field = "0", key = "id" },
-  ] },
-  { name = "CodeUpgradeScheduled", params = [
-    { field = "0", key = "id" },
-  ] },
-  { name = "NewHeadNoted", params = [
-    { field = "0", key = "id" },
-  ] },
-  { name = "ActionQueued", params = [
-    { field = "0", key = "id" },
-    { field = "1", key = "session_index" },
-  ] },
-  { name = "PvfCheckStarted", params = [
-    { field = "0", key = "validation_code_hash" },
-    { field = "1", key = "id" },
-  ] },
-  { name = "PvfCheckAccepted", params = [
-    { field = "0", key = "validation_code_hash" },
-    { field = "1", key = "id" },
-  ] },
-  { name = "PvfCheckRejected", params = [
-    { field = "0", key = "validation_code_hash" },
-    { field = "1", key = "id" },
-  ] },
-  { name = "UpgradeCooldownRemoved", params = [
-    { field = "para_id", key = "para_id" },
-  ] },
-  { name = "CodeAuthorized", params = [
-    { field = "para_id", key = "para_id" },
-    { field = "code_hash", key = "code_hash" },
-    { field = "expire_at", key = "expire_at" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "Hrmp"
-events = [
-  { name = "OpenChannelRequested", params = [
-    { field = "sender", key = "account_id" },
-    { field = "recipient", key = "recipient" },
-    { field = "proposed_max_capacity", key = "proposed_max_capacity" },
-    { field = "proposed_max_message_size", key = "proposed_max_message_size" },
-  ] },
-  { name = "OpenChannelCanceled", params = [
-    { field = "by_parachain", key = "by_parachain" },
-  ] },
-  { name = "OpenChannelAccepted", params = [
-    { field = "sender", key = "account_id" },
-    { field = "recipient", key = "recipient" },
-  ] },
-  { name = "ChannelClosed", params = [
-    { field = "by_parachain", key = "by_parachain" },
-  ] },
-  { name = "HrmpChannelForceOpened", params = [
-    { field = "sender", key = "account_id" },
-    { field = "recipient", key = "recipient" },
-    { field = "proposed_max_capacity", key = "proposed_max_capacity" },
-    { field = "proposed_max_message_size", key = "proposed_max_message_size" },
-  ] },
-  { name = "HrmpSystemChannelOpened", params = [
-    { field = "sender", key = "account_id" },
-    { field = "recipient", key = "recipient" },
-    { field = "proposed_max_capacity", key = "proposed_max_capacity" },
-    { field = "proposed_max_message_size", key = "proposed_max_message_size" },
-  ] },
-  { name = "OpenChannelDepositsUpdated", params = [
-    { field = "sender", key = "account_id" },
-    { field = "recipient", key = "recipient" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "ParasDisputes"
-events = [
-  { name = "DisputeInitiated", params = [
-    { field = "0", key = "candidate_hash" },
-  ] },
-  { name = "DisputeConcluded", params = [
-    { field = "0", key = "candidate_hash" },
-  ] },
-  { name = "Revert", params = [
-    { field = "0", key = "block_number_for" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "OnDemand"
-events = [
-  { name = "OnDemandOrderPlaced", params = [
-    { field = "para_id", key = "para_id" },
-    { field = "spot_price", key = "spot_price" },
-    { field = "ordered_by", key = "account_id" },
-  ] },
-  { name = "SpotPriceSet", params = [
-    { field = "spot_price", key = "spot_price" },
-  ] },
-  { name = "AccountCredited", params = [
-    { field = "who", key = "account_id" },
-    { field = "amount", key = "amount" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "Registrar"
-events = [
-  { name = "Registered", params = [
-    { field = "para_id", key = "para_id" },
-    { field = "manager", key = "account_id" },
-  ] },
-  { name = "Deregistered", params = [
-    { field = "para_id", key = "para_id" },
-  ] },
-  { name = "Reserved", params = [
-    { field = "para_id", key = "para_id" },
-    { field = "who", key = "account_id" },
-  ] },
-  { name = "Swapped", params = [
-    { field = "para_id", key = "para_id" },
-    { field = "other_id", key = "other_id" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "Slots"
-events = [
-  { name = "NewLeasePeriod", params = [
-    { field = "lease_period", key = "lease_period" },
-  ] },
-  { name = "Leased", params = [
-    { field = "para_id", key = "para_id" },
-    { field = "leaser", key = "account_id" },
-    { field = "period_begin", key = "period_begin" },
-    { field = "period_count", key = "period_count" },
-    { field = "extra_reserved", key = "extra_reserved" },
-    { field = "total_amount", key = "total_amount" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "Auctions"
-events = [
-  { name = "AuctionStarted", params = [
-    { field = "auction_index", key = "auction_index" },
-    { field = "lease_period", key = "lease_period" },
-    { field = "ending", key = "ending" },
-  ] },
-  { name = "AuctionClosed", params = [
-    { field = "auction_index", key = "auction_index" },
-  ] },
-  { name = "Reserved", params = [
-    { field = "bidder", key = "account_id" },
-    { field = "extra_reserved", key = "extra_reserved" },
-    { field = "total_amount", key = "total_amount" },
-  ] },
-  { name = "Unreserved", params = [
-    { field = "bidder", key = "account_id" },
-    { field = "amount", key = "amount" },
-  ] },
-  { name = "ReserveConfiscated", params = [
-    { field = "para_id", key = "para_id" },
-    { field = "leaser", key = "account_id" },
-    { field = "amount", key = "amount" },
-  ] },
-  { name = "BidAccepted", params = [
-    { field = "bidder", key = "account_id" },
-    { field = "para_id", key = "para_id" },
-    { field = "amount", key = "amount" },
-    { field = "first_slot", key = "first_slot" },
-    { field = "last_slot", key = "last_slot" },
-  ] },
-  { name = "WinningOffset", params = [
-    { field = "auction_index", key = "auction_index" },
-    { field = "block_number", key = "block_number" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "Crowdloan"
-events = [
-  { name = "Created", params = [
-    { field = "para_id", key = "para_id" },
-  ] },
-  { name = "Contributed", params = [
-    { field = "who", key = "account_id" },
-    { field = "fund_index", key = "fund_index" },
-    { field = "amount", key = "amount" },
-  ] },
-  { name = "Withdrew", params = [
-    { field = "who", key = "account_id" },
-    { field = "fund_index", key = "fund_index" },
-    { field = "amount", key = "amount" },
-  ] },
-  { name = "PartiallyRefunded", params = [
-    { field = "para_id", key = "para_id" },
-  ] },
-  { name = "AllRefunded", params = [
-    { field = "para_id", key = "para_id" },
-  ] },
-  { name = "Dissolved", params = [
-    { field = "para_id", key = "para_id" },
-  ] },
-  { name = "HandleBidResult", params = [
-    { field = "para_id", key = "para_id" },
-  ] },
-  { name = "Edited", params = [
-    { field = "para_id", key = "para_id" },
-  ] },
-  { name = "MemoUpdated", params = [
-    { field = "who", key = "account_id" },
-    { field = "para_id", key = "para_id" },
-  ] },
-  { name = "AddedToNewRaise", params = [
-    { field = "para_id", key = "para_id" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "Coretime"
-events = [
-  { name = "RevenueInfoRequested", params = [
-    { field = "when", key = "when" },
-  ] },
-  { name = "CoreAssigned", params = [
-    { field = "core", key = "core" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "StateTrieMigration"
@@ -505,125 +189,15 @@ sdk = true
 
 [[pallets]]
 name = "XcmPallet"
-events = [
-  { name = "Attempted" },
-  { name = "Sent", params = [
-    { field = "message_id", key = "message_id" },
-  ] },
-  { name = "SendFailed", params = [
-    { field = "message_id", key = "message_id" },
-  ] },
-  { name = "ProcessXcmError", params = [
-    { field = "message_id", key = "message_id" },
-  ] },
-  { name = "UnexpectedResponse", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "ResponseReady", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "Notified", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "NotifyOverweight", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "NotifyDispatchError", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "NotifyDecodeFailed", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "InvalidResponder", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "InvalidResponderVersion", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "ResponseTaken", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "AssetsTrapped", params = [
-    { field = "hash", key = "hash" },
-  ] },
-  { name = "VersionChangeNotified", params = [
-    { field = "result", key = "result" },
-    { field = "message_id", key = "message_id" },
-  ] },
-  { name = "SupportedVersionChanged", params = [
-    { field = "version", key = "version" },
-  ] },
-  { name = "NotifyTargetSendFail", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "NotifyTargetMigrationFail", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "InvalidQuerierVersion", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "InvalidQuerier", params = [
-    { field = "query_id", key = "query_id" },
-  ] },
-  { name = "VersionNotifyStarted", params = [
-    { field = "message_id", key = "message_id" },
-  ] },
-  { name = "VersionNotifyRequested", params = [
-    { field = "message_id", key = "message_id" },
-  ] },
-  { name = "VersionNotifyUnrequested", params = [
-    { field = "message_id", key = "message_id" },
-  ] },
-  { name = "FeesPaid" },
-  { name = "AssetsClaimed", params = [
-    { field = "hash", key = "hash" },
-  ] },
-  { name = "VersionMigrationFinished", params = [
-    { field = "version", key = "version" },
-  ] },
-  { name = "AliasAuthorized", params = [
-    { field = "target", key = "account_id" },
-  ] },
-  { name = "AliasAuthorizationRemoved", params = [
-    { field = "target", key = "account_id" },
-  ] },
-  { name = "AliasesAuthorizationsRemoved", params = [
-    { field = "target", key = "account_id" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "MessageQueue"
-events = [
-  { name = "ProcessingFailed", params = [
-    { field = "id", key = "id" },
-  ] },
-  { name = "Processed", params = [
-    { field = "id", key = "id" },
-    { field = "success", key = "success" },
-  ] },
-  { name = "OverweightEnqueued", params = [
-    { field = "id", key = "id" },
-    { field = "page_index", key = "page_index" },
-    { field = "message_index", key = "message_index" },
-  ] },
-  { name = "PageReaped", params = [
-    { field = "index", key = "index" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "AssetRate"
-events = [
-  { name = "AssetRateCreated", params = [
-    { field = "rate", key = "rate" },
-  ] },
-  { name = "AssetRateRemoved" },
-  { name = "AssetRateUpdated", params = [
-    { field = "old", key = "account_id" },
-    { field = "new", key = "account_id" },
-  ] },
-]
+sdk = true
 
 [[pallets]]
 name = "RcMigrator"

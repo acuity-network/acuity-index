@@ -92,27 +92,117 @@ mod config_tests {
 
     #[test]
     fn sdk_pallets_returns_only_sdk_flagged() {
-        let cfg = load_polkadot();
-        let sdk = cfg.sdk_pallets();
-        assert!(sdk.contains("System"));
-        assert!(sdk.contains("Balances"));
-        assert!(sdk.contains("Staking"));
-        // Custom pallets should NOT be in the SDK set.
-        assert!(!sdk.contains("Claims"));
-        assert!(!sdk.contains("Paras"));
-        assert!(!sdk.contains("Crowdloan"));
+        assert!(crate::pallets::is_supported_sdk_pallet("System"));
+        assert!(crate::pallets::is_supported_sdk_pallet("Balances"));
+        assert!(crate::pallets::is_supported_sdk_pallet("Staking"));
+        assert!(crate::pallets::is_supported_sdk_pallet("StakingAhClient"));
+        assert!(crate::pallets::is_supported_sdk_pallet("XcmPallet"));
+        assert!(!crate::pallets::is_supported_sdk_pallet("Claims"));
+        assert!(!crate::pallets::is_supported_sdk_pallet("RcMigrator"));
+    }
+
+    #[test]
+    fn supported_sdk_pallets_include_stable2603_umbrella_exports() {
+        for pallet_name in [
+            "Alliance",
+            "AssetConversion",
+            "Assets",
+            "AssignedSlots",
+            "AuthorityDiscovery",
+            "Auctions",
+            "BagsList",
+            "Beefy",
+            "Broker",
+            "Collective",
+            "Contracts",
+            "Coretime",
+            "CoreFellowship",
+            "Democracy",
+            "ElectionProviderMultiBlock",
+            "ElectionsPhragmen",
+            "Grandpa",
+            "Hrmp",
+            "ImOnline",
+            "Lottery",
+            "Membership",
+            "MessageQueue",
+            "Migrations",
+            "Mixnet",
+            "Mmr",
+            "Nfts",
+            "Oracle",
+            "OnDemand",
+            "OnDemandAssignmentProvider",
+            "ParaInclusion",
+            "Paras",
+            "ParasDisputes",
+            "Parameters",
+            "People",
+            "RankedCollective",
+            "Registrar",
+            "Salary",
+            "Scheduler",
+            "Slots",
+            "StakingAhClient",
+            "Society",
+            "StakingAsync",
+            "Statement",
+            "Timestamp",
+            "Tips",
+            "TransactionStorage",
+            "Uniques",
+            "Utility",
+            "Whitelist",
+            "Xcm",
+            "XcmPallet",
+        ] {
+            assert!(
+                crate::pallets::is_supported_sdk_pallet(pallet_name),
+                "missing supported sdk pallet {pallet_name}"
+            );
+        }
     }
 
     #[test]
     fn build_custom_index_excludes_sdk() {
-        let cfg = load_polkadot();
+        let cfg: ChainConfig = toml::from_str(
+            r#"
+name = "test"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[custom_keys]
+amount = "u128"
+
+[[pallets]]
+name = "System"
+sdk = true
+
+[[pallets]]
+name = "StakingAhClient"
+sdk = true
+
+[[pallets]]
+name = "XcmPallet"
+sdk = true
+
+[[pallets]]
+name = "Claims"
+events = [
+  { name = "Claimed", params = [
+    { field = "who", key = "account_id" },
+    { field = "amount", key = "amount" },
+  ]},
+]
+"#,
+        )
+        .unwrap();
         let idx = cfg.build_custom_index().unwrap();
-        // SDK pallets must not appear in the custom index.
         assert!(!idx.contains_key("System"));
-        assert!(!idx.contains_key("Balances"));
-        // Custom pallets should appear.
+        assert!(!idx.contains_key("StakingAhClient"));
+        assert!(!idx.contains_key("XcmPallet"));
         assert!(idx.contains_key("Claims"));
-        assert!(idx.contains_key("Paras"));
     }
 
     #[test]
@@ -122,54 +212,20 @@ mod config_tests {
 
         let claims = idx.get("Claims").unwrap();
         let claimed_params = claims.get("Claimed").unwrap();
-        assert_eq!(claimed_params.len(), 1);
+        assert_eq!(claimed_params.len(), 2);
         assert_eq!(claimed_params[0].field, "who");
         assert_eq!(
             claimed_params[0].key,
             ParamKey::BuiltIn(KeyTypeName::AccountId)
         );
         assert!(!claimed_params[0].multi);
-    }
-
-    #[test]
-    fn build_custom_index_multi_param_event() {
-        let cfg = load_polkadot();
-        let idx = cfg.build_custom_index().unwrap();
-
-        let registrar = idx.get("Registrar").unwrap();
-        let registered = registrar.get("Registered").unwrap();
-        assert_eq!(registered.len(), 2);
-        assert_eq!(registered[0].field, "para_id");
         assert_eq!(
-            registered[0].key,
+            claimed_params[1].key,
             ParamKey::Custom {
-                name: "para_id".into(),
-                kind: ScalarKind::U32,
+                name: "amount".into(),
+                kind: ScalarKind::U128,
             }
         );
-        assert_eq!(registered[1].field, "manager");
-        assert_eq!(registered[1].key, ParamKey::BuiltIn(KeyTypeName::AccountId));
-        assert!(!registered[0].multi);
-        assert!(!registered[1].multi);
-    }
-
-    #[test]
-    fn build_custom_index_positional_field() {
-        let cfg = load_polkadot();
-        let idx = cfg.build_custom_index().unwrap();
-
-        let paras = idx.get("Paras").unwrap();
-        let code_updated = paras.get("CurrentCodeUpdated").unwrap();
-        assert_eq!(code_updated.len(), 1);
-        assert_eq!(code_updated[0].field, "0");
-        assert_eq!(
-            code_updated[0].key,
-            ParamKey::Custom {
-                name: "para_id".into(),
-                kind: ScalarKind::U32,
-            }
-        );
-        assert!(!code_updated[0].multi);
     }
 
     #[test]
@@ -323,49 +379,23 @@ versions = [0]
     #[test]
     fn custom_pallet_events_match_legacy_chain_modules() {
         let ksm = load_kusama();
-        has_events(
-            &ksm,
-            "Paras",
-            &[
-                "CurrentCodeUpdated",
-                "CurrentHeadUpdated",
-                "CodeUpgradeScheduled",
-                "NewHeadNoted",
-                "ActionQueued",
-                "PvfCheckStarted",
-                "PvfCheckAccepted",
-                "PvfCheckRejected",
-            ],
-        );
-        has_events(
-            &ksm,
-            "Hrmp",
-            &[
-                "OpenChannelRequested",
-                "OpenChannelCanceled",
-                "OpenChannelAccepted",
-                "ChannelClosed",
-                "HrmpChannelForceOpened",
-                "HrmpSystemChannelOpened",
-                "OpenChannelDepositsUpdated",
-            ],
-        );
+        assert!(pallet(&ksm, "Paras").sdk);
+        assert!(pallet(&ksm, "Hrmp").sdk);
+        assert!(pallet(&ksm, "OnDemandAssignmentProvider").sdk);
+        assert!(pallet(&ksm, "XcmPallet").sdk);
+        assert!(pallet(&ksm, "StakingAhClient").sdk);
 
         let wnd = load_westend();
-        has_events(
-            &wnd,
-            "AssignedSlots",
-            &["PermanentSlotAssigned", "TemporarySlotAssigned"],
-        );
-        has_events(&wnd, "OnDemandAssignmentProvider", &["OnDemandOrderPlaced"]);
+        assert!(pallet(&wnd, "AssignedSlots").sdk);
+        assert!(pallet(&wnd, "OnDemandAssignmentProvider").sdk);
+        assert!(pallet(&wnd, "XcmPallet").sdk);
+        assert!(pallet(&wnd, "StakingAhClient").sdk);
 
         let pas = load_paseo();
         has_events(&pas, "Claims", &["Claimed"]);
-        has_events(
-            &pas,
-            "ParasDisputes",
-            &["DisputeInitiated", "DisputeConcluded"],
-        );
+        assert!(pallet(&pas, "ParasDisputes").sdk);
+        assert!(pallet(&pas, "XcmPallet").sdk);
+        assert!(pallet(&pas, "StakingAhClient").sdk);
     }
 
     #[test]
@@ -375,6 +405,6 @@ versions = [0]
             pas.genesis_hash,
             "77afd6190f1554ad45fd0d31aee62aacc33c6db0ea801129acb813f913e0764f"
         );
-        assert_eq!(pas.default_url, "wss://paseo-rpc.polkadot.io:443");
+        assert_eq!(pas.default_url, "wss://paseo.ibp.network:443");
     }
 }

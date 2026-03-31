@@ -5,33 +5,121 @@
 
 use scale_value::{Composite, Value, ValueDef};
 
-use crate::shared::{Bytes32, CustomKey, CustomValue, Key};
+use crate::shared::{Bytes32, CustomKey, CustomValue, Key, U128Text, U64Text};
 
 pub const SUPPORTED_SDK_PALLETS: &[&str] = &[
+    "Alliance",
+    "AssetConversion",
+    "AssetConversionOps",
+    "AssetConversionTxPayment",
+    "AssetRate",
+    "AssetRewards",
+    "AssetTxPayment",
+    "Assets",
+    "AssetsFreezer",
+    "AssetsHolder",
+    "AssignedSlots",
+    "AtomicSwap",
+    "Aura",
+    "AuthorityDiscovery",
+    "Authorship",
+    "Auctions",
+    "Babe",
+    "BagsList",
     "System",
     "Balances",
+    "Beefy",
+    "BeefyMmr",
     "Staking",
+    "BridgeGrandpa",
+    "BridgeMessages",
+    "BridgeParachains",
+    "BridgeRelayers",
+    "Broker",
     "Session",
+    "CollatorSelection",
+    "Collective",
+    "CollectiveContent",
+    "Contracts",
+    "Coretime",
+    "Crowdloan",
     "Indices",
+    "CoreFellowship",
+    "Dap",
+    "DapSatellite",
+    "Democracy",
+    "Derivatives",
+    "DummyDim",
+    "ElectionProviderMultiBlock",
     "Preimage",
+    "ElectionsPhragmen",
     "Treasury",
+    "Grandpa",
+    "Hrmp",
+    "ImOnline",
     "Bounties",
     "ChildBounties",
+    "Lottery",
+    "Membership",
+    "MessageQueue",
+    "MetaTx",
+    "Migrations",
+    "Mixnet",
+    "Mmr",
+    "MultiAssetBounties",
     "Vesting",
     "Proxy",
     "Multisig",
+    "NftFractionalization",
+    "Nfts",
+    "Nis",
+    "NodeAuthorization",
     "ElectionProviderMultiPhase",
     "VoterList",
     "NominationPools",
+    "Oracle",
+    "OriginRestriction",
+    "PagedList",
+    "Parameters",
+    "People",
+    "ParaInclusion",
+    "Paras",
+    "ParasDisputes",
     "FastUnstake",
     "ConvictionVoting",
+    "RankedCollective",
     "Referenda",
+    "Remark",
+    "RootOffences",
+    "SafeMode",
+    "Salary",
+    "Scheduler",
+    "ScoredPool",
+    "Society",
     "TransactionPayment",
     "DelegatedStaking",
     "Identity",
+    "OnDemand",
+    "OnDemandAssignmentProvider",
     "Recovery",
+    "Registrar",
+    "SkipFeelessPayment",
+    "Slots",
+    "StakingAsync",
+    "StakingAhClient",
     "Sudo",
     "StateTrieMigration",
+    "Statement",
+    "Timestamp",
+    "Tips",
+    "TransactionStorage",
+    "TxPause",
+    "Uniques",
+    "Utility",
+    "VerifySignature",
+    "Whitelist",
+    "Xcm",
+    "XcmPallet",
 ];
 
 pub fn is_supported_sdk_pallet(pallet_name: &str) -> bool {
@@ -682,12 +770,314 @@ pub fn index_state_trie_migration(event_name: &str, fields: &Composite<()>) -> V
     }
 }
 
+/// Index events from Polkadot relay-chain `ParaInclusion`.
+pub fn index_para_inclusion(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "CandidateBacked" | "CandidateIncluded" => {
+            let mut keys = positional_u32_key(fields, 2, "core_index");
+            keys.extend(positional_u32_key(fields, 3, "group_index"));
+            keys
+        }
+        "CandidateTimedOut" => positional_u32_key(fields, 2, "core_index"),
+        "UpwardMessagesReceived" => {
+            let mut keys = named_account_id(fields, "from");
+            keys.extend(named_u32_key(fields, "count", "count"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `Paras`.
+pub fn index_paras(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "CurrentCodeUpdated" | "CurrentHeadUpdated" | "CodeUpgradeScheduled" | "NewHeadNoted" => {
+            positional_bytes32_key(fields, 0, "id")
+        }
+        "ActionQueued" => {
+            let mut keys = positional_bytes32_key(fields, 0, "id");
+            keys.extend(positional_u32_key(fields, 1, "session_index"));
+            keys
+        }
+        "PvfCheckStarted" | "PvfCheckAccepted" | "PvfCheckRejected" => {
+            let mut keys = positional_bytes32_key(fields, 0, "validation_code_hash");
+            keys.extend(positional_bytes32_key(fields, 1, "id"));
+            keys
+        }
+        "UpgradeCooldownRemoved" => named_u32_key(fields, "para_id", "para_id"),
+        "CodeAuthorized" => {
+            let mut keys = named_u32_key(fields, "para_id", "para_id");
+            keys.extend(named_bytes32_key(fields, "code_hash", "code_hash"));
+            keys.extend(named_u32_key(fields, "expire_at", "expire_at"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `Hrmp`.
+pub fn index_hrmp(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "OpenChannelRequested" | "HrmpChannelForceOpened" | "HrmpSystemChannelOpened" => {
+            let mut keys = named_account_id(fields, "sender");
+            keys.extend(named_u32_key(fields, "recipient", "recipient"));
+            keys.extend(named_u32_key(
+                fields,
+                "proposed_max_capacity",
+                "proposed_max_capacity",
+            ));
+            keys.extend(named_u32_key(
+                fields,
+                "proposed_max_message_size",
+                "proposed_max_message_size",
+            ));
+            keys
+        }
+        "OpenChannelAccepted" | "OpenChannelDepositsUpdated" => {
+            let mut keys = named_account_id(fields, "sender");
+            keys.extend(named_u32_key(fields, "recipient", "recipient"));
+            keys
+        }
+        "OpenChannelCanceled" | "ChannelClosed" => {
+            named_u32_key(fields, "by_parachain", "by_parachain")
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `ParasDisputes`.
+pub fn index_paras_disputes(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "DisputeInitiated" | "DisputeConcluded" => {
+            positional_bytes32_key(fields, 0, "candidate_hash")
+        }
+        "Revert" => positional_u32_key(fields, 0, "block_number_for"),
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `OnDemand` and `OnDemandAssignmentProvider`.
+pub fn index_on_demand(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "OnDemandOrderPlaced" => {
+            let mut keys = named_u32_key(fields, "para_id", "para_id");
+            keys.extend(named_u128_key(fields, "spot_price", "spot_price"));
+            keys.extend(named_account_id(fields, "ordered_by"));
+            keys
+        }
+        "SpotPriceSet" => named_u128_key(fields, "spot_price", "spot_price"),
+        "AccountCredited" => {
+            let mut keys = named_account_id(fields, "who");
+            keys.extend(named_u128_key(fields, "amount", "amount"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `Registrar`.
+pub fn index_registrar(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "Registered" => {
+            let mut keys = named_u32_key(fields, "para_id", "para_id");
+            keys.extend(named_account_id(fields, "manager"));
+            keys
+        }
+        "Reserved" => {
+            let mut keys = named_u32_key(fields, "para_id", "para_id");
+            keys.extend(named_account_id(fields, "who"));
+            keys
+        }
+        "Deregistered" => named_u32_key(fields, "para_id", "para_id"),
+        "Swapped" => {
+            let mut keys = named_u32_key(fields, "para_id", "para_id");
+            keys.extend(named_u32_key(fields, "other_id", "other_id"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `Slots`.
+pub fn index_slots(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "NewLeasePeriod" => named_u32_key(fields, "lease_period", "lease_period"),
+        "Leased" => {
+            let mut keys = named_u32_key(fields, "para_id", "para_id");
+            keys.extend(named_account_id(fields, "leaser"));
+            keys.extend(named_u32_key(fields, "period_begin", "period_begin"));
+            keys.extend(named_u32_key(fields, "period_count", "period_count"));
+            keys.extend(named_u128_key(fields, "extra_reserved", "extra_reserved"));
+            keys.extend(named_u128_key(fields, "total_amount", "total_amount"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `Auctions`.
+pub fn index_auctions(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "AuctionStarted" => {
+            let mut keys = named_u32_key(fields, "auction_index", "auction_index");
+            keys.extend(named_u32_key(fields, "lease_period", "lease_period"));
+            keys.extend(named_u32_key(fields, "ending", "ending"));
+            keys
+        }
+        "AuctionClosed" => named_u32_key(fields, "auction_index", "auction_index"),
+        "Reserved" => {
+            let mut keys = named_account_id(fields, "bidder");
+            keys.extend(named_u128_key(fields, "extra_reserved", "extra_reserved"));
+            keys.extend(named_u128_key(fields, "total_amount", "total_amount"));
+            keys
+        }
+        "Unreserved" => {
+            let mut keys = named_account_id(fields, "bidder");
+            keys.extend(named_u128_key(fields, "amount", "amount"));
+            keys
+        }
+        "ReserveConfiscated" => {
+            let mut keys = named_u32_key(fields, "para_id", "para_id");
+            keys.extend(named_account_id(fields, "leaser"));
+            keys.extend(named_u128_key(fields, "amount", "amount"));
+            keys
+        }
+        "BidAccepted" => {
+            let mut keys = named_account_id(fields, "bidder");
+            keys.extend(named_u32_key(fields, "para_id", "para_id"));
+            keys.extend(named_u128_key(fields, "amount", "amount"));
+            keys.extend(named_u32_key(fields, "first_slot", "first_slot"));
+            keys.extend(named_u32_key(fields, "last_slot", "last_slot"));
+            keys
+        }
+        "WinningOffset" => {
+            let mut keys = named_u32_key(fields, "auction_index", "auction_index");
+            keys.extend(named_u32_key(fields, "block_number", "block_number"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `Crowdloan`.
+pub fn index_crowdloan(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "Created" | "PartiallyRefunded" | "AllRefunded" | "Dissolved" | "HandleBidResult"
+        | "Edited" | "AddedToNewRaise" => named_u32_key(fields, "para_id", "para_id"),
+        "Contributed" | "Withdrew" => {
+            let mut keys = named_account_id(fields, "who");
+            keys.extend(named_u32_key(fields, "fund_index", "fund_index"));
+            keys.extend(named_u128_key(fields, "amount", "amount"));
+            keys
+        }
+        "MemoUpdated" => {
+            let mut keys = named_account_id(fields, "who");
+            keys.extend(named_u32_key(fields, "para_id", "para_id"));
+            keys
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `AssignedSlots`.
+pub fn index_assigned_slots(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "PermanentSlotAssigned" | "TemporarySlotAssigned" => {
+            positional_bytes32_key(fields, 0, "id")
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from Polkadot relay-chain `Coretime`.
+pub fn index_coretime(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "RevenueInfoRequested" => named_u32_key(fields, "when", "when"),
+        "CoreAssigned" => named_u32_key(fields, "core", "core"),
+        _ => vec![],
+    }
+}
+
+/// Index events from `pallet_xcm` runtime aliases like `XcmPallet`.
+pub fn index_xcm(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "Sent"
+        | "SendFailed"
+        | "ProcessXcmError"
+        | "VersionNotifyStarted"
+        | "VersionNotifyRequested"
+        | "VersionNotifyUnrequested" => named_bytes32_key(fields, "message_id", "message_id"),
+        "UnexpectedResponse"
+        | "ResponseReady"
+        | "Notified"
+        | "NotifyOverweight"
+        | "NotifyDispatchError"
+        | "NotifyDecodeFailed"
+        | "InvalidResponder"
+        | "InvalidResponderVersion"
+        | "ResponseTaken"
+        | "NotifyTargetSendFail"
+        | "NotifyTargetMigrationFail"
+        | "InvalidQuerierVersion"
+        | "InvalidQuerier" => named_u64_key(fields, "query_id", "query_id"),
+        "AssetsTrapped" | "AssetsClaimed" => named_bytes32_key(fields, "hash", "hash"),
+        "VersionChangeNotified" => {
+            let mut keys = named_u32_key(fields, "result", "result");
+            keys.extend(named_bytes32_key(fields, "message_id", "message_id"));
+            keys
+        }
+        "SupportedVersionChanged" | "VersionMigrationFinished" => {
+            named_u32_key(fields, "version", "version")
+        }
+        _ => vec![],
+    }
+}
+
+/// Index events from staking async client runtime aliases like `StakingAhClient`.
+pub fn index_staking_ah_client(event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    match event_name {
+        "ValidatorSetReceived" => {
+            let mut keys = named_u32_key(fields, "id", "id");
+            keys.extend(named_u32_key(
+                fields,
+                "new_validator_set_count",
+                "new_validator_set_count",
+            ));
+            keys.extend(named_bool_key(fields, "leftover", "leftover"));
+            keys
+        }
+        "SessionKeysUpdated" | "SessionKeysUpdateFailed" => named_account_id(fields, "stash"),
+        _ => vec![],
+    }
+}
+
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 fn custom_u32_key(name: &str, value: u32) -> Key {
     Key::Custom(CustomKey {
         name: name.to_owned(),
         value: CustomValue::U32(value),
+    })
+}
+
+fn custom_u128_key(name: &str, value: u128) -> Key {
+    Key::Custom(CustomKey {
+        name: name.to_owned(),
+        value: CustomValue::U128(U128Text(value)),
+    })
+}
+
+fn custom_u64_key(name: &str, value: u64) -> Key {
+    Key::Custom(CustomKey {
+        name: name.to_owned(),
+        value: CustomValue::U64(U64Text(value)),
+    })
+}
+
+fn custom_bool_key(name: &str, value: bool) -> Key {
+    Key::Custom(CustomKey {
+        name: name.to_owned(),
+        value: CustomValue::Bool(value),
     })
 }
 
@@ -730,8 +1120,33 @@ fn named_u32_key(fields: &Composite<()>, field_name: &str, key_name: &str) -> Ve
         .unwrap_or_default()
 }
 
+fn named_u128_key(fields: &Composite<()>, field_name: &str, key_name: &str) -> Vec<Key> {
+    get_field(fields, field_name)
+        .and_then(extract_u128)
+        .map(|v| vec![custom_u128_key(key_name, v)])
+        .unwrap_or_default()
+}
+
+fn named_u64_key(fields: &Composite<()>, field_name: &str, key_name: &str) -> Vec<Key> {
+    get_field(fields, field_name)
+        .and_then(extract_u64)
+        .map(|v| vec![custom_u64_key(key_name, v)])
+        .unwrap_or_default()
+}
+
+fn named_bool_key(fields: &Composite<()>, field_name: &str, key_name: &str) -> Vec<Key> {
+    get_field(fields, field_name)
+        .and_then(extract_bool)
+        .map(|v| vec![custom_bool_key(key_name, v)])
+        .unwrap_or_default()
+}
+
 fn positional_u32_key(fields: &Composite<()>, idx: usize, key_name: &str) -> Vec<Key> {
     named_u32_key(fields, &idx.to_string(), key_name)
+}
+
+fn positional_bytes32_key(fields: &Composite<()>, idx: usize, key_name: &str) -> Vec<Key> {
+    named_bytes32_key(fields, &idx.to_string(), key_name)
 }
 
 fn named_bytes32_key(fields: &Composite<()>, field_name: &str, key_name: &str) -> Vec<Key> {
@@ -775,6 +1190,19 @@ pub fn index_sdk_pallet(
         "Recovery" => index_recovery(event_name, fields),
         "Sudo" => index_sudo(event_name, fields),
         "StateTrieMigration" => index_state_trie_migration(event_name, fields),
+        "ParaInclusion" => index_para_inclusion(event_name, fields),
+        "Paras" => index_paras(event_name, fields),
+        "Hrmp" => index_hrmp(event_name, fields),
+        "ParasDisputes" => index_paras_disputes(event_name, fields),
+        "OnDemand" | "OnDemandAssignmentProvider" => index_on_demand(event_name, fields),
+        "Registrar" => index_registrar(event_name, fields),
+        "Slots" => index_slots(event_name, fields),
+        "Auctions" => index_auctions(event_name, fields),
+        "Crowdloan" => index_crowdloan(event_name, fields),
+        "AssignedSlots" => index_assigned_slots(event_name, fields),
+        "Coretime" => index_coretime(event_name, fields),
+        "StakingAhClient" => index_staking_ah_client(event_name, fields),
+        "Xcm" | "XcmPallet" => index_xcm(event_name, fields),
         _ => return None,
     })
 }

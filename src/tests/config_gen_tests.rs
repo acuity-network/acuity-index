@@ -154,4 +154,33 @@ mod config_gen_tests {
         let _ = infer_param(&fields[1], 1, &types);
         let _ = infer_param(&fields[2], 2, &types);
     }
+
+    #[test]
+    fn stable2603_umbrella_pallets_are_classified_as_sdk() {
+        for pallet_name in [
+            "System",
+            "Scheduler",
+            "Preimage",
+            "Balances",
+            "Session",
+            "Grandpa",
+            "Paras",
+            "Registrar",
+            "Hrmp",
+            "Auctions",
+            "Crowdloan",
+            "ParaInclusion",
+            "ParasDisputes",
+            "Coretime",
+            "Timestamp",
+            "Utility",
+            "TransactionPayment",
+            "Sudo",
+        ] {
+            assert!(
+                crate::pallets::is_supported_sdk_pallet(pallet_name),
+                "missing sdk pallet {pallet_name}"
+            );
+        }
+    }
 }

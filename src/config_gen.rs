@@ -413,7 +413,9 @@ pub(crate) fn render_chain_config_toml(config: &ChainConfig) -> Result<String, I
 
     if !config.custom_keys.is_empty() {
         out.push_str("[custom_keys]\n");
-        for (name, kind) in &config.custom_keys {
+        let mut custom_keys: Vec<_> = config.custom_keys.iter().collect();
+        custom_keys.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (name, kind) in custom_keys {
             out.push_str(name);
             out.push_str(" = ");
             out.push_str(&inline_string(scalar_kind_name(kind))?);
@@ -743,6 +745,9 @@ mod tests {
 
         let toml = render_chain_config_toml(&config).unwrap();
 
+        assert!(
+            toml.contains("[custom_keys]\nitem_id = \"bytes32\"\nrevision_id = \"u32\"\n")
+        );
         assert!(toml.contains("[[pallets]]\nname = \"Content\"\nevents = ["));
         assert!(toml.contains("{ name = \"PublishItem\", params = ["));
         assert!(toml.contains("{ field = \"item_id\", key = \"item_id\" }"));

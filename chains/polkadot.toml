@@ -4,18 +4,18 @@ default_url = "wss://rpc.polkadot.io:443"
 versions = [0]
 
 [custom_keys]
-num_pure_accounts = "u32"
-cycle_block = "u32"
-message_id = "bytes32"
-kept = "u128"
-migrated = "u128"
 amount = "u128"
-query_id = "u64"
+cycle_block = "u32"
+cycle_period = "u32"
 index = "u32"
+kept = "u128"
+message_id = "bytes32"
+migrated = "u128"
+num_pure_accounts = "u32"
+prioritized = "bool"
+query_id = "u64"
 up_to = "u32"
 votes = "u32"
-prioritized = "bool"
-cycle_period = "u32"
 
 [[pallets]]
 name = "System"

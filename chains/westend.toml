@@ -4,12 +4,12 @@ default_url = "wss://westend-rpc.polkadot.io:443"
 versions = [0]
 
 [custom_keys]
-migrations = "u32"
-subs = "u128"
 identity = "u128"
 index = "u32"
-up_to = "u32"
+migrations = "u32"
+subs = "u128"
 took = "u32"
+up_to = "u32"
 
 [[pallets]]
 name = "System"

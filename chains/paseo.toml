@@ -4,18 +4,18 @@ default_url = "wss://paseo.ibp.network:443"
 versions = [0]
 
 [custom_keys]
-votes = "u32"
-cycle_block = "u32"
 amount = "u128"
-up_to = "u32"
-query_id = "u64"
-prioritized = "bool"
+cycle_block = "u32"
 cycle_period = "u32"
 index = "u32"
 kept = "u128"
-migrated = "u128"
 message_id = "bytes32"
+migrated = "u128"
 num_pure_accounts = "u32"
+prioritized = "bool"
+query_id = "u64"
+up_to = "u32"
+votes = "u32"
 
 [[pallets]]
 name = "System"

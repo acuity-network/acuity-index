@@ -121,11 +121,11 @@ pub fn process_msg_get_events(trees: &Trees, key: Key) -> ResponseMessage {
             event_index: event_ref.event_index.into(),
         };
         if let Ok(Some(bytes)) = trees.events.get(db_key.as_bytes()) {
-            if let Ok(json) = serde_json::from_slice(&bytes) {
+            if let Some(event) = StoredEvent::decode(&bytes) {
                 decoded_events.push(DecodedEvent {
                     block_number: event_ref.block_number,
                     event_index: event_ref.event_index,
-                    event: json,
+                    event: event.to_json(),
                 });
             }
         }

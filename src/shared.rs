@@ -1,6 +1,7 @@
 //! Shared data types for acuity-index.
 
 use crate::config::ScalarKind;
+use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
 use serde::{Deserialize, Serialize};
 use sled::{Db, Tree};
 use std::fmt;
@@ -84,6 +85,414 @@ pub struct U32Key {
 pub struct EventKey {
     pub block_number: U32<BigEndian>,
     pub event_index: U16<BigEndian>,
+}
+
+/// Fixed-width header for stored event payloads.
+#[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
+#[repr(C)]
+pub struct StoredEventHeader {
+    pub spec_version: U32<BigEndian>,
+    pub pallet_index: u8,
+    pub variant_index: u8,
+    pub event_index: U16<BigEndian>,
+    pub pallet_name_len: U16<BigEndian>,
+    pub event_name_len: U16<BigEndian>,
+}
+
+const STORED_VALUE_BOOL: u8 = 0;
+const STORED_VALUE_CHAR: u8 = 1;
+const STORED_VALUE_STRING: u8 = 2;
+const STORED_VALUE_U128: u8 = 3;
+const STORED_VALUE_I128: u8 = 4;
+const STORED_VALUE_U256: u8 = 5;
+const STORED_VALUE_I256: u8 = 6;
+const STORED_VALUE_BIT_SEQUENCE: u8 = 7;
+const STORED_VALUE_COMPOSITE_NAMED: u8 = 8;
+const STORED_VALUE_COMPOSITE_UNNAMED: u8 = 9;
+const STORED_VALUE_VARIANT: u8 = 10;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredEvent {
+    pub spec_version: u32,
+    pub pallet_name: String,
+    pub event_name: String,
+    pub pallet_index: u8,
+    pub variant_index: u8,
+    pub event_index: u16,
+    pub fields: StoredComposite,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StoredComposite {
+    Named(Vec<(String, StoredValue)>),
+    Unnamed(Vec<StoredValue>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StoredValue {
+    Bool(bool),
+    Char(char),
+    String(String),
+    U128(u128),
+    I128(i128),
+    U256([u8; 32]),
+    I256([u8; 32]),
+    BitSequence(Vec<u8>),
+    Composite(StoredComposite),
+    Variant {
+        name: String,
+        fields: StoredComposite,
+    },
+}
+
+impl StoredEvent {
+    pub fn from_scale(
+        spec_version: u32,
+        pallet_name: &str,
+        event_name: &str,
+        pallet_index: u8,
+        variant_index: u8,
+        event_index: u16,
+        fields: &Composite<()>,
+    ) -> Self {
+        StoredEvent {
+            spec_version,
+            pallet_name: pallet_name.to_owned(),
+            event_name: event_name.to_owned(),
+            pallet_index,
+            variant_index,
+            event_index,
+            fields: StoredComposite::from_scale(fields),
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let pallet_name = self.pallet_name.as_bytes();
+        let event_name = self.event_name.as_bytes();
+        let header = StoredEventHeader {
+            spec_version: self.spec_version.into(),
+            pallet_index: self.pallet_index,
+            variant_index: self.variant_index,
+            event_index: self.event_index.into(),
+            pallet_name_len: u16::try_from(pallet_name.len())
+                .expect("pallet name too long")
+                .into(),
+            event_name_len: u16::try_from(event_name.len())
+                .expect("event name too long")
+                .into(),
+        };
+        let mut bytes =
+            Vec::with_capacity(header.as_bytes().len() + pallet_name.len() + event_name.len() + 64);
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(pallet_name);
+        bytes.extend_from_slice(event_name);
+        self.fields.encode_into(&mut bytes);
+        bytes
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        let header_len = 12;
+        if bytes.len() < header_len {
+            return None;
+        }
+        let spec_version = u32::from_be_bytes(bytes[0..4].try_into().ok()?);
+        let pallet_index = bytes[4];
+        let variant_index = bytes[5];
+        let event_index = u16::from_be_bytes(bytes[6..8].try_into().ok()?);
+        let pallet_name_len = u16::from_be_bytes(bytes[8..10].try_into().ok()?) as usize;
+        let event_name_len = u16::from_be_bytes(bytes[10..12].try_into().ok()?) as usize;
+        let names_end = header_len
+            .checked_add(pallet_name_len)?
+            .checked_add(event_name_len)?;
+        if bytes.len() < names_end {
+            return None;
+        }
+        let pallet_name = std::str::from_utf8(&bytes[header_len..header_len + pallet_name_len])
+            .ok()?
+            .to_owned();
+        let event_name = std::str::from_utf8(&bytes[header_len + pallet_name_len..names_end])
+            .ok()?
+            .to_owned();
+        let (fields, consumed) = StoredComposite::decode(&bytes[names_end..])?;
+        if consumed != bytes[names_end..].len() {
+            return None;
+        }
+        Some(StoredEvent {
+            spec_version,
+            pallet_name,
+            event_name,
+            pallet_index,
+            variant_index,
+            event_index,
+            fields,
+        })
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "specVersion": self.spec_version,
+            "palletName": self.pallet_name,
+            "eventName": self.event_name,
+            "palletIndex": self.pallet_index,
+            "variantIndex": self.variant_index,
+            "eventIndex": self.event_index,
+            "fields": self.fields.to_json(),
+        })
+    }
+}
+
+impl StoredComposite {
+    pub fn from_scale(composite: &Composite<()>) -> Self {
+        match composite {
+            Composite::Named(fields) => StoredComposite::Named(
+                fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), StoredValue::from_scale(value)))
+                    .collect(),
+            ),
+            Composite::Unnamed(fields) => {
+                StoredComposite::Unnamed(fields.iter().map(StoredValue::from_scale).collect())
+            }
+        }
+    }
+
+    fn encode_into(&self, out: &mut Vec<u8>) {
+        match self {
+            StoredComposite::Named(fields) => {
+                out.push(STORED_VALUE_COMPOSITE_NAMED);
+                push_u32(out, fields.len());
+                for (name, value) in fields {
+                    push_string(out, name);
+                    value.encode_into(out);
+                }
+            }
+            StoredComposite::Unnamed(fields) => {
+                out.push(STORED_VALUE_COMPOSITE_UNNAMED);
+                push_u32(out, fields.len());
+                for value in fields {
+                    value.encode_into(out);
+                }
+            }
+        }
+    }
+
+    fn decode(bytes: &[u8]) -> Option<(Self, usize)> {
+        let (&tag, rest) = bytes.split_first()?;
+        let (len, offset) = read_u32(rest)?;
+        let mut cursor = 1 + offset;
+        match tag {
+            STORED_VALUE_COMPOSITE_NAMED => {
+                let mut fields = Vec::with_capacity(len as usize);
+                for _ in 0..len {
+                    let (name, name_len) = read_string(&bytes[cursor..])?;
+                    cursor += name_len;
+                    let (value, value_len) = StoredValue::decode(&bytes[cursor..])?;
+                    cursor += value_len;
+                    fields.push((name, value));
+                }
+                Some((StoredComposite::Named(fields), cursor))
+            }
+            STORED_VALUE_COMPOSITE_UNNAMED => {
+                let mut fields = Vec::with_capacity(len as usize);
+                for _ in 0..len {
+                    let (value, value_len) = StoredValue::decode(&bytes[cursor..])?;
+                    cursor += value_len;
+                    fields.push(value);
+                }
+                Some((StoredComposite::Unnamed(fields), cursor))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            StoredComposite::Named(fields) => serde_json::Value::Object(
+                fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.to_json()))
+                    .collect(),
+            ),
+            StoredComposite::Unnamed(fields) => {
+                if fields.len() > 1 {
+                    let as_bytes: Option<Vec<u8>> = fields
+                        .iter()
+                        .map(|value| match value {
+                            StoredValue::U128(n) => u8::try_from(*n).ok(),
+                            _ => None,
+                        })
+                        .collect();
+                    if let Some(bytes) = as_bytes {
+                        return serde_json::Value::String(format!("0x{}", hex::encode(bytes)));
+                    }
+                }
+                if fields.len() == 1 {
+                    fields[0].to_json()
+                } else {
+                    serde_json::Value::Array(fields.iter().map(StoredValue::to_json).collect())
+                }
+            }
+        }
+    }
+}
+
+impl StoredValue {
+    pub fn from_scale(value: &Value<()>) -> Self {
+        match &value.value {
+            ValueDef::Composite(composite) => {
+                StoredValue::Composite(StoredComposite::from_scale(composite))
+            }
+            ValueDef::Variant(Variant { name, values }) => StoredValue::Variant {
+                name: name.clone(),
+                fields: StoredComposite::from_scale(values),
+            },
+            ValueDef::BitSequence(bits) => {
+                StoredValue::BitSequence(bits.iter().map(u8::from).collect())
+            }
+            ValueDef::Primitive(primitive) => match primitive {
+                Primitive::Bool(value) => StoredValue::Bool(*value),
+                Primitive::Char(value) => StoredValue::Char(*value),
+                Primitive::String(value) => StoredValue::String(value.clone()),
+                Primitive::U128(value) => StoredValue::U128(*value),
+                Primitive::I128(value) => StoredValue::I128(*value),
+                Primitive::U256(value) => StoredValue::U256(*value),
+                Primitive::I256(value) => StoredValue::I256(*value),
+            },
+        }
+    }
+
+    fn encode_into(&self, out: &mut Vec<u8>) {
+        match self {
+            StoredValue::Bool(value) => {
+                out.push(STORED_VALUE_BOOL);
+                out.push(u8::from(*value));
+            }
+            StoredValue::Char(value) => {
+                out.push(STORED_VALUE_CHAR);
+                push_u32(out, *value as usize);
+            }
+            StoredValue::String(value) => {
+                out.push(STORED_VALUE_STRING);
+                push_string(out, value);
+            }
+            StoredValue::U128(value) => {
+                out.push(STORED_VALUE_U128);
+                out.extend_from_slice(&value.to_be_bytes());
+            }
+            StoredValue::I128(value) => {
+                out.push(STORED_VALUE_I128);
+                out.extend_from_slice(&value.to_be_bytes());
+            }
+            StoredValue::U256(value) => {
+                out.push(STORED_VALUE_U256);
+                out.extend_from_slice(value);
+            }
+            StoredValue::I256(value) => {
+                out.push(STORED_VALUE_I256);
+                out.extend_from_slice(value);
+            }
+            StoredValue::BitSequence(bits) => {
+                out.push(STORED_VALUE_BIT_SEQUENCE);
+                push_u32(out, bits.len());
+                out.extend_from_slice(bits);
+            }
+            StoredValue::Composite(composite) => composite.encode_into(out),
+            StoredValue::Variant { name, fields } => {
+                out.push(STORED_VALUE_VARIANT);
+                push_string(out, name);
+                fields.encode_into(out);
+            }
+        }
+    }
+
+    fn decode(bytes: &[u8]) -> Option<(Self, usize)> {
+        let (&tag, rest) = bytes.split_first()?;
+        match tag {
+            STORED_VALUE_BOOL => Some((StoredValue::Bool(*rest.first()? != 0), 2)),
+            STORED_VALUE_CHAR => {
+                let (value, consumed) = read_u32(rest)?;
+                Some((StoredValue::Char(char::from_u32(value)?), 1 + consumed))
+            }
+            STORED_VALUE_STRING => {
+                let (value, consumed) = read_string(rest)?;
+                Some((StoredValue::String(value), 1 + consumed))
+            }
+            STORED_VALUE_U128 => {
+                let bytes: [u8; 16] = rest.get(..16)?.try_into().ok()?;
+                Some((StoredValue::U128(u128::from_be_bytes(bytes)), 17))
+            }
+            STORED_VALUE_I128 => {
+                let bytes: [u8; 16] = rest.get(..16)?.try_into().ok()?;
+                Some((StoredValue::I128(i128::from_be_bytes(bytes)), 17))
+            }
+            STORED_VALUE_U256 => {
+                let bytes: [u8; 32] = rest.get(..32)?.try_into().ok()?;
+                Some((StoredValue::U256(bytes), 33))
+            }
+            STORED_VALUE_I256 => {
+                let bytes: [u8; 32] = rest.get(..32)?.try_into().ok()?;
+                Some((StoredValue::I256(bytes), 33))
+            }
+            STORED_VALUE_BIT_SEQUENCE => {
+                let (len, consumed) = read_u32(rest)?;
+                let len = len as usize;
+                let bits = rest.get(consumed..consumed + len)?.to_vec();
+                Some((StoredValue::BitSequence(bits), 1 + consumed + len))
+            }
+            STORED_VALUE_COMPOSITE_NAMED | STORED_VALUE_COMPOSITE_UNNAMED => {
+                let (composite, consumed) = StoredComposite::decode(bytes)?;
+                Some((StoredValue::Composite(composite), consumed))
+            }
+            STORED_VALUE_VARIANT => {
+                let (name, name_len) = read_string(rest)?;
+                let (fields, fields_len) = StoredComposite::decode(&rest[name_len..])?;
+                Some((
+                    StoredValue::Variant { name, fields },
+                    1 + name_len + fields_len,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            StoredValue::Bool(value) => serde_json::json!(value),
+            StoredValue::Char(value) => serde_json::json!(value.to_string()),
+            StoredValue::String(value) => serde_json::json!(value),
+            StoredValue::U128(value) => serde_json::json!(value.to_string()),
+            StoredValue::I128(value) => serde_json::json!(value.to_string()),
+            StoredValue::U256(value) => serde_json::json!(format!("0x{}", hex::encode(value))),
+            StoredValue::I256(value) => serde_json::json!(format!("0x{}", hex::encode(value))),
+            StoredValue::BitSequence(_) => serde_json::Value::String("<bitseq>".to_string()),
+            StoredValue::Composite(composite) => composite.to_json(),
+            StoredValue::Variant { name, fields } => serde_json::json!({
+                "variant": name,
+                "fields": fields.to_json(),
+            }),
+        }
+    }
+}
+
+fn push_u32(out: &mut Vec<u8>, value: usize) {
+    out.extend_from_slice(&u32::try_from(value).expect("value too large").to_be_bytes());
+}
+
+fn push_string(out: &mut Vec<u8>, value: &str) {
+    push_u32(out, value.len());
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn read_u32(bytes: &[u8]) -> Option<(u32, usize)> {
+    let value = u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?);
+    Some((value, 4))
+}
+
+fn read_string(bytes: &[u8]) -> Option<(String, usize)> {
+    let (len, consumed) = read_u32(bytes)?;
+    let len = len as usize;
+    let value = std::str::from_utf8(bytes.get(consumed..consumed + len)?).ok()?;
+    Some((value.to_owned(), consumed + len))
 }
 
 /// On-disk format for span values.

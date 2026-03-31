@@ -298,17 +298,15 @@ kind = "u32"
         assert_eq!(events[99].block_number, 50);
     }
 
-    // ─── encode_event ─────────────────────────────────────────────────────
+    // ─── stored event JSON projection ─────────────────────────────────────
 
     #[test]
-    fn encode_event_structure() {
-        let trees = temp_trees();
-        let config = test_config();
-        let indexer = Indexer::new_test(trees, &config);
-
+    fn stored_event_json_structure() {
         let fields = named(vec![("amount", u128_val(999))]);
-        let json = indexer.encode_event("Balances", "Deposit", 5, 2, 7, &fields);
+        let json = StoredEvent::from_scale(1234, "Balances", "Deposit", 5, 2, 7, &fields)
+            .to_json();
 
+        assert_eq!(json["specVersion"], 1234);
         assert_eq!(json["palletName"], "Balances");
         assert_eq!(json["eventName"], "Deposit");
         assert_eq!(json["palletIndex"], 5);

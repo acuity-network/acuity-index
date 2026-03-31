@@ -189,19 +189,19 @@ impl Indexer {
             block_number: block_number.into(),
             event_index: event_index.into(),
         };
-        let mut encoded = self.encode_event(
+        let encoded = StoredEvent::from_scale(
+            spec_version,
             pallet_name,
             event_name,
             pallet_index,
             variant_index,
             event_index,
             fields,
-        );
-        encoded["specVersion"] = json!(spec_version);
-        let json_bytes = serde_json::to_vec(&encoded)?;
+        )
+        .encode();
         self.trees
             .events
-            .insert(db_key.as_bytes(), json_bytes.as_slice())?;
+            .insert(db_key.as_bytes(), encoded.as_slice())?;
         Ok(())
     }
 
@@ -240,27 +240,6 @@ impl Indexer {
             }
         }
         keys
-    }
-
-    // ─── Event encoding ───────────────────────────────────────────────────────
-
-    pub fn encode_event(
-        &self,
-        pallet_name: &str,
-        event_name: &str,
-        pallet_index: u8,
-        variant_index: u8,
-        event_index: u16,
-        fields: &Composite<()>,
-    ) -> serde_json::Value {
-        json!({
-            "palletName": pallet_name,
-            "eventName": event_name,
-            "palletIndex": pallet_index,
-            "variantIndex": variant_index,
-            "eventIndex": event_index,
-            "fields": composite_to_json(fields),
-        })
     }
 
     // ─── DB write & notification ──────────────────────────────────────────────
@@ -302,12 +281,12 @@ impl Indexer {
                 .get(event_key.as_bytes())
                 .ok()
                 .flatten()
-                .and_then(|b| serde_json::from_slice(&b).ok())
-                .map(|events| {
+                .and_then(|b| StoredEvent::decode(&b))
+                .map(|event| {
                     vec![DecodedEvent {
                         block_number: event_ref.block_number,
                         event_index: event_ref.event_index,
-                        event: events,
+                        event: event.to_json(),
                     }]
                 })
                 .unwrap_or_default();
@@ -821,7 +800,6 @@ pub async fn run_indexer(
 mod tests {
     use super::*;
     use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
-    use serde_json::json;
     use zerocopy::IntoBytes;
 
     fn temp_trees() -> Trees {
@@ -1037,12 +1015,12 @@ mod tests {
             event_index: 7u16.into(),
         };
         let bytes = trees.events.get(db_key.as_bytes()).unwrap().unwrap();
-        let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(stored["specVersion"], json!(1234));
-        assert_eq!(stored["palletName"], json!("Balances"));
-        assert_eq!(stored["eventName"], json!("Deposit"));
-        assert_eq!(stored["eventIndex"], json!(7));
-        assert_eq!(stored["fields"], json!({"amount": "999"}));
+        let stored = StoredEvent::decode(&bytes).unwrap();
+        assert_eq!(stored.spec_version, 1234);
+        assert_eq!(stored.pallet_name, "Balances");
+        assert_eq!(stored.event_name, "Deposit");
+        assert_eq!(stored.event_index, 7);
+        assert_eq!(stored.fields.to_json(), serde_json::json!({"amount": "999"}));
     }
 
     #[test]
@@ -1083,7 +1061,16 @@ mod tests {
             .events
             .insert(
                 db_key.as_bytes(),
-                serde_json::to_vec(&serde_json::json!({"specVersion": 1234, "eventName": "Ready"})).unwrap(),
+                StoredEvent {
+                    spec_version: 1234,
+                    pallet_name: "System".into(),
+                    event_name: "Ready".into(),
+                    pallet_index: 0,
+                    variant_index: 1,
+                    event_index: 3,
+                    fields: StoredComposite::Named(vec![]),
+                }
+                .encode(),
             )
             .unwrap();
 
@@ -1104,7 +1091,8 @@ mod tests {
         assert_eq!(decoded_events.len(), 1);
         assert_eq!(decoded_events[0].block_number, 7);
         assert_eq!(decoded_events[0].event_index, 3);
-        assert_eq!(decoded_events[0].event, serde_json::json!({"specVersion": 1234, "eventName": "Ready"}));
+        assert_eq!(decoded_events[0].event["specVersion"], serde_json::json!(1234));
+        assert_eq!(decoded_events[0].event["eventName"], serde_json::json!("Ready"));
     }
 
     #[tokio::test]

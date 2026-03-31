@@ -48,7 +48,10 @@ mod websocket_tests {
     #[test]
     fn process_msg_get_events_empty() {
         let trees = temp_trees();
-        let key = Key::AccountId(Bytes32([0; 32]));
+        let key = Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32([0; 32])),
+        });
         let msg = process_msg_get_events(&trees, key.clone());
         match msg {
             ResponseMessage::Events {
@@ -116,7 +119,10 @@ mod websocket_tests {
     fn process_msg_get_events_without_stored_events() {
         let trees = temp_trees();
 
-        let key = Key::RefIndex(42);
+        let key = Key::Custom(CustomKey {
+            name: "ref_index".into(),
+            value: CustomValue::U32(42),
+        });
         key.write_db_key(&trees, 50, 3).unwrap();
 
         let msg = process_msg_get_events(&trees, key.clone());
@@ -150,7 +156,10 @@ mod websocket_tests {
     #[test]
     fn get_events_bytes32_empty_tree() {
         let trees = temp_trees();
-        let key = Key::AccountId(Bytes32([0; 32]));
+        let key = Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32([0; 32])),
+        });
         let events = get_events_index(&trees.index, &key.index_prefix().unwrap());
         assert!(events.is_empty());
     }
@@ -158,7 +167,10 @@ mod websocket_tests {
     #[test]
     fn get_events_u32_multiple() {
         let trees = temp_trees();
-        let key = Key::PoolId(7);
+        let key = Key::Custom(CustomKey {
+            name: "pool_id".into(),
+            value: CustomValue::U32(7),
+        });
         key.write_db_key(&trees, 10, 0).unwrap();
         key.write_db_key(&trees, 20, 1).unwrap();
         key.write_db_key(&trees, 30, 2).unwrap();
@@ -174,7 +186,10 @@ mod websocket_tests {
     fn get_events_bytes32_multiple() {
         let trees = temp_trees();
         let b = Bytes32([0x11; 32]);
-        let key = Key::AccountId(b);
+        let key = Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(b),
+        });
         key.write_db_key(&trees, 5, 0).unwrap();
         key.write_db_key(&trees, 15, 1).unwrap();
 
@@ -211,7 +226,10 @@ mod websocket_tests {
     #[test]
     fn response_events_serializes() {
         let msg = ResponseMessage::Events {
-            key: Key::RefIndex(42),
+            key: Key::Custom(CustomKey {
+                name: "ref_index".into(),
+                value: CustomValue::U32(42),
+            }),
             events: vec![EventRef {
                 block_number: 10,
                 event_index: 2,
@@ -219,7 +237,7 @@ mod websocket_tests {
             decoded_events: vec![],
         };
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("RefIndex"));
+        assert!(json.contains("ref_index"));
         assert!(json.contains("42"));
         assert!(json.contains("decodedEvents"));
     }

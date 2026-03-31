@@ -328,22 +328,44 @@ impl Indexer {
 // ─── scale_value → Key conversion ────────────────────────────────────────────
 
 fn value_to_builtin_key(value: &Value<()>, key_type: &KeyTypeName) -> Option<Key> {
-    match key_type {
-        KeyTypeName::AccountId => extract_bytes32(value).map(|b| Key::AccountId(Bytes32(b))),
-        KeyTypeName::AccountIndex => extract_u32(value).map(Key::AccountIndex),
-        KeyTypeName::BountyIndex => extract_u32(value).map(Key::BountyIndex),
-        KeyTypeName::EraIndex => extract_u32(value).map(Key::EraIndex),
-        KeyTypeName::MessageId => extract_bytes32(value).map(|b| Key::MessageId(Bytes32(b))),
-        KeyTypeName::PoolId => extract_u32(value).map(Key::PoolId),
-        KeyTypeName::PreimageHash => extract_bytes32(value).map(|b| Key::PreimageHash(Bytes32(b))),
-        KeyTypeName::ProposalHash => extract_bytes32(value).map(|b| Key::ProposalHash(Bytes32(b))),
-        KeyTypeName::ProposalIndex => extract_u32(value).map(Key::ProposalIndex),
-        KeyTypeName::RefIndex => extract_u32(value).map(Key::RefIndex),
-        KeyTypeName::RegistrarIndex => extract_u32(value).map(Key::RegistrarIndex),
-        KeyTypeName::SessionIndex => extract_u32(value).map(Key::SessionIndex),
-        KeyTypeName::SpendIndex => extract_u32(value).map(Key::SpendIndex),
-        KeyTypeName::TipHash => extract_bytes32(value).map(|b| Key::TipHash(Bytes32(b))),
-    }
+    let (name, value) = match key_type {
+        KeyTypeName::AccountId => (
+            "account_id",
+            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
+        ),
+        KeyTypeName::AccountIndex => ("account_index", extract_u32(value).map(CustomValue::U32)),
+        KeyTypeName::BountyIndex => ("bounty_index", extract_u32(value).map(CustomValue::U32)),
+        KeyTypeName::EraIndex => ("era_index", extract_u32(value).map(CustomValue::U32)),
+        KeyTypeName::MessageId => (
+            "message_id",
+            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
+        ),
+        KeyTypeName::PoolId => ("pool_id", extract_u32(value).map(CustomValue::U32)),
+        KeyTypeName::PreimageHash => (
+            "preimage_hash",
+            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
+        ),
+        KeyTypeName::ProposalHash => (
+            "proposal_hash",
+            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
+        ),
+        KeyTypeName::ProposalIndex => ("proposal_index", extract_u32(value).map(CustomValue::U32)),
+        KeyTypeName::RefIndex => ("ref_index", extract_u32(value).map(CustomValue::U32)),
+        KeyTypeName::RegistrarIndex => {
+            ("registrar_index", extract_u32(value).map(CustomValue::U32))
+        }
+        KeyTypeName::SessionIndex => ("session_index", extract_u32(value).map(CustomValue::U32)),
+        KeyTypeName::SpendIndex => ("spend_index", extract_u32(value).map(CustomValue::U32)),
+        KeyTypeName::TipHash => (
+            "tip_hash",
+            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
+        ),
+    };
+
+    Some(Key::Custom(CustomKey {
+        name: name.to_owned(),
+        value: value?,
+    }))
 }
 
 fn value_to_custom_key(
@@ -884,26 +906,104 @@ mod tests {
         let bytes = bytes32_value(0xAB);
 
         for (key_type, expected) in [
-            (KeyTypeName::AccountId, Key::AccountId(Bytes32([0xAB; 32]))),
-            (KeyTypeName::AccountIndex, Key::AccountIndex(9)),
-            (KeyTypeName::BountyIndex, Key::BountyIndex(9)),
-            (KeyTypeName::EraIndex, Key::EraIndex(9)),
-            (KeyTypeName::MessageId, Key::MessageId(Bytes32([0xAB; 32]))),
-            (KeyTypeName::PoolId, Key::PoolId(9)),
+            (
+                KeyTypeName::AccountId,
+                Key::Custom(CustomKey {
+                    name: "account_id".into(),
+                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
+                }),
+            ),
+            (
+                KeyTypeName::AccountIndex,
+                Key::Custom(CustomKey {
+                    name: "account_index".into(),
+                    value: CustomValue::U32(9),
+                }),
+            ),
+            (
+                KeyTypeName::BountyIndex,
+                Key::Custom(CustomKey {
+                    name: "bounty_index".into(),
+                    value: CustomValue::U32(9),
+                }),
+            ),
+            (
+                KeyTypeName::EraIndex,
+                Key::Custom(CustomKey {
+                    name: "era_index".into(),
+                    value: CustomValue::U32(9),
+                }),
+            ),
+            (
+                KeyTypeName::MessageId,
+                Key::Custom(CustomKey {
+                    name: "message_id".into(),
+                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
+                }),
+            ),
+            (
+                KeyTypeName::PoolId,
+                Key::Custom(CustomKey {
+                    name: "pool_id".into(),
+                    value: CustomValue::U32(9),
+                }),
+            ),
             (
                 KeyTypeName::PreimageHash,
-                Key::PreimageHash(Bytes32([0xAB; 32])),
+                Key::Custom(CustomKey {
+                    name: "preimage_hash".into(),
+                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
+                }),
             ),
             (
                 KeyTypeName::ProposalHash,
-                Key::ProposalHash(Bytes32([0xAB; 32])),
+                Key::Custom(CustomKey {
+                    name: "proposal_hash".into(),
+                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
+                }),
             ),
-            (KeyTypeName::ProposalIndex, Key::ProposalIndex(9)),
-            (KeyTypeName::RefIndex, Key::RefIndex(9)),
-            (KeyTypeName::RegistrarIndex, Key::RegistrarIndex(9)),
-            (KeyTypeName::SessionIndex, Key::SessionIndex(9)),
-            (KeyTypeName::SpendIndex, Key::SpendIndex(9)),
-            (KeyTypeName::TipHash, Key::TipHash(Bytes32([0xAB; 32]))),
+            (
+                KeyTypeName::ProposalIndex,
+                Key::Custom(CustomKey {
+                    name: "proposal_index".into(),
+                    value: CustomValue::U32(9),
+                }),
+            ),
+            (
+                KeyTypeName::RefIndex,
+                Key::Custom(CustomKey {
+                    name: "ref_index".into(),
+                    value: CustomValue::U32(9),
+                }),
+            ),
+            (
+                KeyTypeName::RegistrarIndex,
+                Key::Custom(CustomKey {
+                    name: "registrar_index".into(),
+                    value: CustomValue::U32(9),
+                }),
+            ),
+            (
+                KeyTypeName::SessionIndex,
+                Key::Custom(CustomKey {
+                    name: "session_index".into(),
+                    value: CustomValue::U32(9),
+                }),
+            ),
+            (
+                KeyTypeName::SpendIndex,
+                Key::Custom(CustomKey {
+                    name: "spend_index".into(),
+                    value: CustomValue::U32(9),
+                }),
+            ),
+            (
+                KeyTypeName::TipHash,
+                Key::Custom(CustomKey {
+                    name: "tip_hash".into(),
+                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
+                }),
+            ),
         ] {
             let value = match key_type {
                 KeyTypeName::AccountId
@@ -1075,7 +1175,10 @@ mod tests {
     async fn notify_event_subscribers_includes_decoded_events() {
         let trees = temp_trees();
         let indexer = Indexer::new_test(trees.clone(), &test_config());
-        let key = Key::RefIndex(42);
+        let key = Key::Custom(CustomKey {
+            name: "ref_index".into(),
+            value: CustomValue::U32(42),
+        });
         let db_key = EventKey {
             block_number: 7u32.into(),
             event_index: 3u16.into(),
@@ -1112,7 +1215,10 @@ mod tests {
     async fn notify_event_subscribers_omits_decoded_events_when_not_stored() {
         let trees = temp_trees();
         let indexer = test_indexer(trees, false);
-        let key = Key::RefIndex(42);
+        let key = Key::Custom(CustomKey {
+            name: "ref_index".into(),
+            value: CustomValue::U32(42),
+        });
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         process_sub_msg(
@@ -1222,7 +1328,10 @@ kind = "u32"
         process_sub_msg(
             &indexer,
             SubscriptionMessage::UnsubscribeEvents {
-                key: Key::RefIndex(999),
+                key: Key::Custom(CustomKey {
+                    name: "ref_index".into(),
+                    value: CustomValue::U32(999),
+                }),
                 tx,
             },
         );

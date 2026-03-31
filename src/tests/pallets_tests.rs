@@ -1,7 +1,21 @@
 #[cfg(test)]
 mod pallets_tests {
     use crate::pallets::*;
-    use crate::shared::{Bytes32, Key};
+    use crate::shared::{Bytes32, CustomKey, CustomValue, Key};
+
+    fn key_u32(name: &str, value: u32) -> Key {
+        Key::Custom(CustomKey {
+            name: name.to_owned(),
+            value: CustomValue::U32(value),
+        })
+    }
+
+    fn key_bytes32(name: &str, value: [u8; 32]) -> Key {
+        Key::Custom(CustomKey {
+            name: name.to_owned(),
+            value: CustomValue::Bytes32(Bytes32(value)),
+        })
+    }
     use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
 
     fn u128_val(n: u128) -> Value<()> {
@@ -295,7 +309,13 @@ mod pallets_tests {
         let acct = [1u8; 32];
         let fields = named(vec![("account", bytes32_val(acct))]);
         let keys = index_system("NewAccount", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(acct))]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "account_id".into(),
+                value: CustomValue::Bytes32(Bytes32(acct))
+            })]
+        );
     }
 
     #[test]
@@ -303,7 +323,13 @@ mod pallets_tests {
         let acct = [2u8; 32];
         let fields = named(vec![("account", bytes32_val(acct))]);
         let keys = index_system("KilledAccount", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(acct))]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "account_id".into(),
+                value: CustomValue::Bytes32(Bytes32(acct))
+            })]
+        );
     }
 
     #[test]
@@ -311,7 +337,13 @@ mod pallets_tests {
         let sender = [3u8; 32];
         let fields = named(vec![("sender", bytes32_val(sender))]);
         let keys = index_system("Remarked", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(sender))]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "account_id".into(),
+                value: CustomValue::Bytes32(Bytes32(sender))
+            })]
+        );
     }
 
     #[test]
@@ -334,8 +366,14 @@ mod pallets_tests {
         ]);
         let keys = index_balances("Transfer", &fields);
         assert_eq!(keys.len(), 2);
-        assert!(keys.contains(&Key::AccountId(Bytes32(from))));
-        assert!(keys.contains(&Key::AccountId(Bytes32(to))));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32(from))
+        })));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32(to))
+        })));
     }
 
     #[test]
@@ -343,7 +381,13 @@ mod pallets_tests {
         let acct = [11u8; 32];
         let fields = named(vec![("account", bytes32_val(acct))]);
         let keys = index_balances("Endowed", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(acct))]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "account_id".into(),
+                value: CustomValue::Bytes32(Bytes32(acct))
+            })]
+        );
     }
 
     #[test]
@@ -351,7 +395,13 @@ mod pallets_tests {
         let who = [12u8; 32];
         let fields = named(vec![("who", bytes32_val(who))]);
         let keys = index_balances("Reserved", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "account_id".into(),
+                value: CustomValue::Bytes32(Bytes32(who))
+            })]
+        );
     }
 
     #[test]
@@ -359,7 +409,13 @@ mod pallets_tests {
         let who = [42u8; 32];
         let fields = named(vec![("who", bytes32_val(who))]);
         let keys = index_balances("Locked", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "account_id".into(),
+                value: CustomValue::Bytes32(Bytes32(who))
+            })]
+        );
     }
 
     #[test]
@@ -377,7 +433,13 @@ mod pallets_tests {
     fn staking_era_paid() {
         let fields = unnamed(vec![u128_val(100)]);
         let keys = index_staking("EraPaid", &fields);
-        assert_eq!(keys, vec![Key::EraIndex(100)]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "era_index".into(),
+                value: CustomValue::U32(100)
+            })]
+        );
     }
 
     #[test]
@@ -385,7 +447,13 @@ mod pallets_tests {
         let stash = [15u8; 32];
         let fields = named(vec![("stash", bytes32_val(stash))]);
         let keys = index_staking("Bonded", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(stash))]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "account_id".into(),
+                value: CustomValue::Bytes32(Bytes32(stash))
+            })]
+        );
     }
 
     #[test]
@@ -397,8 +465,14 @@ mod pallets_tests {
         ]);
         let keys = index_staking("PayoutStarted", &fields);
         assert_eq!(keys.len(), 2);
-        assert!(keys.contains(&Key::EraIndex(50)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(validator))));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "era_index".into(),
+            value: CustomValue::U32(50)
+        })));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32(validator))
+        })));
     }
 
     #[test]
@@ -409,8 +483,14 @@ mod pallets_tests {
             ("slash_era", u128_val(9)),
         ]);
         let keys = index_staking("SlashReported", &fields);
-        assert!(keys.contains(&Key::AccountId(Bytes32(validator))));
-        assert!(keys.contains(&Key::EraIndex(9)));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32(validator))
+        })));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "era_index".into(),
+            value: CustomValue::U32(9)
+        })));
     }
 
     #[test]
@@ -422,8 +502,14 @@ mod pallets_tests {
             ("stash", bytes32_val(stash)),
         ]);
         let keys = index_staking("Kicked", &fields);
-        assert!(keys.contains(&Key::AccountId(Bytes32(nominator))));
-        assert!(keys.contains(&Key::AccountId(Bytes32(stash))));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32(nominator))
+        })));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32(stash))
+        })));
     }
 
     #[test]
@@ -439,7 +525,13 @@ mod pallets_tests {
     fn session_new_session() {
         let fields = named(vec![("session_index", u128_val(777))]);
         let keys = index_session("NewSession", &fields);
-        assert_eq!(keys, vec![Key::SessionIndex(777)]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "session_index".into(),
+                value: CustomValue::U32(777)
+            })]
+        );
     }
 
     // ─── SDK pallet: Indices ──────────────────────────────────────────────
@@ -450,8 +542,14 @@ mod pallets_tests {
         let fields = named(vec![("who", bytes32_val(who)), ("index", u128_val(42))]);
         let keys = index_indices("IndexAssigned", &fields);
         assert_eq!(keys.len(), 2);
-        assert!(keys.contains(&Key::AccountId(Bytes32(who))));
-        assert!(keys.contains(&Key::AccountIndex(42)));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32(who))
+        })));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "account_index".into(),
+            value: CustomValue::U32(42)
+        })));
     }
 
     // ─── SDK pallet: Preimage ─────────────────────────────────────────────
@@ -461,7 +559,13 @@ mod pallets_tests {
         let hash = [0xABu8; 32];
         let fields = named(vec![("hash", bytes32_val(hash))]);
         let keys = index_preimage("Noted", &fields);
-        assert_eq!(keys, vec![Key::PreimageHash(Bytes32(hash))]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "preimage_hash".into(),
+                value: CustomValue::Bytes32(Bytes32(hash))
+            })]
+        );
     }
 
     // ─── SDK pallet: Treasury ─────────────────────────────────────────────
@@ -470,7 +574,13 @@ mod pallets_tests {
     fn treasury_proposed() {
         let fields = named(vec![("proposal_index", u128_val(5))]);
         let keys = index_treasury("Proposed", &fields);
-        assert_eq!(keys, vec![Key::ProposalIndex(5)]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "proposal_index".into(),
+                value: CustomValue::U32(5)
+            })]
+        );
     }
 
     #[test]
@@ -482,15 +592,27 @@ mod pallets_tests {
         ]);
         let keys = index_treasury("SpendApproved", &fields);
         assert_eq!(keys.len(), 2);
-        assert!(keys.contains(&Key::ProposalIndex(10)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(beneficiary))));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "proposal_index".into(),
+            value: CustomValue::U32(10)
+        })));
+        assert!(keys.contains(&Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32(beneficiary))
+        })));
     }
 
     #[test]
     fn treasury_paid() {
         let fields = named(vec![("index", u128_val(3))]);
         let keys = index_treasury("Paid", &fields);
-        assert_eq!(keys, vec![Key::SpendIndex(3)]);
+        assert_eq!(
+            keys,
+            vec![Key::Custom(CustomKey {
+                name: "spend_index".into(),
+                value: CustomValue::U32(3)
+            })]
+        );
     }
 
     #[test]
@@ -501,15 +623,15 @@ mod pallets_tests {
             ("account", bytes32_val(account)),
         ]);
         let keys = index_treasury("Awarded", &fields);
-        assert!(keys.contains(&Key::ProposalIndex(10)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(account))));
+        assert!(keys.contains(&key_u32("proposal_index", 10)));
+        assert!(keys.contains(&key_bytes32("account_id", account)));
     }
 
     #[test]
     fn treasury_asset_spend_approved_indexes_spend_index() {
         let fields = named(vec![("index", u128_val(88))]);
         let keys = index_treasury("AssetSpendApproved", &fields);
-        assert_eq!(keys, vec![Key::SpendIndex(88)]);
+        assert_eq!(keys, vec![key_u32("spend_index", 88)]);
     }
 
     // ─── SDK pallet: Bounties ─────────────────────────────────────────────
@@ -518,7 +640,7 @@ mod pallets_tests {
     fn bounties_proposed() {
         let fields = named(vec![("index", u128_val(7))]);
         let keys = index_bounties("BountyProposed", &fields);
-        assert_eq!(keys, vec![Key::BountyIndex(7)]);
+        assert_eq!(keys, vec![key_u32("bounty_index", 7)]);
     }
 
     #[test]
@@ -529,8 +651,8 @@ mod pallets_tests {
             ("curator", bytes32_val(curator)),
         ]);
         let keys = index_bounties("CuratorProposed", &fields);
-        assert!(keys.contains(&Key::BountyIndex(9)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(curator))));
+        assert!(keys.contains(&key_u32("bounty_index", 9)));
+        assert!(keys.contains(&key_bytes32("account_id", curator)));
     }
 
     #[test]
@@ -541,8 +663,8 @@ mod pallets_tests {
             ("beneficiary", bytes32_val(beneficiary)),
         ]);
         let keys = index_bounties("BountyAwarded", &fields);
-        assert!(keys.contains(&Key::BountyIndex(13)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(beneficiary))));
+        assert!(keys.contains(&key_u32("bounty_index", 13)));
+        assert!(keys.contains(&key_bytes32("account_id", beneficiary)));
     }
 
     // ─── SDK pallet: ChildBounties ────────────────────────────────────────
@@ -551,8 +673,8 @@ mod pallets_tests {
     fn child_bounties_added() {
         let fields = named(vec![("index", u128_val(4)), ("child_index", u128_val(5))]);
         let keys = index_child_bounties("Added", &fields);
-        assert!(keys.contains(&Key::BountyIndex(4)));
-        assert!(keys.contains(&Key::BountyIndex(5)));
+        assert!(keys.contains(&key_u32("bounty_index", 4)));
+        assert!(keys.contains(&key_u32("bounty_index", 5)));
     }
 
     #[test]
@@ -564,9 +686,9 @@ mod pallets_tests {
             ("beneficiary", bytes32_val(beneficiary)),
         ]);
         let keys = index_child_bounties("Awarded", &fields);
-        assert!(keys.contains(&Key::BountyIndex(4)));
-        assert!(keys.contains(&Key::BountyIndex(6)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(beneficiary))));
+        assert!(keys.contains(&key_u32("bounty_index", 4)));
+        assert!(keys.contains(&key_u32("bounty_index", 6)));
+        assert!(keys.contains(&key_bytes32("account_id", beneficiary)));
     }
 
     // ─── SDK pallet: Vesting ──────────────────────────────────────────────
@@ -576,7 +698,7 @@ mod pallets_tests {
         let acct = [19u8; 32];
         let fields = named(vec![("account", bytes32_val(acct))]);
         let keys = index_vesting("VestingUpdated", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(acct))]);
+        assert_eq!(keys, vec![key_bytes32("account_id", acct)]);
     }
 
     // ─── SDK pallet: Proxy ────────────────────────────────────────────────
@@ -600,8 +722,8 @@ mod pallets_tests {
         let fields = named(vec![("pure", bytes32_val(pure)), ("who", bytes32_val(who))]);
         let keys = index_proxy("PureCreated", &fields);
         assert_eq!(keys.len(), 2);
-        assert!(keys.contains(&Key::AccountId(Bytes32(pure))));
-        assert!(keys.contains(&Key::AccountId(Bytes32(who))));
+        assert!(keys.contains(&key_bytes32("account_id", pure)));
+        assert!(keys.contains(&key_bytes32("account_id", who)));
     }
 
     // ─── SDK pallet: Multisig ─────────────────────────────────────────────
@@ -627,8 +749,8 @@ mod pallets_tests {
             ("multisig", bytes32_val(multisig)),
         ]);
         let keys = index_multisig("MultisigCancelled", &fields);
-        assert!(keys.contains(&Key::AccountId(Bytes32(cancelling))));
-        assert!(keys.contains(&Key::AccountId(Bytes32(multisig))));
+        assert!(keys.contains(&key_bytes32("account_id", cancelling)));
+        assert!(keys.contains(&key_bytes32("account_id", multisig)));
     }
 
     #[test]
@@ -639,7 +761,7 @@ mod pallets_tests {
             variant("Some", unnamed(vec![bytes32_val(origin)])),
         )]);
         let keys = index_election_provider_multi_phase("SolutionStored", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(origin))]);
+        assert_eq!(keys, vec![key_bytes32("account_id", origin)]);
     }
 
     #[test]
@@ -660,15 +782,15 @@ mod pallets_tests {
         ]);
         let keys = index_nomination_pools("Created", &fields);
         assert_eq!(keys.len(), 2);
-        assert!(keys.contains(&Key::AccountId(Bytes32(depositor))));
-        assert!(keys.contains(&Key::PoolId(1)));
+        assert!(keys.contains(&key_bytes32("account_id", depositor)));
+        assert!(keys.contains(&key_u32("pool_id", 1)));
     }
 
     #[test]
     fn nomination_pools_destroyed() {
         let fields = named(vec![("pool_id", u128_val(99))]);
         let keys = index_nomination_pools("Destroyed", &fields);
-        assert_eq!(keys, vec![Key::PoolId(99)]);
+        assert_eq!(keys, vec![key_u32("pool_id", 99)]);
     }
 
     #[test]
@@ -680,9 +802,9 @@ mod pallets_tests {
             ("era", u128_val(99)),
         ]);
         let keys = index_nomination_pools("Unbonded", &fields);
-        assert!(keys.contains(&Key::AccountId(Bytes32(member))));
-        assert!(keys.contains(&Key::PoolId(10)));
-        assert!(keys.contains(&Key::EraIndex(99)));
+        assert!(keys.contains(&key_bytes32("account_id", member)));
+        assert!(keys.contains(&key_u32("pool_id", 10)));
+        assert!(keys.contains(&key_u32("era_index", 99)));
     }
 
     #[test]
@@ -698,8 +820,8 @@ mod pallets_tests {
             ),
         ]);
         let keys = index_nomination_pools("RolesUpdated", &fields);
-        assert!(keys.contains(&Key::AccountId(Bytes32(root))));
-        assert!(keys.contains(&Key::AccountId(Bytes32(nominator))));
+        assert!(keys.contains(&key_bytes32("account_id", root)));
+        assert!(keys.contains(&key_bytes32("account_id", nominator)));
         assert_eq!(keys.len(), 2);
     }
 
@@ -715,8 +837,8 @@ mod pallets_tests {
         );
         let fields = named(vec![("pool_id", u128_val(7)), ("current", current)]);
         let keys = index_nomination_pools("PoolCommissionUpdated", &fields);
-        assert!(keys.contains(&Key::PoolId(7)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(account))));
+        assert!(keys.contains(&key_u32("pool_id", 7)));
+        assert!(keys.contains(&key_bytes32("account_id", account)));
     }
 
     // ─── SDK pallet: FastUnstake ──────────────────────────────────────────
@@ -726,7 +848,7 @@ mod pallets_tests {
         let stash = [27u8; 32];
         let fields = named(vec![("stash", bytes32_val(stash))]);
         let keys = index_fast_unstake("Unstaked", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(stash))]);
+        assert_eq!(keys, vec![key_bytes32("account_id", stash)]);
     }
 
     #[test]
@@ -738,7 +860,11 @@ mod pallets_tests {
         let keys = index_fast_unstake("BatchChecked", &fields);
         assert_eq!(
             keys,
-            vec![Key::EraIndex(5), Key::EraIndex(6), Key::EraIndex(7)]
+            vec![
+                key_u32("era_index", 5),
+                key_u32("era_index", 6),
+                key_u32("era_index", 7)
+            ]
         );
     }
 
@@ -758,7 +884,7 @@ mod pallets_tests {
         let a = [30u8; 32];
         let fields = unnamed(vec![bytes32_val(a)]);
         let keys = index_conviction_voting("Undelegated", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(a))]);
+        assert_eq!(keys, vec![key_bytes32("account_id", a)]);
     }
 
     #[test]
@@ -766,7 +892,7 @@ mod pallets_tests {
         let who = [76u8; 32];
         let fields = named(vec![("who", bytes32_val(who))]);
         let keys = index_conviction_voting("VoteRemoved", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
+        assert_eq!(keys, vec![key_bytes32("account_id", who)]);
     }
 
     // ─── SDK pallet: Referenda ────────────────────────────────────────────
@@ -775,7 +901,7 @@ mod pallets_tests {
     fn referenda_submitted() {
         let fields = named(vec![("index", u128_val(42))]);
         let keys = index_referenda("Submitted", &fields);
-        assert_eq!(keys, vec![Key::RefIndex(42)]);
+        assert_eq!(keys, vec![key_u32("ref_index", 42)]);
     }
 
     #[test]
@@ -793,7 +919,7 @@ mod pallets_tests {
         ] {
             let fields = named(vec![("index", u128_val(1))]);
             let keys = index_referenda(event, &fields);
-            assert_eq!(keys, vec![Key::RefIndex(1)], "failed for {event}");
+            assert_eq!(keys, vec![key_u32("ref_index", 1)], "failed for {event}");
         }
     }
 
@@ -802,8 +928,8 @@ mod pallets_tests {
         let who = [77u8; 32];
         let fields = named(vec![("index", u128_val(11)), ("who", bytes32_val(who))]);
         let keys = index_referenda("DecisionDepositPlaced", &fields);
-        assert!(keys.contains(&Key::RefIndex(11)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(who))));
+        assert!(keys.contains(&key_u32("ref_index", 11)));
+        assert!(keys.contains(&key_bytes32("account_id", who)));
     }
 
     #[test]
@@ -811,7 +937,7 @@ mod pallets_tests {
         let who = [78u8; 32];
         let fields = named(vec![("index", u128_val(12)), ("who", bytes32_val(who))]);
         let keys = index_referenda("DepositSlashed", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
+        assert_eq!(keys, vec![key_bytes32("account_id", who)]);
     }
 
     // ─── SDK pallet: TransactionPayment ───────────────────────────────────
@@ -821,7 +947,7 @@ mod pallets_tests {
         let who = [31u8; 32];
         let fields = named(vec![("who", bytes32_val(who))]);
         let keys = index_transaction_payment("TransactionFeePaid", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
+        assert_eq!(keys, vec![key_bytes32("account_id", who)]);
     }
 
     // ─── SDK pallet: DelegatedStaking ─────────────────────────────────────
@@ -847,8 +973,8 @@ mod pallets_tests {
             ("delegator", bytes32_val(delegator)),
         ]);
         let keys = index_delegated_staking("Released", &fields);
-        assert!(keys.contains(&Key::AccountId(Bytes32(agent))));
-        assert!(keys.contains(&Key::AccountId(Bytes32(delegator))));
+        assert!(keys.contains(&key_bytes32("account_id", agent)));
+        assert!(keys.contains(&key_bytes32("account_id", delegator)));
     }
 
     #[test]
@@ -859,8 +985,8 @@ mod pallets_tests {
             ("registrar_index", u128_val(5)),
         ]);
         let keys = index_identity("JudgementGiven", &fields);
-        assert!(keys.contains(&Key::AccountId(Bytes32(target))));
-        assert!(keys.contains(&Key::RegistrarIndex(5)));
+        assert!(keys.contains(&key_bytes32("account_id", target)));
+        assert!(keys.contains(&key_u32("registrar_index", 5)));
     }
 
     #[test]
@@ -874,9 +1000,9 @@ mod pallets_tests {
             ("sender", bytes32_val(sender)),
         ]);
         let keys = index_recovery("RecoveryVouched", &fields);
-        assert!(keys.contains(&Key::AccountId(Bytes32(lost))));
-        assert!(keys.contains(&Key::AccountId(Bytes32(rescuer))));
-        assert!(keys.contains(&Key::AccountId(Bytes32(sender))));
+        assert!(keys.contains(&key_bytes32("account_id", lost)));
+        assert!(keys.contains(&key_bytes32("account_id", rescuer)));
+        assert!(keys.contains(&key_bytes32("account_id", sender)));
     }
 
     #[test]
@@ -888,8 +1014,8 @@ mod pallets_tests {
             ("new", bytes32_val(new)),
         ]);
         let keys = index_sudo("KeyChanged", &fields);
-        assert!(keys.contains(&Key::AccountId(Bytes32(old))));
-        assert!(keys.contains(&Key::AccountId(Bytes32(new))));
+        assert!(keys.contains(&key_bytes32("account_id", old)));
+        assert!(keys.contains(&key_bytes32("account_id", new)));
     }
 
     #[test]
@@ -897,7 +1023,7 @@ mod pallets_tests {
         let who = [88u8; 32];
         let fields = named(vec![("who", bytes32_val(who))]);
         let keys = index_state_trie_migration("Slashed", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
+        assert_eq!(keys, vec![key_bytes32("account_id", who)]);
     }
 
     // ─── SDK dispatch ─────────────────────────────────────────────────────
@@ -907,7 +1033,7 @@ mod pallets_tests {
         let acct = [40u8; 32];
         let fields = named(vec![("account", bytes32_val(acct))]);
         let keys = index_sdk_pallet("System", "NewAccount", &fields).unwrap();
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(acct))]);
+        assert_eq!(keys, vec![key_bytes32("account_id", acct)]);
     }
 
     #[test]
@@ -951,76 +1077,71 @@ mod pallets_tests {
         for event in ["DustLost", "BalanceSet", "Deposit"] {
             assert_eq!(
                 index_balances(event, &fields),
-                vec![Key::AccountId(Bytes32(account))]
+                vec![key_bytes32("account_id", account)]
             );
         }
         assert_eq!(
             index_staking("Rewarded", &fields),
-            vec![Key::AccountId(Bytes32(account))]
+            vec![key_bytes32("account_id", account)]
         );
         assert_eq!(
             index_staking("Slashed", &fields),
-            vec![Key::AccountId(Bytes32(account))]
+            vec![key_bytes32("account_id", account)]
         );
         assert_eq!(
             index_staking("OldSlashingReportDiscarded", &unnamed(vec![u128_val(6)])),
-            vec![Key::SessionIndex(6)]
+            vec![key_u32("session_index", 6)]
         );
         assert_eq!(
             index_indices("IndexFreed", &fields),
-            vec![Key::AccountIndex(4)]
+            vec![key_u32("account_index", 4)]
         );
-        assert!(index_indices("IndexFrozen", &fields).contains(&Key::AccountId(Bytes32(account))));
+        assert!(index_indices("IndexFrozen", &fields).contains(&key_bytes32("account_id", account)));
         let treasury_fallback_fields = named(vec![
             ("proposal_index", u128_val(5)),
             ("beneficiary", bytes32_val(other)),
         ]);
-        assert!(
-            index_treasury("Awarded", &treasury_fallback_fields)
-                .contains(&Key::AccountId(Bytes32(other)))
-        );
+        assert!(index_treasury("Awarded", &treasury_fallback_fields)
+            .contains(&key_bytes32("account_id", other)));
         assert_eq!(
             index_treasury("Deposit", &fields),
-            vec![Key::AccountId(Bytes32(account))]
+            vec![key_bytes32("account_id", account)]
         );
         assert_eq!(
             index_bounties("CuratorUnassigned", &fields),
-            vec![Key::BountyIndex(9)]
+            vec![key_u32("bounty_index", 9)]
         );
-        assert!(index_proxy("Announced", &fields).contains(&Key::AccountId(Bytes32(other))));
+        assert!(index_proxy("Announced", &fields).contains(&key_bytes32("account_id", other)));
         assert!(index_proxy("ProxyExecuted", &fields).is_empty());
         assert_eq!(
             index_election_provider_multi_phase("Rewarded", &fields),
-            vec![Key::AccountId(Bytes32(account))]
+            vec![key_bytes32("account_id", account)]
         );
         assert_eq!(
             index_bags_list("Rebagged", &fields),
-            vec![Key::AccountId(Bytes32(account))]
+            vec![key_bytes32("account_id", account)]
         );
-        assert!(index_nomination_pools("Bonded", &fields).contains(&Key::PoolId(7)));
-        assert!(index_nomination_pools("PaidOut", &fields).contains(&Key::PoolId(7)));
-        assert!(index_nomination_pools("Withdrawn", &fields).contains(&Key::PoolId(7)));
+        assert!(index_nomination_pools("Bonded", &fields).contains(&key_u32("pool_id", 7)));
+        assert!(index_nomination_pools("PaidOut", &fields).contains(&key_u32("pool_id", 7)));
+        assert!(index_nomination_pools("Withdrawn", &fields).contains(&key_u32("pool_id", 7)));
+        assert!(index_nomination_pools("MemberRemoved", &fields)
+            .contains(&key_bytes32("account_id", account)));
+        assert!(index_nomination_pools("UnbondingPoolSlashed", &fields)
+            .contains(&key_u32("era_index", 8)));
         assert!(
-            index_nomination_pools("MemberRemoved", &fields)
-                .contains(&Key::AccountId(Bytes32(account)))
+            index_identity("JudgementRequested", &fields).contains(&key_u32("registrar_index", 6))
         );
-        assert!(
-            index_nomination_pools("UnbondingPoolSlashed", &fields).contains(&Key::EraIndex(8))
-        );
-        assert!(index_identity("JudgementRequested", &fields).contains(&Key::RegistrarIndex(6)));
         assert_eq!(
             index_identity("RegistrarAdded", &fields),
-            vec![Key::RegistrarIndex(6)]
+            vec![key_u32("registrar_index", 6)]
         );
         assert!(
-            index_identity("SubIdentityAdded", &fields).contains(&Key::AccountId(Bytes32(other)))
+            index_identity("SubIdentityAdded", &fields).contains(&key_bytes32("account_id", other))
         );
-        assert!(
-            index_recovery("RecoveryCreated", &fields).contains(&Key::AccountId(Bytes32(account)))
-        );
-        assert!(
-            index_recovery("RecoveryInitiated", &fields).contains(&Key::AccountId(Bytes32(other)))
-        );
+        assert!(index_recovery("RecoveryCreated", &fields)
+            .contains(&key_bytes32("account_id", account)));
+        assert!(index_recovery("RecoveryInitiated", &fields)
+            .contains(&key_bytes32("account_id", other)));
     }
 
     #[test]
@@ -1067,6 +1188,6 @@ mod pallets_tests {
             u128_val(9),
         ]))]);
         let keys = index_fast_unstake("BatchChecked", &fields);
-        assert_eq!(keys, vec![Key::EraIndex(8), Key::EraIndex(9)]);
+        assert_eq!(keys, vec![key_u32("era_index", 8), key_u32("era_index", 9)]);
     }
 }

@@ -265,7 +265,10 @@ mod tests {
         let trees = temp_trees();
         let (sub_tx, mut sub_rx) = unbounded_channel();
         let (response_tx, _) = unbounded_channel();
-        let key = Key::PoolId(7);
+        let key = Key::Custom(CustomKey {
+            name: "pool_id".into(),
+            value: CustomValue::U32(7),
+        });
 
         let subscribed = process_local_msg(
             &trees,
@@ -325,8 +328,14 @@ mod tests {
     #[test]
     fn tree_scan_helpers_limit_results_and_skip_short_custom_keys() {
         let trees = temp_trees();
-        let bytes_key = Key::AccountId(Bytes32([0xAA; 32]));
-        let u32_key = Key::PoolId(5);
+        let bytes_key = Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32([0xAA; 32])),
+        });
+        let u32_key = Key::Custom(CustomKey {
+            name: "pool_id".into(),
+            value: CustomValue::U32(5),
+        });
         let custom_key = CustomKey {
             name: "slug".into(),
             value: CustomValue::String("hello".into()),
@@ -364,7 +373,10 @@ mod tests {
     #[test]
     fn process_msg_get_events_ignores_invalid_stored_event_json() {
         let trees = temp_trees();
-        let key = Key::RefIndex(3);
+        let key = Key::Custom(CustomKey {
+            name: "ref_index".into(),
+            value: CustomValue::U32(3),
+        });
         key.write_db_key(&trees, 10, 1).unwrap();
         let db_key = EventKey {
             block_number: 10u32.into(),
@@ -387,7 +399,10 @@ mod tests {
         let trees = temp_trees();
         let (sub_tx, mut sub_rx) = unbounded_channel();
         let (response_tx, _) = unbounded_channel();
-        let key = Key::RefIndex(12);
+        let key = Key::Custom(CustomKey {
+            name: "ref_index".into(),
+            value: CustomValue::U32(12),
+        });
         key.write_db_key(&trees, 22, 1).unwrap();
 
         let status = process_local_msg(&trees, RequestMessage::Status, &sub_tx, &response_tx)

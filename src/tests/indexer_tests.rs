@@ -54,6 +54,14 @@ mod indexer_tests {
         })
     }
 
+    fn builtin_u32_key(name: &str, value: u32) -> Key {
+        custom_u32_key(name, value)
+    }
+
+    fn builtin_bytes32_key(name: &str, value: [u8; 32]) -> Key {
+        custom_bytes32_key(name, value)
+    }
+
     fn test_config() -> ChainConfig {
         toml::from_str(crate::config::POLKADOT_TOML).unwrap()
     }
@@ -111,7 +119,7 @@ kind = "u32"
         let acct = [0xAAu8; 32];
         let fields = named(vec![("account", bytes32_val(acct))]);
         let keys = indexer.keys_for_event("System", "NewAccount", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(acct))]);
+        assert_eq!(keys, vec![builtin_bytes32_key("account_id", acct)]);
     }
 
     // ─── keys_for_event: custom pallet ────────────────────────────────────
@@ -125,7 +133,7 @@ kind = "u32"
         let who = [0xBBu8; 32];
         let fields = named(vec![("who", bytes32_val(who))]);
         let keys = indexer.keys_for_event("Claims", "Claimed", &fields);
-        assert_eq!(keys, vec![Key::AccountId(Bytes32(who))]);
+        assert_eq!(keys, vec![builtin_bytes32_key("account_id", who)]);
     }
 
     #[test]
@@ -153,7 +161,7 @@ kind = "u32"
         let keys = indexer.keys_for_event("Registrar", "Registered", &fields);
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&custom_u32_key("para_id", 1000)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(manager))));
+        assert!(keys.contains(&builtin_bytes32_key("account_id", manager)));
     }
 
     #[test]
@@ -172,7 +180,7 @@ kind = "u32"
         let keys = indexer.keys_for_event("Content", "PublishRevision", &fields);
         assert_eq!(keys.len(), 3);
         assert!(keys.contains(&custom_bytes32_key("item_id", item_id)));
-        assert!(keys.contains(&Key::AccountId(Bytes32(owner))));
+        assert!(keys.contains(&builtin_bytes32_key("account_id", owner)));
         assert!(keys.contains(&custom_u32_key("revision_id", 7)));
     }
 
@@ -209,7 +217,7 @@ kind = "u32"
         let indexer = Indexer::new_test(trees.clone(), &config);
 
         let acct = Bytes32([0xDD; 32]);
-        let key = Key::AccountId(acct);
+        let key = builtin_bytes32_key("account_id", acct.0);
         indexer.index_event_key(key.clone(), 100, 3).unwrap();
         indexer.index_event_key(key.clone(), 200, 1).unwrap();
 
@@ -237,7 +245,7 @@ kind = "u32"
 
     #[test]
     fn should_store_event_when_configured_keys_exist() {
-        let keys = vec![Key::RefIndex(7)];
+        let keys = vec![builtin_u32_key("ref_index", 7)];
         assert!(should_store_event(false, &keys));
     }
 
@@ -306,7 +314,7 @@ kind = "u32"
         let config = test_config();
         let indexer = Indexer::new_test(trees.clone(), &config);
 
-        let key = Key::EraIndex(1);
+        let key = builtin_u32_key("era_index", 1);
         for i in 0..150u32 {
             indexer.index_event_key(key.clone(), i, 0).unwrap();
         }
@@ -639,7 +647,7 @@ kind = "u32"
         let config = test_config();
         let indexer = Indexer::new_test(trees, &config);
 
-        let key = Key::RefIndex(42);
+        let key = builtin_u32_key("ref_index", 42);
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         process_sub_msg(
@@ -658,7 +666,9 @@ kind = "u32"
 
         process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeEvents { key, tx });
 
-        indexer.index_event_key(Key::RefIndex(42), 8, 2).unwrap();
+        indexer
+            .index_event_key(builtin_u32_key("ref_index", 42), 8, 2)
+            .unwrap();
         assert!(rx.try_recv().is_err());
     }
 }

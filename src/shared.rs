@@ -319,24 +319,7 @@ impl CustomKey {
 
 // ─── Database trees ───────────────────────────────────────────────────────────
 
-const INDEX_NAMESPACE_BYTES32: u8 = 0;
-const INDEX_NAMESPACE_U32: u8 = 1;
 const INDEX_NAMESPACE_CUSTOM: u8 = 2;
-
-const FAMILY_ID_ACCOUNT_ID: u8 = 0;
-const FAMILY_ID_ACCOUNT_INDEX: u8 = 1;
-const FAMILY_ID_BOUNTY_INDEX: u8 = 2;
-const FAMILY_ID_ERA_INDEX: u8 = 3;
-const FAMILY_ID_MESSAGE_ID: u8 = 4;
-const FAMILY_ID_POOL_ID: u8 = 5;
-const FAMILY_ID_PREIMAGE_HASH: u8 = 6;
-const FAMILY_ID_PROPOSAL_HASH: u8 = 7;
-const FAMILY_ID_PROPOSAL_INDEX: u8 = 8;
-const FAMILY_ID_REF_INDEX: u8 = 9;
-const FAMILY_ID_REGISTRAR_INDEX: u8 = 10;
-const FAMILY_ID_SESSION_INDEX: u8 = 11;
-const FAMILY_ID_TIP_HASH: u8 = 12;
-const FAMILY_ID_SPEND_INDEX: u8 = 13;
 
 /// All database trees.
 #[derive(Clone)]
@@ -378,59 +361,13 @@ impl Trees {
 #[serde(tag = "type", content = "value")]
 pub enum Key {
     Variant(u8, u8),
-    // Substrate built-ins
-    AccountId(Bytes32),
-    AccountIndex(u32),
-    BountyIndex(u32),
-    EraIndex(u32),
-    MessageId(Bytes32),
-    PoolId(u32),
-    PreimageHash(Bytes32),
-    ProposalHash(Bytes32),
-    ProposalIndex(u32),
-    RefIndex(u32),
-    RegistrarIndex(u32),
-    SessionIndex(u32),
-    TipHash(Bytes32),
-    SpendIndex(u32),
-    // Config-defined custom keys
     Custom(CustomKey),
 }
 
 impl Key {
-    fn bytes32_prefix(family_id: u8, value: &Bytes32) -> Vec<u8> {
-        let mut prefix = Vec::with_capacity(34);
-        prefix.push(INDEX_NAMESPACE_BYTES32);
-        prefix.push(family_id);
-        prefix.extend_from_slice(value.as_ref());
-        prefix
-    }
-
-    fn u32_prefix(family_id: u8, value: u32) -> Vec<u8> {
-        let mut prefix = Vec::with_capacity(6);
-        prefix.push(INDEX_NAMESPACE_U32);
-        prefix.push(family_id);
-        prefix.extend_from_slice(&value.to_be_bytes());
-        prefix
-    }
-
     pub fn index_prefix(&self) -> Option<Vec<u8>> {
         match self {
             Key::Variant(_, _) => None,
-            Key::AccountId(v) => Some(Self::bytes32_prefix(FAMILY_ID_ACCOUNT_ID, v)),
-            Key::AccountIndex(v) => Some(Self::u32_prefix(FAMILY_ID_ACCOUNT_INDEX, *v)),
-            Key::BountyIndex(v) => Some(Self::u32_prefix(FAMILY_ID_BOUNTY_INDEX, *v)),
-            Key::EraIndex(v) => Some(Self::u32_prefix(FAMILY_ID_ERA_INDEX, *v)),
-            Key::MessageId(v) => Some(Self::bytes32_prefix(FAMILY_ID_MESSAGE_ID, v)),
-            Key::PoolId(v) => Some(Self::u32_prefix(FAMILY_ID_POOL_ID, *v)),
-            Key::PreimageHash(v) => Some(Self::bytes32_prefix(FAMILY_ID_PREIMAGE_HASH, v)),
-            Key::ProposalHash(v) => Some(Self::bytes32_prefix(FAMILY_ID_PROPOSAL_HASH, v)),
-            Key::ProposalIndex(v) => Some(Self::u32_prefix(FAMILY_ID_PROPOSAL_INDEX, *v)),
-            Key::RefIndex(v) => Some(Self::u32_prefix(FAMILY_ID_REF_INDEX, *v)),
-            Key::RegistrarIndex(v) => Some(Self::u32_prefix(FAMILY_ID_REGISTRAR_INDEX, *v)),
-            Key::SessionIndex(v) => Some(Self::u32_prefix(FAMILY_ID_SESSION_INDEX, *v)),
-            Key::TipHash(v) => Some(Self::bytes32_prefix(FAMILY_ID_TIP_HASH, v)),
-            Key::SpendIndex(v) => Some(Self::u32_prefix(FAMILY_ID_SPEND_INDEX, *v)),
             Key::Custom(custom) => {
                 let mut prefix = Vec::with_capacity(1 + custom.db_prefix().len());
                 prefix.push(INDEX_NAMESPACE_CUSTOM);

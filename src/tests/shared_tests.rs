@@ -119,7 +119,10 @@ mod shared_tests {
 
     #[test]
     fn key_json_round_trip_account_id() {
-        let k = Key::AccountId(Bytes32([0x11; 32]));
+        let k = Key::Custom(CustomKey {
+            name: "account_id".into(),
+            value: CustomValue::Bytes32(Bytes32([0x11; 32])),
+        });
         let json = serde_json::to_string(&k).unwrap();
         let k2: Key = serde_json::from_str(&json).unwrap();
         assert_eq!(k, k2);
@@ -128,15 +131,42 @@ mod shared_tests {
     #[test]
     fn key_json_round_trip_u32_types() {
         for key in [
-            Key::AccountIndex(1),
-            Key::BountyIndex(3),
-            Key::EraIndex(4),
-            Key::PoolId(5),
-            Key::ProposalIndex(6),
-            Key::RefIndex(7),
-            Key::RegistrarIndex(8),
-            Key::SessionIndex(9),
-            Key::SpendIndex(10),
+            Key::Custom(CustomKey {
+                name: "account_index".into(),
+                value: CustomValue::U32(1),
+            }),
+            Key::Custom(CustomKey {
+                name: "bounty_index".into(),
+                value: CustomValue::U32(3),
+            }),
+            Key::Custom(CustomKey {
+                name: "era_index".into(),
+                value: CustomValue::U32(4),
+            }),
+            Key::Custom(CustomKey {
+                name: "pool_id".into(),
+                value: CustomValue::U32(5),
+            }),
+            Key::Custom(CustomKey {
+                name: "proposal_index".into(),
+                value: CustomValue::U32(6),
+            }),
+            Key::Custom(CustomKey {
+                name: "ref_index".into(),
+                value: CustomValue::U32(7),
+            }),
+            Key::Custom(CustomKey {
+                name: "registrar_index".into(),
+                value: CustomValue::U32(8),
+            }),
+            Key::Custom(CustomKey {
+                name: "session_index".into(),
+                value: CustomValue::U32(9),
+            }),
+            Key::Custom(CustomKey {
+                name: "spend_index".into(),
+                value: CustomValue::U32(10),
+            }),
         ] {
             let json = serde_json::to_string(&key).unwrap();
             let k2: Key = serde_json::from_str(&json).unwrap();
@@ -148,10 +178,22 @@ mod shared_tests {
     fn key_json_round_trip_bytes32_types() {
         let b = Bytes32([0xFF; 32]);
         for key in [
-            Key::MessageId(b),
-            Key::PreimageHash(b),
-            Key::ProposalHash(b),
-            Key::TipHash(b),
+            Key::Custom(CustomKey {
+                name: "message_id".into(),
+                value: CustomValue::Bytes32(b),
+            }),
+            Key::Custom(CustomKey {
+                name: "preimage_hash".into(),
+                value: CustomValue::Bytes32(b),
+            }),
+            Key::Custom(CustomKey {
+                name: "proposal_hash".into(),
+                value: CustomValue::Bytes32(b),
+            }),
+            Key::Custom(CustomKey {
+                name: "tip_hash".into(),
+                value: CustomValue::Bytes32(b),
+            }),
         ] {
             let json = serde_json::to_string(&key).unwrap();
             let k2: Key = serde_json::from_str(&json).unwrap();
@@ -198,20 +240,62 @@ mod shared_tests {
 
         let keys = vec![
             Key::Variant(1, 2),
-            Key::AccountId(Bytes32([0x01; 32])),
-            Key::AccountIndex(11),
-            Key::BountyIndex(12),
-            Key::EraIndex(13),
-            Key::MessageId(Bytes32([0x02; 32])),
-            Key::PoolId(14),
-            Key::PreimageHash(Bytes32([0x03; 32])),
-            Key::ProposalHash(Bytes32([0x04; 32])),
-            Key::ProposalIndex(15),
-            Key::RefIndex(16),
-            Key::RegistrarIndex(17),
-            Key::SessionIndex(18),
-            Key::TipHash(Bytes32([0x05; 32])),
-            Key::SpendIndex(19),
+            Key::Custom(CustomKey {
+                name: "account_id".into(),
+                value: CustomValue::Bytes32(Bytes32([0x01; 32])),
+            }),
+            Key::Custom(CustomKey {
+                name: "account_index".into(),
+                value: CustomValue::U32(11),
+            }),
+            Key::Custom(CustomKey {
+                name: "bounty_index".into(),
+                value: CustomValue::U32(12),
+            }),
+            Key::Custom(CustomKey {
+                name: "era_index".into(),
+                value: CustomValue::U32(13),
+            }),
+            Key::Custom(CustomKey {
+                name: "message_id".into(),
+                value: CustomValue::Bytes32(Bytes32([0x02; 32])),
+            }),
+            Key::Custom(CustomKey {
+                name: "pool_id".into(),
+                value: CustomValue::U32(14),
+            }),
+            Key::Custom(CustomKey {
+                name: "preimage_hash".into(),
+                value: CustomValue::Bytes32(Bytes32([0x03; 32])),
+            }),
+            Key::Custom(CustomKey {
+                name: "proposal_hash".into(),
+                value: CustomValue::Bytes32(Bytes32([0x04; 32])),
+            }),
+            Key::Custom(CustomKey {
+                name: "proposal_index".into(),
+                value: CustomValue::U32(15),
+            }),
+            Key::Custom(CustomKey {
+                name: "ref_index".into(),
+                value: CustomValue::U32(16),
+            }),
+            Key::Custom(CustomKey {
+                name: "registrar_index".into(),
+                value: CustomValue::U32(17),
+            }),
+            Key::Custom(CustomKey {
+                name: "session_index".into(),
+                value: CustomValue::U32(18),
+            }),
+            Key::Custom(CustomKey {
+                name: "tip_hash".into(),
+                value: CustomValue::Bytes32(Bytes32([0x05; 32])),
+            }),
+            Key::Custom(CustomKey {
+                name: "spend_index".into(),
+                value: CustomValue::U32(19),
+            }),
             Key::Custom(CustomKey {
                 name: "auction_index".into(),
                 value: CustomValue::U32(20),
@@ -279,13 +363,21 @@ mod shared_tests {
     #[test]
     fn request_get_events_account_id() {
         let hex = hex::encode([0xAA; 32]);
-        let json =
-            format!(r#"{{"type":"GetEvents","key":{{"type":"AccountId","value":"0x{hex}"}}}}"#);
+        let json = format!(
+            r#"{{"type":"GetEvents","key":{{"type":"Custom","value":{{"name":"account_id","kind":"bytes32","value":"0x{hex}"}}}}}}"#
+        );
         let msg: RequestMessage = serde_json::from_str(&json).unwrap();
         match msg {
             RequestMessage::GetEvents {
-                key: Key::AccountId(b),
-            } => assert_eq!(b.0, [0xAA; 32]),
+                key:
+                    Key::Custom(CustomKey {
+                        name,
+                        value: CustomValue::Bytes32(b),
+                    }),
+            } => {
+                assert_eq!(name, "account_id");
+                assert_eq!(b.0, [0xAA; 32]);
+            }
             _ => panic!("wrong variant"),
         }
     }
@@ -314,7 +406,10 @@ mod shared_tests {
     #[test]
     fn response_events_with_decoded_events_serializes() {
         let msg = ResponseMessage::Events {
-            key: Key::RefIndex(42),
+            key: Key::Custom(CustomKey {
+                name: "ref_index".into(),
+                value: CustomValue::U32(42),
+            }),
             events: vec![EventRef {
                 block_number: 10,
                 event_index: 2,

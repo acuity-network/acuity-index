@@ -92,6 +92,16 @@ acuity-index --url wss://mynode:443 --generate-chain-config ./chains/mychain.tom
 Each chain is described by a TOML file. Built-in configs are embedded at
 compile time; custom configs can be passed via `--chain-config`.
 
+If a runtime includes multiple instances of the same Substrate pallet under
+different names, treat them as distinct pallets in the config. Each instance
+has its own pallet name in metadata and its own independent storage, calls,
+events, and errors, even when the runtime uses the same pallet code for both.
+This only applies to instantiable pallets; a non-instantiable pallet cannot be
+added to a runtime more than once. For example, a runtime may include
+`pallet_collective` twice as `Council` and `TechnicalCommittee`; those should
+be configured as two separate pallets because proposals, votes, and membership
+are tracked independently for each instance.
+
 ```toml
 name = "mychain"
 genesis_hash = "abc123..."

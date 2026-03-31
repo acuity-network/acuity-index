@@ -75,24 +75,21 @@ mod websocket_tests {
         });
         key.write_db_key(&trees, 50, 3).unwrap();
 
-        // Insert decoded event bytes.
+        // Insert decoded event JSON.
         let event_key = EventKey {
             block_number: 50u32.into(),
             event_index: 3u16.into(),
         };
-        let stored = StoredEvent {
-            spec_version: 1234,
-            pallet_name: "Paras".into(),
-            event_name: "Test".into(),
-            pallet_index: 6,
-            variant_index: 9,
-            event_index: 3,
-            fields: StoredComposite::Named(vec![]),
-        }
-        .encode();
+        let json = serde_json::to_vec(&serde_json::json!({
+            "specVersion": 1234,
+            "palletName": "Paras",
+            "eventName": "Test",
+            "eventIndex": 3
+        }))
+        .unwrap();
         trees
             .events
-            .insert(event_key.as_bytes(), stored.as_slice())
+            .insert(event_key.as_bytes(), json.as_slice())
             .unwrap();
 
         let msg = process_msg_get_events(&trees, key);

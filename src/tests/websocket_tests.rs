@@ -223,5 +223,6 @@ mod websocket_tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("RefIndex"));
         assert!(json.contains("42"));
+        assert!(json.contains("decodedEvents"));
     }
 }

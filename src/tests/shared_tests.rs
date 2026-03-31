@@ -330,7 +330,7 @@ mod shared_tests {
         };
 
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("decoded_events"));
+        assert!(json.contains("decodedEvents"));
         assert!(json.contains("specVersion"));
         assert!(json.contains("Deposit"));
     }

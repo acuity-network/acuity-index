@@ -641,6 +641,7 @@ pub enum ResponseMessage {
     Events {
         key: Key,
         events: Vec<EventRef>,
+        #[serde(rename = "decodedEvents")]
         decoded_events: Vec<DecodedEvent>,
     },
     Subscribed,

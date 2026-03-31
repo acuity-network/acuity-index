@@ -18,49 +18,14 @@ use zerocopy::{FromBytes, IntoBytes};
 
 // ─── Tree scan helpers (pub so shared.rs can call them) ───────────────────────
 
-pub fn get_events_bytes32(tree: &Tree, key: &Bytes32) -> Vec<EventRef> {
+pub fn get_events_index(tree: &Tree, prefix: &[u8]) -> Vec<EventRef> {
     let mut events = Vec::new();
-    let mut iter = tree.scan_prefix(key.as_ref() as &[u8]).keys();
-    while let Some(Ok(raw)) = iter.next_back() {
-        let k = Bytes32Key::read_from_bytes(&raw).unwrap();
-        events.push(EventRef {
-            block_number: k.block_number.into(),
-            event_index: k.event_index.into(),
-        });
-        if events.len() == 100 {
-            break;
-        }
-    }
-    events
-}
-
-pub fn get_events_u32(tree: &Tree, key: u32) -> Vec<EventRef> {
-    let mut events = Vec::new();
-    let mut iter = tree.scan_prefix(key.to_be_bytes()).keys();
-    while let Some(Ok(raw)) = iter.next_back() {
-        let k = U32Key::read_from_bytes(&raw).unwrap();
-        events.push(EventRef {
-            block_number: k.block_number.into(),
-            event_index: k.event_index.into(),
-        });
-        if events.len() == 100 {
-            break;
-        }
-    }
-    events
-}
-
-pub fn get_events_custom(tree: &Tree, key: &CustomKey) -> Vec<EventRef> {
-    let mut events = Vec::new();
-    let prefix = key.db_prefix();
     let mut iter = tree.scan_prefix(prefix).keys();
     while let Some(Ok(raw)) = iter.next_back() {
         let suffix = &raw[raw.len() - 6..];
-        let block_number = u32::from_be_bytes(suffix[..4].try_into().unwrap());
-        let event_index = u16::from_be_bytes(suffix[4..].try_into().unwrap());
         events.push(EventRef {
-            block_number,
-            event_index,
+            block_number: u32::from_be_bytes(suffix[..4].try_into().unwrap()),
+            event_index: u16::from_be_bytes(suffix[4..].try_into().unwrap()),
         });
         if events.len() == 100 {
             break;
@@ -367,7 +332,9 @@ mod tests {
             value: CustomValue::String("hello".into()),
         };
 
-        trees.custom.insert(custom_key.db_prefix(), &[]).unwrap();
+        let mut short_custom_prefix = vec![2u8];
+        short_custom_prefix.extend_from_slice(&custom_key.db_prefix());
+        trees.index.insert(short_custom_prefix, &[]).unwrap();
         for i in 0..150u32 {
             bytes_key.write_db_key(&trees, i, 0).unwrap();
             u32_key.write_db_key(&trees, i, 0).unwrap();
@@ -377,14 +344,21 @@ mod tests {
         }
 
         assert_eq!(
-            get_events_bytes32(&trees.substrate.account_id, &Bytes32([0xAA; 32])).len(),
+            get_events_index(&trees.index, &bytes_key.index_prefix().unwrap()).len(),
             100
         );
-        assert_eq!(get_events_u32(&trees.substrate.pool_id, 5).len(), 100);
-        assert_eq!(get_events_custom(&trees.custom, &custom_key).len(), 100);
+        assert_eq!(get_events_index(&trees.index, &u32_key.index_prefix().unwrap()).len(), 100);
+        assert_eq!(
+            get_events_index(&trees.index, &Key::Custom(custom_key.clone()).index_prefix().unwrap())
+                .len(),
+            100
+        );
 
-        trees.custom.insert(b"x", &[]).unwrap();
-        assert_eq!(get_events_custom(&trees.custom, &custom_key).len(), 100);
+        trees.index.insert(b"x", &[]).unwrap();
+        assert_eq!(
+            get_events_index(&trees.index, &Key::Custom(custom_key).index_prefix().unwrap()).len(),
+            100
+        );
     }
 
     #[test]

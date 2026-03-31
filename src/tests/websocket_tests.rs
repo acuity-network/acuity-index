@@ -139,21 +139,19 @@ mod websocket_tests {
     #[test]
     fn get_events_custom_empty_tree() {
         let trees = temp_trees();
-        let events = get_events_custom(
-            &trees.custom,
-            &CustomKey {
-                name: "para_id".into(),
-                value: CustomValue::U32(999),
-            },
-        );
+        let key = Key::Custom(CustomKey {
+            name: "para_id".into(),
+            value: CustomValue::U32(999),
+        });
+        let events = get_events_index(&trees.index, &key.index_prefix().unwrap());
         assert!(events.is_empty());
     }
 
     #[test]
     fn get_events_bytes32_empty_tree() {
         let trees = temp_trees();
-        let b = Bytes32([0; 32]);
-        let events = get_events_bytes32(&trees.substrate.account_id, &b);
+        let key = Key::AccountId(Bytes32([0; 32]));
+        let events = get_events_index(&trees.index, &key.index_prefix().unwrap());
         assert!(events.is_empty());
     }
 
@@ -165,7 +163,7 @@ mod websocket_tests {
         key.write_db_key(&trees, 20, 1).unwrap();
         key.write_db_key(&trees, 30, 2).unwrap();
 
-        let events = get_events_u32(&trees.substrate.pool_id, 7);
+        let events = get_events_index(&trees.index, &key.index_prefix().unwrap());
         assert_eq!(events.len(), 3);
         // Reverse order (newest first).
         assert_eq!(events[0].block_number, 30);
@@ -180,7 +178,7 @@ mod websocket_tests {
         key.write_db_key(&trees, 5, 0).unwrap();
         key.write_db_key(&trees, 15, 1).unwrap();
 
-        let events = get_events_bytes32(&trees.substrate.account_id, &b);
+        let events = get_events_index(&trees.index, &key.index_prefix().unwrap());
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].block_number, 15);
         assert_eq!(events[1].block_number, 5);

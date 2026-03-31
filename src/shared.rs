@@ -2,7 +2,7 @@
 
 use crate::config::ScalarKind;
 use serde::{Deserialize, Serialize};
-use sled::{Db, Tree};
+use sled::Tree;
 use std::fmt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite;
@@ -319,63 +319,24 @@ impl CustomKey {
 
 // ─── Database trees ───────────────────────────────────────────────────────────
 
-/// Substrate built-in index trees.
-#[derive(Clone)]
-pub struct SubstrateTrees {
-    pub account_id: Tree,
-    pub account_index: Tree,
-    pub bounty_index: Tree,
-    pub era_index: Tree,
-    pub message_id: Tree,
-    pub pool_id: Tree,
-    pub preimage_hash: Tree,
-    pub proposal_hash: Tree,
-    pub proposal_index: Tree,
-    pub ref_index: Tree,
-    pub registrar_index: Tree,
-    pub session_index: Tree,
-    pub tip_hash: Tree,
-    pub spend_index: Tree,
-}
+const INDEX_NAMESPACE_BYTES32: u8 = 0;
+const INDEX_NAMESPACE_U32: u8 = 1;
+const INDEX_NAMESPACE_CUSTOM: u8 = 2;
 
-impl SubstrateTrees {
-    pub fn open(db: &Db) -> Result<Self, sled::Error> {
-        Ok(SubstrateTrees {
-            account_id: db.open_tree(b"account_id")?,
-            account_index: db.open_tree(b"account_index")?,
-            bounty_index: db.open_tree(b"bounty_index")?,
-            era_index: db.open_tree(b"era_index")?,
-            message_id: db.open_tree(b"message_id")?,
-            pool_id: db.open_tree(b"pool_id")?,
-            preimage_hash: db.open_tree(b"preimage_hash")?,
-            proposal_hash: db.open_tree(b"proposal_hash")?,
-            proposal_index: db.open_tree(b"proposal_index")?,
-            ref_index: db.open_tree(b"ref_index")?,
-            registrar_index: db.open_tree(b"registrar_index")?,
-            session_index: db.open_tree(b"session_index")?,
-            tip_hash: db.open_tree(b"tip_hash")?,
-            spend_index: db.open_tree(b"spend_index")?,
-        })
-    }
-
-    pub fn flush(&self) -> Result<(), sled::Error> {
-        self.account_id.flush()?;
-        self.account_index.flush()?;
-        self.bounty_index.flush()?;
-        self.era_index.flush()?;
-        self.message_id.flush()?;
-        self.pool_id.flush()?;
-        self.preimage_hash.flush()?;
-        self.proposal_hash.flush()?;
-        self.proposal_index.flush()?;
-        self.ref_index.flush()?;
-        self.registrar_index.flush()?;
-        self.session_index.flush()?;
-        self.tip_hash.flush()?;
-        self.spend_index.flush()?;
-        Ok(())
-    }
-}
+const FAMILY_ID_ACCOUNT_ID: u8 = 0;
+const FAMILY_ID_ACCOUNT_INDEX: u8 = 1;
+const FAMILY_ID_BOUNTY_INDEX: u8 = 2;
+const FAMILY_ID_ERA_INDEX: u8 = 3;
+const FAMILY_ID_MESSAGE_ID: u8 = 4;
+const FAMILY_ID_POOL_ID: u8 = 5;
+const FAMILY_ID_PREIMAGE_HASH: u8 = 6;
+const FAMILY_ID_PROPOSAL_HASH: u8 = 7;
+const FAMILY_ID_PROPOSAL_INDEX: u8 = 8;
+const FAMILY_ID_REF_INDEX: u8 = 9;
+const FAMILY_ID_REGISTRAR_INDEX: u8 = 10;
+const FAMILY_ID_SESSION_INDEX: u8 = 11;
+const FAMILY_ID_TIP_HASH: u8 = 12;
+const FAMILY_ID_SPEND_INDEX: u8 = 13;
 
 /// All database trees.
 #[derive(Clone)]
@@ -383,8 +344,7 @@ pub struct Trees {
     pub root: sled::Db,
     pub span: Tree,
     pub variant: Tree,
-    pub substrate: SubstrateTrees,
-    pub custom: Tree,
+    pub index: Tree,
     /// Stores JSON-encoded decoded events keyed by block number and event index.
     pub events: Tree,
 }
@@ -395,8 +355,7 @@ impl Trees {
         Ok(Trees {
             span: db.open_tree(b"span")?,
             variant: db.open_tree(b"variant")?,
-            substrate: SubstrateTrees::open(&db)?,
-            custom: db.open_tree(b"custom")?,
+            index: db.open_tree(b"index")?,
             events: db.open_tree(b"events")?,
             root: db,
         })
@@ -406,8 +365,7 @@ impl Trees {
         self.root.flush()?;
         self.span.flush()?;
         self.variant.flush()?;
-        self.substrate.flush()?;
-        self.custom.flush()?;
+        self.index.flush()?;
         self.events.flush()?;
         Ok(())
     }
@@ -440,6 +398,48 @@ pub enum Key {
 }
 
 impl Key {
+    fn bytes32_prefix(family_id: u8, value: &Bytes32) -> Vec<u8> {
+        let mut prefix = Vec::with_capacity(34);
+        prefix.push(INDEX_NAMESPACE_BYTES32);
+        prefix.push(family_id);
+        prefix.extend_from_slice(value.as_ref());
+        prefix
+    }
+
+    fn u32_prefix(family_id: u8, value: u32) -> Vec<u8> {
+        let mut prefix = Vec::with_capacity(6);
+        prefix.push(INDEX_NAMESPACE_U32);
+        prefix.push(family_id);
+        prefix.extend_from_slice(&value.to_be_bytes());
+        prefix
+    }
+
+    pub fn index_prefix(&self) -> Option<Vec<u8>> {
+        match self {
+            Key::Variant(_, _) => None,
+            Key::AccountId(v) => Some(Self::bytes32_prefix(FAMILY_ID_ACCOUNT_ID, v)),
+            Key::AccountIndex(v) => Some(Self::u32_prefix(FAMILY_ID_ACCOUNT_INDEX, *v)),
+            Key::BountyIndex(v) => Some(Self::u32_prefix(FAMILY_ID_BOUNTY_INDEX, *v)),
+            Key::EraIndex(v) => Some(Self::u32_prefix(FAMILY_ID_ERA_INDEX, *v)),
+            Key::MessageId(v) => Some(Self::bytes32_prefix(FAMILY_ID_MESSAGE_ID, v)),
+            Key::PoolId(v) => Some(Self::u32_prefix(FAMILY_ID_POOL_ID, *v)),
+            Key::PreimageHash(v) => Some(Self::bytes32_prefix(FAMILY_ID_PREIMAGE_HASH, v)),
+            Key::ProposalHash(v) => Some(Self::bytes32_prefix(FAMILY_ID_PROPOSAL_HASH, v)),
+            Key::ProposalIndex(v) => Some(Self::u32_prefix(FAMILY_ID_PROPOSAL_INDEX, *v)),
+            Key::RefIndex(v) => Some(Self::u32_prefix(FAMILY_ID_REF_INDEX, *v)),
+            Key::RegistrarIndex(v) => Some(Self::u32_prefix(FAMILY_ID_REGISTRAR_INDEX, *v)),
+            Key::SessionIndex(v) => Some(Self::u32_prefix(FAMILY_ID_SESSION_INDEX, *v)),
+            Key::TipHash(v) => Some(Self::bytes32_prefix(FAMILY_ID_TIP_HASH, v)),
+            Key::SpendIndex(v) => Some(Self::u32_prefix(FAMILY_ID_SPEND_INDEX, *v)),
+            Key::Custom(custom) => {
+                let mut prefix = Vec::with_capacity(1 + custom.db_prefix().len());
+                prefix.push(INDEX_NAMESPACE_CUSTOM);
+                prefix.extend_from_slice(&custom.db_prefix());
+                Some(prefix)
+            }
+        }
+    }
+
     pub fn write_db_key(
         &self,
         trees: &Trees,
@@ -448,27 +448,6 @@ impl Key {
     ) -> Result<(), sled::Error> {
         let bn: U32<BigEndian> = block_number.into();
         let ei: U16<BigEndian> = event_index.into();
-
-        macro_rules! insert_u32 {
-            ($tree:expr, $v:expr) => {{
-                let key = U32Key {
-                    key: (*$v).into(),
-                    block_number: bn,
-                    event_index: ei,
-                };
-                $tree.insert(key.as_bytes(), &[])?;
-            }};
-        }
-        macro_rules! insert_b32 {
-            ($tree:expr, $v:expr) => {{
-                let key = Bytes32Key {
-                    key: $v.0,
-                    block_number: bn,
-                    event_index: ei,
-                };
-                $tree.insert(key.as_bytes(), &[])?;
-            }};
-        }
 
         match self {
             Key::Variant(pi, vi) => {
@@ -480,67 +459,21 @@ impl Key {
                 };
                 trees.variant.insert(key.as_bytes(), &[])?;
             }
-            Key::AccountId(v) => insert_b32!(trees.substrate.account_id, v),
-            Key::AccountIndex(v) => {
-                insert_u32!(trees.substrate.account_index, v)
-            }
-            Key::BountyIndex(v) => {
-                insert_u32!(trees.substrate.bounty_index, v)
-            }
-            Key::EraIndex(v) => insert_u32!(trees.substrate.era_index, v),
-            Key::MessageId(v) => {
-                insert_b32!(trees.substrate.message_id, v)
-            }
-            Key::PoolId(v) => insert_u32!(trees.substrate.pool_id, v),
-            Key::PreimageHash(v) => {
-                insert_b32!(trees.substrate.preimage_hash, v)
-            }
-            Key::ProposalHash(v) => {
-                insert_b32!(trees.substrate.proposal_hash, v)
-            }
-            Key::ProposalIndex(v) => {
-                insert_u32!(trees.substrate.proposal_index, v)
-            }
-            Key::RefIndex(v) => insert_u32!(trees.substrate.ref_index, v),
-            Key::RegistrarIndex(v) => {
-                insert_u32!(trees.substrate.registrar_index, v)
-            }
-            Key::SessionIndex(v) => {
-                insert_u32!(trees.substrate.session_index, v)
-            }
-            Key::TipHash(v) => insert_b32!(trees.substrate.tip_hash, v),
-            Key::SpendIndex(v) => {
-                insert_u32!(trees.substrate.spend_index, v)
-            }
-            Key::Custom(custom) => {
-                let mut key = custom.db_prefix();
+            _ => {
+                let mut key = self.index_prefix().unwrap();
                 key.extend_from_slice(&block_number.to_be_bytes());
                 key.extend_from_slice(&event_index.to_be_bytes());
-                trees.custom.insert(key, &[])?;
+                trees.index.insert(key, &[])?;
             }
         }
         Ok(())
     }
 
     pub fn get_events(&self, trees: &Trees) -> Vec<EventRef> {
-        use crate::websockets::{get_events_bytes32, get_events_custom, get_events_u32};
+        use crate::websockets::get_events_index;
         match self {
             Key::Variant(pi, vi) => get_events_variant(&trees.variant, *pi, *vi),
-            Key::AccountId(v) => get_events_bytes32(&trees.substrate.account_id, v),
-            Key::AccountIndex(v) => get_events_u32(&trees.substrate.account_index, *v),
-            Key::BountyIndex(v) => get_events_u32(&trees.substrate.bounty_index, *v),
-            Key::EraIndex(v) => get_events_u32(&trees.substrate.era_index, *v),
-            Key::MessageId(v) => get_events_bytes32(&trees.substrate.message_id, v),
-            Key::PoolId(v) => get_events_u32(&trees.substrate.pool_id, *v),
-            Key::PreimageHash(v) => get_events_bytes32(&trees.substrate.preimage_hash, v),
-            Key::ProposalHash(v) => get_events_bytes32(&trees.substrate.proposal_hash, v),
-            Key::ProposalIndex(v) => get_events_u32(&trees.substrate.proposal_index, *v),
-            Key::RefIndex(v) => get_events_u32(&trees.substrate.ref_index, *v),
-            Key::RegistrarIndex(v) => get_events_u32(&trees.substrate.registrar_index, *v),
-            Key::SessionIndex(v) => get_events_u32(&trees.substrate.session_index, *v),
-            Key::TipHash(v) => get_events_bytes32(&trees.substrate.tip_hash, v),
-            Key::SpendIndex(v) => get_events_u32(&trees.substrate.spend_index, *v),
-            Key::Custom(custom) => get_events_custom(&trees.custom, custom),
+            _ => get_events_index(&trees.index, &self.index_prefix().unwrap()),
         }
     }
 }
@@ -749,10 +682,6 @@ mod tests {
                 .to_string();
         assert!(u64_err.contains("u64 string or integer"));
         assert!(u128_err.contains("u128 string or integer"));
-
-        let db = sled::Config::new().temporary(true).open().unwrap();
-        let substrate = SubstrateTrees::open(&db).unwrap();
-        substrate.flush().unwrap();
 
         let trees = Trees::open(sled::Config::new().temporary(true)).unwrap();
         trees.flush().unwrap();

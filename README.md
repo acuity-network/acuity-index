@@ -57,7 +57,7 @@ acuity-index [OPTIONS]
 | `--queue-depth <N>` | `1` | Concurrent block requests during batch indexing |
 | `-f, --finalized` | `false` | Only index finalized blocks |
 | `-i, --index-variant` | `false` | Also index events by pallet/variant index |
-| `-s, --store-events` | `false` | Store full decoded event JSON for retrieval |
+| `-s, --store-events` | `false` | Store decoded events per `(block_number, event_index)` for retrieval |
 | `-p, --port <PORT>` | `8172` | WebSocket API port |
 | `-v / -q` | — | Increase / decrease log verbosity |
 
@@ -177,8 +177,53 @@ Connect to `ws://localhost:8172` and send/receive JSON messages.
 |---|---|
 | `{"type":"Status"}` | Indexed block spans |
 | `{"type":"Variants"}` | All pallet event variants from chain metadata |
-| `{"type":"GetEvents","key":{...}}` | Matching event refs (+ decoded JSON if `--store-events`) |
+| `{"type":"GetEvents","key":{...}}` | Matching event refs (+ matching decoded events if `--store-events`) |
 | `{"type":"SizeOnDisk"}` | Database size in bytes |
+
+When `--store-events` is enabled, decoded events are stored individually using
+the composite key `(block_number, event_index)`. This lets the API return only
+the matched decoded events instead of whole block-wide event arrays.
+
+Each decoded event payload includes:
+
+- `specVersion`
+- `palletName`
+- `eventName`
+- `palletIndex`
+- `variantIndex`
+- `eventIndex`
+- `fields`
+
+Example `GetEvents` response with stored decoded events:
+
+```json
+{
+  "type": "events",
+  "data": {
+    "key": {"type": "RefIndex", "value": 42},
+    "events": [
+      {"blockNumber": 50, "eventIndex": 3}
+    ],
+    "decodedEvents": [
+      {
+        "blockNumber": 50,
+        "eventIndex": 3,
+        "event": {
+          "specVersion": 1234,
+          "palletName": "Referenda",
+          "eventName": "Submitted",
+          "palletIndex": 42,
+          "variantIndex": 0,
+          "eventIndex": 3,
+          "fields": {
+            "index": 42
+          }
+        }
+      }
+    ]
+  }
+}
+```
 
 ### Subscriptions
 

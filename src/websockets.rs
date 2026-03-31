@@ -14,7 +14,7 @@ use tokio::sync::{
 };
 use tokio_tungstenite::tungstenite;
 use tracing::{error, info};
-use zerocopy::{BigEndian, FromBytes, IntoBytes, byteorder::U32};
+use zerocopy::{FromBytes, IntoBytes};
 
 // ─── Tree scan helpers (pub so shared.rs can call them) ───────────────────────
 
@@ -114,18 +114,18 @@ pub async fn process_msg_variants(
 pub fn process_msg_get_events(trees: &Trees, key: Key) -> ResponseMessage {
     let event_refs = key.get_events(trees);
 
-    let mut block_numbers: Vec<u32> = event_refs.iter().map(|e| e.block_number).collect();
-    block_numbers.sort_unstable();
-    block_numbers.dedup();
-
-    let mut block_events = Vec::new();
-    for bn in &block_numbers {
-        let db_key: U32<BigEndian> = (*bn).into();
-        if let Ok(Some(bytes)) = trees.block_events.get(db_key.as_bytes()) {
+    let mut decoded_events = Vec::new();
+    for event_ref in &event_refs {
+        let db_key = EventKey {
+            block_number: event_ref.block_number.into(),
+            event_index: event_ref.event_index.into(),
+        };
+        if let Ok(Some(bytes)) = trees.events.get(db_key.as_bytes()) {
             if let Ok(json) = serde_json::from_slice(&bytes) {
-                block_events.push(BlockEvents {
-                    block_number: *bn,
-                    events: json,
+                decoded_events.push(DecodedEvent {
+                    block_number: event_ref.block_number,
+                    event_index: event_ref.event_index,
+                    event: json,
                 });
             }
         }
@@ -134,7 +134,7 @@ pub fn process_msg_get_events(trees: &Trees, key: Key) -> ResponseMessage {
     ResponseMessage::Events {
         key,
         events: event_refs,
-        block_events,
+        decoded_events,
     }
 }
 
@@ -388,21 +388,24 @@ mod tests {
     }
 
     #[test]
-    fn process_msg_get_events_ignores_invalid_block_event_json() {
+    fn process_msg_get_events_ignores_invalid_stored_event_json() {
         let trees = temp_trees();
         let key = Key::RefIndex(3);
         key.write_db_key(&trees, 10, 1).unwrap();
-        let db_key: U32<BigEndian> = 10u32.into();
+        let db_key = EventKey {
+            block_number: 10u32.into(),
+            event_index: 1u16.into(),
+        };
         trees
-            .block_events
+            .events
             .insert(db_key.as_bytes(), b"not-json".as_slice())
             .unwrap();
 
-        let ResponseMessage::Events { block_events, .. } = process_msg_get_events(&trees, key)
+        let ResponseMessage::Events { decoded_events, .. } = process_msg_get_events(&trees, key)
         else {
             panic!("expected events response");
         };
-        assert!(block_events.is_empty());
+        assert!(decoded_events.is_empty());
     }
 
     #[test]

@@ -78,6 +78,14 @@ pub struct U32Key {
     pub event_index: U16<BigEndian>,
 }
 
+/// On-disk format for stored event keys.
+#[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
+#[repr(C)]
+pub struct EventKey {
+    pub block_number: U32<BigEndian>,
+    pub event_index: U16<BigEndian>,
+}
+
 /// On-disk format for span values.
 #[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
 #[repr(C)]
@@ -377,8 +385,8 @@ pub struct Trees {
     pub variant: Tree,
     pub substrate: SubstrateTrees,
     pub custom: Tree,
-    /// Stores JSON-encoded decoded event fields keyed by block number.
-    pub block_events: Tree,
+    /// Stores JSON-encoded decoded events keyed by block number and event index.
+    pub events: Tree,
 }
 
 impl Trees {
@@ -389,7 +397,7 @@ impl Trees {
             variant: db.open_tree(b"variant")?,
             substrate: SubstrateTrees::open(&db)?,
             custom: db.open_tree(b"custom")?,
-            block_events: db.open_tree(b"block_events")?,
+            events: db.open_tree(b"events")?,
             root: db,
         })
     }
@@ -400,7 +408,7 @@ impl Trees {
         self.variant.flush()?;
         self.substrate.flush()?;
         self.custom.flush()?;
-        self.block_events.flush()?;
+        self.events.flush()?;
         Ok(())
     }
 }
@@ -574,13 +582,14 @@ impl fmt::Display for EventRef {
     }
 }
 
-/// A block's decoded events as JSON.
+/// A decoded event payload associated with an event ref.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct BlockEvents {
+pub struct DecodedEvent {
     pub block_number: u32,
-    /// JSON array of decoded event objects for this block.
-    pub events: serde_json::Value,
+    pub event_index: u16,
+    /// JSON object for the decoded event.
+    pub event: serde_json::Value,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -632,7 +641,7 @@ pub enum ResponseMessage {
     Events {
         key: Key,
         events: Vec<EventRef>,
-        block_events: Vec<BlockEvents>,
+        decoded_events: Vec<DecodedEvent>,
     },
     Subscribed,
     Unsubscribed,

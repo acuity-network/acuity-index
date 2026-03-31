@@ -54,11 +54,11 @@ mod websocket_tests {
             ResponseMessage::Events {
                 key: k,
                 events,
-                block_events,
+                decoded_events,
             } => {
                 assert_eq!(k, key);
                 assert!(events.is_empty());
-                assert!(block_events.is_empty());
+                assert!(decoded_events.is_empty());
             }
             _ => panic!("wrong response type"),
         }
@@ -75,36 +75,45 @@ mod websocket_tests {
         });
         key.write_db_key(&trees, 50, 3).unwrap();
 
-        // Insert block events JSON.
-        let bn_key: zerocopy::byteorder::U32<zerocopy::BigEndian> = 50u32.into();
-        let json = serde_json::to_vec(&serde_json::json!([
-            {"palletName": "Paras", "eventName": "Test"}
-        ]))
+        // Insert decoded event JSON.
+        let event_key = EventKey {
+            block_number: 50u32.into(),
+            event_index: 3u16.into(),
+        };
+        let json = serde_json::to_vec(&serde_json::json!({
+            "specVersion": 1234,
+            "palletName": "Paras",
+            "eventName": "Test",
+            "eventIndex": 3
+        }))
         .unwrap();
         trees
-            .block_events
-            .insert(bn_key.as_bytes(), json.as_slice())
+            .events
+            .insert(event_key.as_bytes(), json.as_slice())
             .unwrap();
 
         let msg = process_msg_get_events(&trees, key);
         match msg {
             ResponseMessage::Events {
                 events,
-                block_events,
+                decoded_events,
                 ..
             } => {
                 assert_eq!(events.len(), 1);
                 assert_eq!(events[0].block_number, 50);
                 assert_eq!(events[0].event_index, 3);
-                assert_eq!(block_events.len(), 1);
-                assert_eq!(block_events[0].block_number, 50);
+                assert_eq!(decoded_events.len(), 1);
+                assert_eq!(decoded_events[0].block_number, 50);
+                assert_eq!(decoded_events[0].event_index, 3);
+                assert_eq!(decoded_events[0].event["specVersion"], 1234);
+                assert_eq!(decoded_events[0].event["eventName"], "Test");
             }
             _ => panic!("wrong response type"),
         }
     }
 
     #[test]
-    fn process_msg_get_events_without_stored_block_events() {
+    fn process_msg_get_events_without_stored_events() {
         let trees = temp_trees();
 
         let key = Key::RefIndex(42);
@@ -115,13 +124,13 @@ mod websocket_tests {
             ResponseMessage::Events {
                 key: returned_key,
                 events,
-                block_events,
+                decoded_events,
             } => {
                 assert_eq!(returned_key, key);
                 assert_eq!(events.len(), 1);
                 assert_eq!(events[0].block_number, 50);
                 assert_eq!(events[0].event_index, 3);
-                assert!(block_events.is_empty());
+                assert!(decoded_events.is_empty());
             }
             _ => panic!("wrong response type"),
         }
@@ -209,7 +218,7 @@ mod websocket_tests {
                 block_number: 10,
                 event_index: 2,
             }],
-            block_events: vec![],
+            decoded_events: vec![],
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("RefIndex"));

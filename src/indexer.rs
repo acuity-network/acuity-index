@@ -16,7 +16,7 @@ use tokio::{
     time::{self, Duration, Instant, MissedTickBehavior},
 };
 use tracing::{debug, error, info};
-use zerocopy::{BigEndian, FromBytes, IntoBytes, byteorder::U32};
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::{
     config::{ChainConfig, KeyTypeName, ParamKey, ResolvedParamConfig},
@@ -106,9 +106,6 @@ impl Indexer {
         let spec = at_block.spec_version();
         let events = at_block.events().fetch().await?;
 
-        // Accumulate decoded events as JSON for storage.
-        let mut decoded_events: Vec<serde_json::Value> = Vec::new();
-
         for (i, event_result) in events.iter().enumerate() {
             let event = match event_result {
                 Ok(e) => e,
@@ -155,42 +152,55 @@ impl Indexer {
                 key_count += 1;
             }
 
-            // Accumulate decoded event for storage.
+            // Persist the decoded event row for direct retrieval.
             if self.store_events {
-                decoded_events.push(self.encode_event(
+                self.store_event(
+                    block_number,
+                    event_index,
+                    spec,
                     pallet_name,
                     event_name,
                     pallet_index,
                     variant_index,
-                    event_index,
                     &field_values,
-                ));
+                )?;
             }
         }
-
-        self.store_block_events(block_number, spec, decoded_events)?;
 
         Ok((block_number, events.len() as u32, key_count))
     }
 
-    fn store_block_events(
+    fn store_event(
         &self,
         block_number: u32,
-        spec: u32,
-        decoded_events: Vec<serde_json::Value>,
+        event_index: u16,
+        spec_version: u32,
+        pallet_name: &str,
+        event_name: &str,
+        pallet_index: u8,
+        variant_index: u8,
+        fields: &Composite<()>,
     ) -> Result<(), IndexError> {
         if !self.store_events {
             return Ok(());
         }
 
-        let db_key: U32<BigEndian> = block_number.into();
-        let spec_be: U32<BigEndian> = spec.into();
-        let json_bytes = serde_json::to_vec(&json!({
-            "specVersion": u32::from(spec_be),
-            "events": decoded_events,
-        }))?;
+        let db_key = EventKey {
+            block_number: block_number.into(),
+            event_index: event_index.into(),
+        };
+        let mut encoded = self.encode_event(
+            pallet_name,
+            event_name,
+            pallet_index,
+            variant_index,
+            event_index,
+            fields,
+        );
+        encoded["specVersion"] = json!(spec_version);
+        let json_bytes = serde_json::to_vec(&encoded)?;
         self.trees
-            .block_events
+            .events
             .insert(db_key.as_bytes(), json_bytes.as_slice())?;
         Ok(())
     }
@@ -282,18 +292,22 @@ impl Indexer {
     fn notify_event_subscribers(&self, key: Key, event_ref: EventRef) {
         let subs = self.events_subs.lock().unwrap();
         if let Some(txs) = subs.get(&key) {
-            let db_key: U32<BigEndian> = event_ref.block_number.into();
-            let block_events = self
+            let event_key = EventKey {
+                block_number: event_ref.block_number.into(),
+                event_index: event_ref.event_index.into(),
+            };
+            let decoded_events = self
                 .trees
-                .block_events
-                .get(db_key.as_bytes())
+                .events
+                .get(event_key.as_bytes())
                 .ok()
                 .flatten()
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .map(|events| {
-                    vec![BlockEvents {
+                    vec![DecodedEvent {
                         block_number: event_ref.block_number,
-                        events,
+                        event_index: event_ref.event_index,
+                        event: events,
                     }]
                 })
                 .unwrap_or_default();
@@ -301,7 +315,7 @@ impl Indexer {
             let msg = ResponseMessage::Events {
                 key,
                 events: vec![event_ref],
-                block_events,
+                decoded_events,
             };
             for tx in txs {
                 let _ = tx.send(msg.clone());
@@ -808,6 +822,7 @@ mod tests {
     use super::*;
     use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
     use serde_json::json;
+    use zerocopy::IntoBytes;
 
     fn temp_trees() -> Trees {
         let dir = tempfile::tempdir().unwrap();
@@ -1000,57 +1015,75 @@ mod tests {
     }
 
     #[test]
-    fn store_block_events_persists_spec_version_and_decoded_events() {
+    fn store_event_persists_decoded_event() {
         let trees = temp_trees();
         let indexer = test_indexer(trees.clone(), true);
-        let decoded_events = vec![json!({
-            "palletName": "Balances",
-            "eventName": "Deposit",
-            "fields": {"amount": "999"},
-        })];
 
         indexer
-            .store_block_events(42, 1234, decoded_events)
+            .store_event(
+                42,
+                7,
+                1234,
+                "Balances",
+                "Deposit",
+                5,
+                2,
+                &Composite::Named(vec![("amount".into(), u128_value(999))]),
+            )
             .unwrap();
 
-        let db_key: U32<BigEndian> = 42u32.into();
-        let bytes = trees.block_events.get(db_key.as_bytes()).unwrap().unwrap();
+        let db_key = EventKey {
+            block_number: 42u32.into(),
+            event_index: 7u16.into(),
+        };
+        let bytes = trees.events.get(db_key.as_bytes()).unwrap().unwrap();
         let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(stored["specVersion"], json!(1234));
-        assert_eq!(
-            stored["events"],
-            json!([{
-                "palletName": "Balances",
-                "eventName": "Deposit",
-                "fields": {"amount": "999"},
-            }])
-        );
+        assert_eq!(stored["palletName"], json!("Balances"));
+        assert_eq!(stored["eventName"], json!("Deposit"));
+        assert_eq!(stored["eventIndex"], json!(7));
+        assert_eq!(stored["fields"], json!({"amount": "999"}));
     }
 
     #[test]
-    fn store_block_events_skips_writes_when_disabled() {
+    fn store_event_skips_writes_when_disabled() {
         let trees = temp_trees();
         let indexer = test_indexer(trees.clone(), false);
 
         indexer
-            .store_block_events(42, 1234, vec![json!({"eventName": "Ignored"})])
+            .store_event(
+                42,
+                7,
+                1234,
+                "Balances",
+                "Ignored",
+                5,
+                2,
+                &Composite::Named(vec![]),
+            )
             .unwrap();
 
-        let db_key: U32<BigEndian> = 42u32.into();
-        assert!(trees.block_events.get(db_key.as_bytes()).unwrap().is_none());
+        let db_key = EventKey {
+            block_number: 42u32.into(),
+            event_index: 7u16.into(),
+        };
+        assert!(trees.events.get(db_key.as_bytes()).unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn notify_event_subscribers_includes_decoded_block_events() {
+    async fn notify_event_subscribers_includes_decoded_events() {
         let trees = temp_trees();
         let indexer = Indexer::new_test(trees.clone(), &test_config());
         let key = Key::RefIndex(42);
-        let db_key: U32<BigEndian> = 7u32.into();
+        let db_key = EventKey {
+            block_number: 7u32.into(),
+            event_index: 3u16.into(),
+        };
         trees
-            .block_events
+            .events
             .insert(
                 db_key.as_bytes(),
-                serde_json::to_vec(&serde_json::json!({"events": []})).unwrap(),
+                serde_json::to_vec(&serde_json::json!({"specVersion": 1234, "eventName": "Ready"})).unwrap(),
             )
             .unwrap();
 
@@ -1065,16 +1098,17 @@ mod tests {
 
         indexer.index_event_key(key.clone(), 7, 3).unwrap();
 
-        let ResponseMessage::Events { block_events, .. } = rx.recv().await.unwrap() else {
+        let ResponseMessage::Events { decoded_events, .. } = rx.recv().await.unwrap() else {
             panic!("expected events response");
         };
-        assert_eq!(block_events.len(), 1);
-        assert_eq!(block_events[0].block_number, 7);
-        assert_eq!(block_events[0].events, serde_json::json!({"events": []}));
+        assert_eq!(decoded_events.len(), 1);
+        assert_eq!(decoded_events[0].block_number, 7);
+        assert_eq!(decoded_events[0].event_index, 3);
+        assert_eq!(decoded_events[0].event, serde_json::json!({"specVersion": 1234, "eventName": "Ready"}));
     }
 
     #[tokio::test]
-    async fn notify_event_subscribers_omits_block_events_when_not_stored() {
+    async fn notify_event_subscribers_omits_decoded_events_when_not_stored() {
         let trees = temp_trees();
         let indexer = test_indexer(trees, false);
         let key = Key::RefIndex(42);
@@ -1092,7 +1126,7 @@ mod tests {
 
         let ResponseMessage::Events {
             events,
-            block_events,
+            decoded_events,
             ..
         } = rx.recv().await.unwrap()
         else {
@@ -1105,7 +1139,7 @@ mod tests {
                 event_index: 3,
             }]
         );
-        assert!(block_events.is_empty());
+        assert!(decoded_events.is_empty());
     }
 
     #[test]

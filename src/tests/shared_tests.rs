@@ -102,6 +102,19 @@ mod shared_tests {
         assert_eq!(bytes.len(), 10);
     }
 
+    #[test]
+    fn event_key_layout() {
+        let key = EventKey {
+            block_number: 123u32.into(),
+            event_index: 9u16.into(),
+        };
+        let bytes = key.as_bytes();
+        // 4 + 2 = 6 bytes
+        assert_eq!(bytes.len(), 6);
+        assert_eq!(&bytes[..4], &123u32.to_be_bytes());
+        assert_eq!(&bytes[4..], &9u16.to_be_bytes());
+    }
+
     // ─── Key serialization ────────────────────────────────────────────────
 
     #[test]
@@ -296,5 +309,29 @@ mod shared_tests {
         let out = format!("{s}");
         assert!(out.contains("10"));
         assert!(out.contains("20"));
+    }
+
+    #[test]
+    fn response_events_with_decoded_events_serializes() {
+        let msg = ResponseMessage::Events {
+            key: Key::RefIndex(42),
+            events: vec![EventRef {
+                block_number: 10,
+                event_index: 2,
+            }],
+            decoded_events: vec![DecodedEvent {
+                block_number: 10,
+                event_index: 2,
+                event: serde_json::json!({
+                    "specVersion": 1234,
+                    "eventName": "Deposit"
+                }),
+            }],
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("decoded_events"));
+        assert!(json.contains("specVersion"));
+        assert!(json.contains("Deposit"));
     }
 }

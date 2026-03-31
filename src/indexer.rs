@@ -236,7 +236,9 @@ impl Indexer {
                 Some(v) => v,
                 None => continue,
             };
-            if let Some(key) = value_to_key(value, &param.key) {
+            if param.multi {
+                keys.extend(values_to_keys(value, &param.key));
+            } else if let Some(key) = value_to_key(value, &param.key) {
                 keys.push(key);
             }
         }
@@ -396,6 +398,19 @@ fn value_to_key(value: &Value<()>, key: &ParamKey) -> Option<Key> {
     match key {
         ParamKey::BuiltIn(key_type) => value_to_builtin_key(value, key_type),
         ParamKey::Custom { name, kind } => value_to_custom_key(value, name, kind),
+    }
+}
+
+fn values_to_keys(value: &Value<()>, key: &ParamKey) -> Vec<Key> {
+    match &value.value {
+        ValueDef::Composite(Composite::Unnamed(values)) => values
+            .iter()
+            .filter_map(|value| value_to_key(value, key))
+            .collect(),
+        ValueDef::Composite(Composite::Named(values)) if values.len() == 1 => {
+            values_to_keys(&values[0].1, key)
+        }
+        _ => value_to_key(value, key).into_iter().collect(),
     }
 }
 

@@ -128,6 +128,7 @@ mod config_tests {
             claimed_params[0].key,
             ParamKey::BuiltIn(KeyTypeName::AccountId)
         );
+        assert!(!claimed_params[0].multi);
     }
 
     #[test]
@@ -148,6 +149,8 @@ mod config_tests {
         );
         assert_eq!(registered[1].field, "manager");
         assert_eq!(registered[1].key, ParamKey::BuiltIn(KeyTypeName::AccountId));
+        assert!(!registered[0].multi);
+        assert!(!registered[1].multi);
     }
 
     #[test]
@@ -166,6 +169,7 @@ mod config_tests {
                 kind: ScalarKind::U32,
             }
         );
+        assert!(!code_updated[0].multi);
     }
 
     #[test]
@@ -196,6 +200,7 @@ versions = [0]
         let bar = idx.get("Bar").unwrap();
         let baz = bar.get("Baz").unwrap();
         assert_eq!(baz[0].key, ParamKey::BuiltIn(KeyTypeName::PoolId));
+        assert!(!baz[0].multi);
     }
 
     #[test]
@@ -216,6 +221,8 @@ revision_id = "u32"
           { name = "PublishRevision", params = [
             { field = "item_id", key = "item_id" },
             { field = "revision_id", key = "revision_id" },
+            { field = "links", key = "item_id", multi = true },
+            { field = "mentions", key = "account_id", multi = true },
           ]},
         ]
 "#;
@@ -237,6 +244,21 @@ revision_id = "u32"
                 kind: ScalarKind::U32,
             }
         );
+        assert!(!publish_revision[0].multi);
+        assert!(!publish_revision[1].multi);
+        assert_eq!(
+            publish_revision[2].key,
+            ParamKey::Custom {
+                name: "item_id".into(),
+                kind: ScalarKind::Bytes32,
+            }
+        );
+        assert!(publish_revision[2].multi);
+        assert_eq!(
+            publish_revision[3].key,
+            ParamKey::BuiltIn(KeyTypeName::AccountId)
+        );
+        assert!(publish_revision[3].multi);
     }
 
     #[test]

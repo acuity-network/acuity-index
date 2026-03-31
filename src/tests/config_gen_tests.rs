@@ -29,6 +29,22 @@ mod config_gen_tests {
     #[derive(TypeInfo)]
     struct TupleEvent(ParaId);
 
+    #[allow(dead_code)]
+    #[derive(TypeInfo)]
+    struct ItemId([u8; 32]);
+
+    #[allow(dead_code)]
+    #[derive(TypeInfo)]
+    struct VecWrapper<T>(Vec<T>);
+
+    #[allow(dead_code)]
+    #[derive(TypeInfo)]
+    struct CollectionEvent {
+        parents: VecWrapper<ItemId>,
+        links: VecWrapper<ItemId>,
+        mentions: VecWrapper<AccountId32>,
+    }
+
     fn event_fields<T: TypeInfo + 'static>() -> (
         PortableRegistry,
         Vec<scale_info::Field<scale_info::form::PortableForm>>,
@@ -56,6 +72,7 @@ mod config_gen_tests {
                 ParamConfig {
                     field: "owner".into(),
                     key: "account_id".into(),
+                    multi: false,
                 },
                 None,
             )
@@ -75,6 +92,7 @@ mod config_gen_tests {
             ParamConfig {
                 field: "para_id".into(),
                 key: "para_id".into(),
+                multi: false,
             },
             Some(ScalarKind::U32)
         )));
@@ -82,6 +100,7 @@ mod config_gen_tests {
             ParamConfig {
                 field: "revision".into(),
                 key: "revision".into(),
+                multi: false,
             },
             Some(ScalarKind::U128)
         )));
@@ -89,6 +108,7 @@ mod config_gen_tests {
             ParamConfig {
                 field: "slug".into(),
                 key: "slug".into(),
+                multi: false,
             },
             Some(ScalarKind::String)
         )));
@@ -96,6 +116,7 @@ mod config_gen_tests {
             ParamConfig {
                 field: "published".into(),
                 key: "published".into(),
+                multi: false,
             },
             Some(ScalarKind::Bool)
         )));
@@ -103,6 +124,7 @@ mod config_gen_tests {
             ParamConfig {
                 field: "hash".into(),
                 key: "hash".into(),
+                multi: false,
             },
             Some(ScalarKind::Bytes32)
         )));
@@ -118,9 +140,18 @@ mod config_gen_tests {
                 ParamConfig {
                     field: "0".into(),
                     key: "para_id".into(),
+                    multi: false,
                 },
                 Some(ScalarKind::U32),
             )
         );
+    }
+
+    #[test]
+    fn infer_param_detects_multi_item_and_account_collections() {
+        let (types, fields) = event_fields::<CollectionEvent>();
+        let _ = infer_param(&fields[0], 0, &types);
+        let _ = infer_param(&fields[1], 1, &types);
+        let _ = infer_param(&fields[2], 2, &types);
     }
 }

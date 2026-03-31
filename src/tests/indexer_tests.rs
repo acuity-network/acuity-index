@@ -27,6 +27,13 @@ mod indexer_tests {
         }
     }
 
+    fn vec_val(values: Vec<Value<()>>) -> Value<()> {
+        Value {
+            value: ValueDef::Composite(Composite::Unnamed(values)),
+            context: (),
+        }
+    }
+
     fn named(fields: Vec<(&str, Value<()>)>) -> Composite<()> {
         Composite::Named(
             fields
@@ -81,10 +88,17 @@ revision_id = "u32"
             [[pallets]]
             name = "Content"
             events = [
+              { name = "PublishItem", params = [
+                { field = "item_id", key = "item_id" },
+                { field = "owner", key = "account_id" },
+                { field = "parents", key = "item_id", multi = true },
+              ]},
               { name = "PublishRevision", params = [
                 { field = "item_id", key = "item_id" },
                 { field = "owner", key = "account_id" },
                 { field = "revision_id", key = "revision_id" },
+                { field = "links", key = "item_id", multi = true },
+                { field = "mentions", key = "account_id", multi = true },
               ]},
             ]
 "#,
@@ -176,6 +190,61 @@ revision_id = "u32"
         assert!(keys.contains(&custom_bytes32_key("item_id", item_id)));
         assert!(keys.contains(&builtin_bytes32_key("account_id", owner)));
         assert!(keys.contains(&custom_u32_key("revision_id", 7)));
+    }
+
+    #[test]
+    fn keys_for_event_custom_pallet_multi_value_item_and_account_keys() {
+        let trees = temp_trees();
+        let config = acuity_config();
+        let indexer = Indexer::new_test(trees, &config);
+
+        let owner = [0xABu8; 32];
+        let item_id = [0xCDu8; 32];
+        let parent_a = [0x11u8; 32];
+        let parent_b = [0x12u8; 32];
+        let link_a = [0x21u8; 32];
+        let link_b = [0x22u8; 32];
+        let mention_a = [0x31u8; 32];
+        let mention_b = [0x32u8; 32];
+
+        let publish_item_fields = named(vec![
+            ("item_id", bytes32_val(item_id)),
+            ("owner", bytes32_val(owner)),
+            (
+                "parents",
+                vec_val(vec![bytes32_val(parent_a), bytes32_val(parent_b)]),
+            ),
+        ]);
+        let item_keys = indexer.keys_for_event("Content", "PublishItem", &publish_item_fields);
+        assert_eq!(item_keys.len(), 4);
+        assert!(item_keys.contains(&custom_bytes32_key("item_id", item_id)));
+        assert!(item_keys.contains(&builtin_bytes32_key("account_id", owner)));
+        assert!(item_keys.contains(&custom_bytes32_key("item_id", parent_a)));
+        assert!(item_keys.contains(&custom_bytes32_key("item_id", parent_b)));
+
+        let publish_revision_fields = named(vec![
+            ("item_id", bytes32_val(item_id)),
+            ("owner", bytes32_val(owner)),
+            ("revision_id", u128_val(7)),
+            (
+                "links",
+                vec_val(vec![bytes32_val(link_a), bytes32_val(link_b)]),
+            ),
+            (
+                "mentions",
+                vec_val(vec![bytes32_val(mention_a), bytes32_val(mention_b)]),
+            ),
+        ]);
+        let revision_keys =
+            indexer.keys_for_event("Content", "PublishRevision", &publish_revision_fields);
+        assert_eq!(revision_keys.len(), 7);
+        assert!(revision_keys.contains(&custom_bytes32_key("item_id", item_id)));
+        assert!(revision_keys.contains(&builtin_bytes32_key("account_id", owner)));
+        assert!(revision_keys.contains(&custom_u32_key("revision_id", 7)));
+        assert!(revision_keys.contains(&custom_bytes32_key("item_id", link_a)));
+        assert!(revision_keys.contains(&custom_bytes32_key("item_id", link_b)));
+        assert!(revision_keys.contains(&builtin_bytes32_key("account_id", mention_a)));
+        assert!(revision_keys.contains(&builtin_bytes32_key("account_id", mention_b)));
     }
 
     // ─── keys_for_event: unknown pallet/event ─────────────────────────────

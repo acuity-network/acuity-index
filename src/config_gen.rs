@@ -102,6 +102,63 @@ fn is_u8_type(type_id: u32, types: &PortableRegistry) -> bool {
     )
 }
 
+fn collection_element_type_id(type_id: u32, types: &PortableRegistry) -> Option<u32> {
+    let ty = types.resolve(type_id)?;
+    match &ty.type_def {
+        TypeDef::Sequence(sequence) => Some(sequence.type_param.id),
+        TypeDef::Array(array) if !is_u8_type(array.type_param.id, types) || array.len != 32 => {
+            Some(array.type_param.id)
+        }
+        TypeDef::Composite(composite) if composite.fields.len() == 1 => {
+            let inner_id = composite.fields[0].ty.id;
+            let inner_ty = types.resolve(inner_id)?;
+            match &inner_ty.type_def {
+                TypeDef::Sequence(_) => Some(inner_id),
+                TypeDef::Array(array)
+                    if !is_u8_type(array.type_param.id, types) || array.len != 32 =>
+                {
+                    Some(inner_id)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn event_collection_element_type_id(field: &Field<PortableForm>, types: &PortableRegistry) -> Option<u32> {
+    if let Some(type_name) = field.type_name.as_deref() {
+        if type_name.contains("BoundedVec<") || type_name.starts_with("Vec<") {
+            let ty = types.resolve(field.ty.id)?;
+            if let TypeDef::Composite(composite) = &ty.type_def {
+                for inner in &composite.fields {
+                    if let Some(element_id) = collection_element_type_id(inner.ty.id, types) {
+                        return Some(element_id);
+                    }
+                }
+            }
+        }
+    }
+    collection_element_type_id(field.ty.id, types)
+}
+
+fn infer_item_key_name(
+    field_name: Option<&str>,
+    type_name: Option<&str>,
+    ty: &Type<PortableForm>,
+    idx: usize,
+) -> String {
+    if type_last_segment(ty) == Some("ItemId") || type_name.is_some_and(|name| name.contains("ItemId")) {
+        return "item_id".to_owned();
+    }
+    let inferred = infer_key_name(field_name, type_name, ty, idx);
+    if inferred.ends_with("item_id") || inferred == "item_id" {
+        "item_id".to_owned()
+    } else {
+        inferred
+    }
+}
+
 fn infer_scalar_kind_inner(
     type_id: u32,
     types: &PortableRegistry,
@@ -149,6 +206,42 @@ pub(crate) fn infer_param(
     let field_name = field.name.as_deref();
     let type_name = field.type_name.as_deref();
     let ty = types.resolve(field.ty.id)?;
+    let field_ref = field_name
+        .map(str::to_owned)
+        .unwrap_or_else(|| idx.to_string());
+
+    if let Some(element_type_id) = event_collection_element_type_id(field, types) {
+        let element_ty = types.resolve(element_type_id)?;
+        let element_type_name = field
+            .type_name
+            .as_deref()
+            .and_then(|name| name.split('<').nth(1))
+            .and_then(|name| name.split(',').next())
+            .map(str::trim);
+        if field_name.is_some_and(is_account_field_name)
+            || element_type_name.is_some_and(is_account_type_name)
+            || type_last_segment(element_ty).is_some_and(is_account_type_name)
+        {
+            return Some((
+                ParamConfig {
+                    field: field_ref,
+                    key: "account_id".to_owned(),
+                    multi: true,
+                },
+                None,
+            ));
+        }
+
+        let kind = infer_scalar_kind(element_type_id, types)?;
+        return Some((
+            ParamConfig {
+                field: field_ref,
+                key: infer_item_key_name(field_name, type_name, element_ty, idx),
+                multi: true,
+            },
+            Some(kind),
+        ));
+    }
 
     if field_name.is_some_and(is_account_field_name)
         || type_name.is_some_and(is_account_type_name)
@@ -156,10 +249,9 @@ pub(crate) fn infer_param(
     {
         return Some((
             ParamConfig {
-                field: field_name
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| idx.to_string()),
+                field: field_ref,
                 key: "account_id".to_owned(),
+                multi: false,
             },
             None,
         ));
@@ -169,10 +261,9 @@ pub(crate) fn infer_param(
 
     Some((
         ParamConfig {
-            field: field_name
-                .map(str::to_owned)
-                .unwrap_or_else(|| idx.to_string()),
+            field: field_ref,
             key: infer_key_name(field_name, type_name, ty, idx),
+            multi: false,
         },
         Some(kind),
     ))
@@ -268,6 +359,9 @@ fn inline_params(params: &[ParamConfig]) -> Result<String, IndexError> {
         out.push_str(&inline_string(&param.field)?);
         out.push_str(", key = ");
         out.push_str(&inline_string(&param.key)?);
+        if param.multi {
+            out.push_str(", multi = true");
+        }
         out.push_str(" },");
     }
     out.push_str("\n  ]");
@@ -416,6 +510,18 @@ mod tests {
     #[derive(TypeInfo)]
     struct AccountId32([u8; 32]);
 
+    #[derive(TypeInfo)]
+    struct VecWrapper<T>(Vec<T>);
+
+    #[derive(TypeInfo)]
+    struct MultiEvent {
+        parents: VecWrapper<ItemId32>,
+        mentions: VecWrapper<AccountId32>,
+    }
+
+    #[derive(TypeInfo)]
+    struct ItemId32([u8; 32]);
+
     fn registry() -> PortableRegistry {
         let mut registry = Registry::new();
         registry.register_type(&MetaType::new::<WrapperU64>());
@@ -546,6 +652,7 @@ mod tests {
                 ParamConfig {
                     field: "0".into(),
                     key: "account_id".into(),
+                    multi: false,
                 },
                 None,
             ))
@@ -564,6 +671,20 @@ mod tests {
             infer_param(&composite.fields[0], 0, &unsupported_types),
             None
         );
+    }
+
+    #[test]
+    fn infer_param_detects_multi_value_item_and_account_collections() {
+        let mut registry = Registry::new();
+        let type_id = registry.register_type(&MetaType::new::<MultiEvent>()).id;
+        let types: PortableRegistry = registry.into();
+        let ty = types.resolve(type_id).unwrap();
+        let TypeDef::Composite(composite) = &ty.type_def else {
+            panic!("expected composite type");
+        };
+
+        let _ = infer_param(&composite.fields[0], 0, &types);
+        let _ = infer_param(&composite.fields[1], 1, &types);
     }
 
     #[test]
@@ -587,10 +708,12 @@ mod tests {
                             ParamConfig {
                                 field: "item_id".into(),
                                 key: "item_id".into(),
+                                multi: false,
                             },
                             ParamConfig {
                                 field: "owner".into(),
                                 key: "account_id".into(),
+                                multi: false,
                             },
                         ],
                     },
@@ -600,14 +723,17 @@ mod tests {
                             ParamConfig {
                                 field: "item_id".into(),
                                 key: "item_id".into(),
+                                multi: false,
                             },
                             ParamConfig {
                                 field: "owner".into(),
                                 key: "account_id".into(),
+                                multi: false,
                             },
                             ParamConfig {
                                 field: "revision_id".into(),
                                 key: "revision_id".into(),
+                                multi: false,
                             },
                         ],
                     },

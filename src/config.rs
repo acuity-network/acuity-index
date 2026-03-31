@@ -70,6 +70,7 @@ pub enum ParamKey {
 pub struct ResolvedParamConfig {
     pub field: String,
     pub key: ParamKey,
+    pub multi: bool,
 }
 
 pub type CustomIndex = HashMap<String, HashMap<String, Vec<ResolvedParamConfig>>>;
@@ -80,6 +81,8 @@ pub struct ParamConfig {
     /// Field name (string) or positional index (stringified number, e.g. "0").
     pub field: String,
     pub key: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub multi: bool,
 }
 
 impl ParamConfig {
@@ -106,6 +109,7 @@ impl ParamConfig {
         Ok(ResolvedParamConfig {
             field: self.field.clone(),
             key,
+            multi: self.multi,
         })
     }
 }
@@ -232,6 +236,7 @@ mod tests {
                     params: vec![ParamConfig {
                         field: "item_id".into(),
                         key: "item_id".into(),
+                        multi: false,
                     }],
                 }],
             }],

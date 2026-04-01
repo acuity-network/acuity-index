@@ -659,6 +659,60 @@ fn save_current_span(
     Ok(())
 }
 
+type BlockIndexFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(u32, u32, u32), IndexError>> + Send + 'a>,
+>;
+
+fn advance_span_end(
+    trees: &Trees,
+    current_span: &mut Span,
+    next_block: u32,
+    versions_len: usize,
+    index_variant: bool,
+    store_events: bool,
+) -> Result<(), IndexError> {
+    trees.span.remove(current_span.end.to_be_bytes())?;
+    current_span.end = next_block;
+    save_span(
+        &trees.span,
+        current_span,
+        versions_len,
+        index_variant,
+        store_events,
+    )?;
+    Ok(())
+}
+
+fn queue_head_blocks<'a>(
+    head_futures: &mut Vec<BlockIndexFuture<'a>>,
+    queue_depth: u32,
+    next_head_to_queue: &mut u32,
+    latest_seen_head: u32,
+    indexer: &'a Indexer,
+) {
+    while head_futures.len() < queue_depth as usize && *next_head_to_queue <= latest_seen_head {
+        let block_number = *next_head_to_queue;
+        head_futures.push(Box::pin(indexer.index_block(block_number)));
+        debug!("⬆️  Queued head #{}", block_number.to_formatted_string(&Locale::en));
+        *next_head_to_queue += 1;
+    }
+}
+
+fn queue_next_backfill_block<'a>(
+    futures: &mut Vec<BlockIndexFuture<'a>>,
+    spans: &[Span],
+    next_batch_block: &mut Option<u32>,
+    indexer: &'a Indexer,
+) {
+    check_next_batch_block(spans, next_batch_block);
+    let Some(block_number) = *next_batch_block else {
+        return;
+    };
+    futures.push(Box::pin(indexer.index_block(block_number)));
+    debug!("⬆️  Queued #{}", block_number.to_formatted_string(&Locale::en));
+    *next_batch_block = prev_block(block_number);
+}
+
 fn process_queued_head_result(
     trees: &Trees,
     current_span: &mut Span,
@@ -677,11 +731,10 @@ fn process_queued_head_result(
                 let Some((events, keys)) = head_orphans.remove(&next_block) else {
                     break;
                 };
-                trees.span.remove(current_span.end.to_be_bytes())?;
-                current_span.end = next_block;
-                save_span(
-                    &trees.span,
+                advance_span_end(
+                    trees,
                     current_span,
+                    next_block,
                     versions_len,
                     index_variant,
                     store_events,
@@ -697,15 +750,16 @@ fn process_queued_head_result(
             if advanced {
                 indexer.notify_status_subscribers();
             }
+            Ok(())
         }
         Err(IndexError::HistoricalBlockDataUnavailable { block_number }) => {
-            return Err(IndexError::HistoricalBlockDataUnavailable { block_number });
+            Err(IndexError::HistoricalBlockDataUnavailable { block_number })
         }
         Err(err) => {
             error!("✨ Head indexing error: {err}");
+            Ok(())
         }
     }
-    Ok(())
 }
 
 // ─── Main indexer loop ────────────────────────────────────────────────────────
@@ -795,32 +849,14 @@ pub async fn run_indexer(
     let mut head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
     let mut head_futures = Vec::with_capacity(queue_depth as usize);
     let mut head_orphans: AHashMap<u32, (u32, u32)> = AHashMap::new();
-    macro_rules! queue_head_blocks {
-        () => {
-            while head_futures.len() < queue_depth as usize && next_head_to_queue <= latest_seen_head {
-                let block_number = next_head_to_queue;
-                head_futures.push(Box::pin(indexer.index_block(block_number)));
-                debug!(
-                    "⬆️  Queued head #{}",
-                    block_number.to_formatted_string(&Locale::en)
-                );
-                next_head_to_queue += 1;
-            }
-        };
-    }
 
     let mut futures = Vec::with_capacity(queue_depth as usize);
     for _ in 0..queue_depth {
-        check_next_batch_block(&spans, &mut next_batch_block);
-        let Some(block_number) = next_batch_block else {
+        let before = futures.len();
+        queue_next_backfill_block(&mut futures, &spans, &mut next_batch_block, &indexer);
+        if futures.len() == before {
             break;
-        };
-        futures.push(Box::pin(indexer.index_block(block_number)));
-        debug!(
-            "⬆️  Queued #{}",
-            block_number.to_formatted_string(&Locale::en)
-        );
-        next_batch_block = prev_block(block_number);
+        }
     }
 
     let mut orphans: AHashMap<u32, ()> = AHashMap::new();
@@ -853,7 +889,13 @@ pub async fn run_indexer(
             result = &mut head_sub_future => {
                 let block_number = result?;
                 latest_seen_head = latest_seen_head.max(block_number);
-                queue_head_blocks!();
+                queue_head_blocks(
+                    &mut head_futures,
+                    queue_depth,
+                    &mut next_head_to_queue,
+                    latest_seen_head,
+                    &indexer,
+                );
                 drop(head_sub_future);
                 head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
             }
@@ -870,7 +912,13 @@ pub async fn run_indexer(
                     result,
                 )?;
                 drop(head_futures.swap_remove(idx));
-                queue_head_blocks!();
+                queue_head_blocks(
+                    &mut head_futures,
+                    queue_depth,
+                    &mut next_head_to_queue,
+                    latest_seen_head,
+                    &indexer,
+                );
             }
 
             _ = interval.tick() => {
@@ -938,13 +986,8 @@ pub async fn run_indexer(
                         continue;
                     }
                 }
-                check_next_batch_block(&spans, &mut next_batch_block);
-                if let Some(block_number) = next_batch_block {
-                    futures[idx] = Box::pin(indexer.index_block(block_number));
-                    next_batch_block = prev_block(block_number);
-                } else {
-                    drop(futures.swap_remove(idx));
-                }
+                drop(futures.swap_remove(idx));
+                queue_next_backfill_block(&mut futures, &spans, &mut next_batch_block, &indexer);
             }
         }
     }

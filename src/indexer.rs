@@ -732,14 +732,6 @@ fn next_live_head_to_queue(current_span: &Span) -> u32 {
     current_span.end.saturating_add(1)
 }
 
-fn startup_mode_summary(next_batch_block: u32, next_live_head_to_queue: u32) -> String {
-    format!(
-        "📚 Backfill anchor #{}; concurrently tailing live head from #{}",
-        next_batch_block.to_formatted_string(&Locale::en),
-        next_live_head_to_queue.to_formatted_string(&Locale::en),
-    )
-}
-
 fn advance_backfill_start(
     current_span: &mut Span,
     spans: &mut Vec<Span>,
@@ -873,42 +865,6 @@ pub async fn run_indexer(
 
     let mut spans = load_spans(&trees.span, &config.versions, index_variant, store_events)?;
 
-    let mut current_span = if let Some(span) = spans
-        .last()
-        .filter(|s| Some(s.end) == next_batch_block)
-    {
-        let span = span.clone();
-        info!(
-            "📚 Resuming span #{} to #{}",
-            span.start.to_formatted_string(&Locale::en),
-            span.end.to_formatted_string(&Locale::en)
-        );
-        trees.span.remove(span.end.to_be_bytes())?;
-        spans.pop();
-        next_batch_block = prev_block(span.start);
-        span
-    } else {
-        Span {
-            start: next_batch_block.unwrap() + 1,
-            end: next_batch_block.unwrap() + 1,
-        }
-    };
-
-    let next_live_head_to_queue = next_live_head_to_queue(&current_span);
-
-    info!("{}", startup_mode_summary(next_batch_block.unwrap(), next_live_head_to_queue));
-
-    info!(
-        "📚 Startup state: current span #{} to #{}, next backfill #{}, next live head #{}, previous spans {}",
-        current_span.start.to_formatted_string(&Locale::en),
-        current_span.end.to_formatted_string(&Locale::en),
-        next_batch_block
-            .map(|n| n.to_formatted_string(&Locale::en).to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        next_live_head_to_queue.to_formatted_string(&Locale::en),
-        spans.len().to_formatted_string(&Locale::en),
-    );
-
     let indexer = Indexer::new(
         trees.clone(),
         api,
@@ -918,8 +874,53 @@ pub async fn run_indexer(
         &config,
     );
 
+    let mut current_span = if let Some(span) = spans
+        .last()
+        .filter(|s| Some(s.end) == next_batch_block)
+    {
+        let span = span.clone();
+        trees.span.remove(span.end.to_be_bytes())?;
+        spans.pop();
+        next_batch_block = prev_block(span.start);
+        info!(
+            "📚 Resuming span #{} to #{}; backfilling from #{}, tailing new blocks from #{}",
+            span.start.to_formatted_string(&Locale::en),
+            span.end.to_formatted_string(&Locale::en),
+            next_batch_block
+                .map(|n| n.to_formatted_string(&Locale::en))
+                .unwrap_or_else(|| "none".to_string()),
+            next_live_head_to_queue(&span).to_formatted_string(&Locale::en),
+        );
+        span
+    } else {
+        let chain_head = next_batch_block.unwrap();
+        indexer.index_block(chain_head).await?;
+        let span = Span {
+            start: chain_head,
+            end: chain_head,
+        };
+        next_batch_block = prev_block(chain_head);
+        info!(
+            "📚 Indexed chain head #{}; backfilling to genesis, tailing new blocks from #{}",
+            chain_head.to_formatted_string(&Locale::en),
+            next_live_head_to_queue(&span).to_formatted_string(&Locale::en),
+        );
+        span
+    };
+
+    debug!(
+        "📚 Startup state: current span #{} to #{}, next backfill #{}, next live head #{}, previous spans {}",
+        current_span.start.to_formatted_string(&Locale::en),
+        current_span.end.to_formatted_string(&Locale::en),
+        next_batch_block
+            .map(|n| n.to_formatted_string(&Locale::en).to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        next_live_head_to_queue(&current_span).to_formatted_string(&Locale::en),
+        spans.len().to_formatted_string(&Locale::en),
+    );
+
     let mut latest_seen_head = current_span.end;
-    let mut next_head_to_queue = next_live_head_to_queue;
+    let mut next_head_to_queue = next_live_head_to_queue(&current_span);
     let mut head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
     let mut head_futures = Vec::with_capacity(queue_depth as usize);
     let mut head_orphans: AHashMap<u32, (u32, u32)> = AHashMap::new();
@@ -1379,14 +1380,6 @@ mod tests {
         let current = Span { start: 100, end: 250 };
 
         assert_eq!(next_live_head_to_queue(&current), 251);
-    }
-
-    #[test]
-    fn startup_mode_summary_describes_concurrent_anchor_and_live_head() {
-        assert_eq!(
-            startup_mode_summary(2_504, 2_506),
-            "📚 Backfill anchor #2,504; concurrently tailing live head from #2,506"
-        );
     }
 
     #[test]

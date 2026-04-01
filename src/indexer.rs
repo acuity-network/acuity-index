@@ -643,17 +643,22 @@ fn save_current_span(
     store_events: bool,
 ) -> Result<(), IndexError> {
     if current_span.start != current_span.end {
+        let persisted_start = current_span.start.max(1);
+        let persisted_span = Span {
+            start: persisted_start,
+            end: current_span.end,
+        };
         save_span(
             &trees.span,
-            current_span,
+            &persisted_span,
             versions_len,
             index_variant,
             store_events,
         )?;
         info!(
             "📚 Saved span #{} to #{}",
-            current_span.start.to_formatted_string(&Locale::en),
-            current_span.end.to_formatted_string(&Locale::en),
+            persisted_span.start.to_formatted_string(&Locale::en),
+            persisted_span.end.to_formatted_string(&Locale::en),
         );
     }
     Ok(())
@@ -693,7 +698,10 @@ fn queue_head_blocks<'a>(
     while head_futures.len() < queue_depth as usize && *next_head_to_queue <= latest_seen_head {
         let block_number = *next_head_to_queue;
         head_futures.push(Box::pin(indexer.index_block(block_number)));
-        debug!("⬆️  Queued head #{}", block_number.to_formatted_string(&Locale::en));
+        debug!(
+            "⬆️  Queued live head #{}",
+            block_number.to_formatted_string(&Locale::en)
+        );
         *next_head_to_queue += 1;
     }
 }
@@ -708,9 +716,58 @@ fn queue_next_backfill_block<'a>(
     let Some(block_number) = *next_batch_block else {
         return;
     };
+    if block_number == 0 {
+        *next_batch_block = None;
+        return;
+    }
     futures.push(Box::pin(indexer.index_block(block_number)));
-    debug!("⬆️  Queued #{}", block_number.to_formatted_string(&Locale::en));
+    debug!(
+        "⬇️  Queued backfill #{}",
+        block_number.to_formatted_string(&Locale::en)
+    );
     *next_batch_block = prev_block(block_number);
+}
+
+fn next_live_head_to_queue(current_span: &Span) -> u32 {
+    current_span.end.saturating_add(1)
+}
+
+fn startup_mode_summary(next_batch_block: u32, next_live_head_to_queue: u32) -> String {
+    format!(
+        "📚 Backfill anchor #{}; concurrently tailing live head from #{}",
+        next_batch_block.to_formatted_string(&Locale::en),
+        next_live_head_to_queue.to_formatted_string(&Locale::en),
+    )
+}
+
+fn advance_backfill_start(
+    current_span: &mut Span,
+    spans: &mut Vec<Span>,
+    span_db: &Tree,
+    orphans: &mut AHashMap<u32, ()>,
+    block_number: u32,
+) -> Result<bool, IndexError> {
+    if prev_block(current_span.start) != Some(block_number) {
+        if block_number == 0 {
+            return Ok(true);
+        }
+        orphans.insert(block_number, ());
+        return Ok(false);
+    }
+
+    current_span.start = block_number;
+    check_span(span_db, spans, current_span)?;
+
+    while let Some(prev_start) = prev_block(current_span.start) {
+        if !orphans.contains_key(&prev_start) {
+            break;
+        }
+        current_span.start = prev_start;
+        orphans.remove(&current_span.start);
+        check_span(span_db, spans, current_span)?;
+    }
+
+    Ok(current_span.start == 1)
 }
 
 fn process_queued_head_result(
@@ -740,7 +797,7 @@ fn process_queued_head_result(
                     store_events,
                 )?;
                 info!(
-                    "✨ #{}: {} events, {} keys",
+                    "✨ Live head #{}: {} events, {} keys",
                     next_block.to_formatted_string(&Locale::en),
                     events.to_formatted_string(&Locale::en),
                     keys.to_formatted_string(&Locale::en),
@@ -791,26 +848,28 @@ pub async fn run_indexer(
 
     let versions_len = config.versions.len();
 
+    let mut next_batch_block: Option<u32> = Some(if finalized {
+        let finalized_hash = rpc.chain_get_finalized_head().await?;
+        rpc.chain_get_header(Some(finalized_hash))
+            .await?
+            .ok_or(IndexError::BlockNotFound(0))?
+            .number
+            .try_into()
+            .unwrap()
+    } else {
+        rpc.chain_get_header(None)
+            .await?
+            .ok_or(IndexError::BlockNotFound(0))?
+            .number
+            .try_into()
+            .unwrap()
+    });
+
     let mut blocks_sub = if finalized {
         api.stream_blocks().await
     } else {
         api.stream_best_blocks().await
     }?;
-
-    let mut next_batch_block: Option<u32> = Some(
-        blocks_sub
-        .next()
-        .await
-        .ok_or(IndexError::BlockNotFound(0))??
-        .number()
-        .try_into()
-        .unwrap(),
-    );
-
-    info!(
-        "📚 Indexing backwards from #{}",
-        next_batch_block.unwrap().to_formatted_string(&Locale::en)
-    );
 
     let mut spans = load_spans(&trees.span, &config.versions, index_variant, store_events)?;
 
@@ -835,6 +894,21 @@ pub async fn run_indexer(
         }
     };
 
+    let next_live_head_to_queue = next_live_head_to_queue(&current_span);
+
+    info!("{}", startup_mode_summary(next_batch_block.unwrap(), next_live_head_to_queue));
+
+    info!(
+        "📚 Startup state: current span #{} to #{}, next backfill #{}, next live head #{}, previous spans {}",
+        current_span.start.to_formatted_string(&Locale::en),
+        current_span.end.to_formatted_string(&Locale::en),
+        next_batch_block
+            .map(|n| n.to_formatted_string(&Locale::en).to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        next_live_head_to_queue.to_formatted_string(&Locale::en),
+        spans.len().to_formatted_string(&Locale::en),
+    );
+
     let indexer = Indexer::new(
         trees.clone(),
         api,
@@ -845,7 +919,7 @@ pub async fn run_indexer(
     );
 
     let mut latest_seen_head = current_span.end;
-    let mut next_head_to_queue = current_span.end.saturating_add(1);
+    let mut next_head_to_queue = next_live_head_to_queue;
     let mut head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
     let mut head_futures = Vec::with_capacity(queue_depth as usize);
     let mut head_orphans: AHashMap<u32, (u32, u32)> = AHashMap::new();
@@ -929,8 +1003,13 @@ pub async fn run_indexer(
                         u128::from(n) * 1_000_000 / micros
                     };
                     info!(
-                        "📚 #{}: {}/s blocks, {}/s events, {}/s keys",
-                        current_span.start.to_formatted_string(&Locale::en),
+                        "📚 Backfill {} (live end #{}): {}/s blocks, {}/s events, {}/s keys",
+                        if next_batch_block.is_none() {
+                            "complete".to_string()
+                        } else {
+                            format!("from #{}", current_span.start.to_formatted_string(&Locale::en))
+                        },
+                        current_span.end.to_formatted_string(&Locale::en),
                         rate(stats_blocks).to_formatted_string(&Locale::en),
                         rate(stats_events).to_formatted_string(&Locale::en),
                         rate(stats_keys).to_formatted_string(&Locale::en),
@@ -945,32 +1024,31 @@ pub async fn run_indexer(
             (result, idx, _) = async { future::select_all(&mut futures).await }, if !futures.is_empty() => {
                 match result {
                     Ok((block_number, event_count, key_count)) => {
-                        if prev_block(current_span.start) == Some(block_number) {
-                            current_span.start = block_number;
-                            debug!(
-                                "⬇️  #{} indexed",
-                                block_number.to_formatted_string(&Locale::en)
-                            );
-                            check_span(
-                                &trees.span,
-                                &mut spans,
-                                &mut current_span,
-                            )?;
-                            while let Some(prev_start) = prev_block(current_span.start) {
-                                if !orphans.contains_key(&prev_start) {
-                                    break;
-                                }
-                                current_span.start = prev_start;
-                                orphans.remove(&current_span.start);
-                                check_span(
-                                    &trees.span,
-                                    &mut spans,
-                                    &mut current_span,
-                                )?;
-                            }
-                        } else {
-                            orphans.insert(block_number, ());
+                        if block_number == 0 {
+                            next_batch_block = None;
+                            continue;
                         }
+                        let reached_genesis = advance_backfill_start(
+                            &mut current_span,
+                            &mut spans,
+                            &trees.span,
+                            &mut orphans,
+                            block_number,
+                        )?;
+                        if reached_genesis {
+                            next_batch_block = None;
+                            info!(
+                                "📚 Genesis reached: indexed span #{} to #{}",
+                                current_span.start.to_formatted_string(&Locale::en),
+                                current_span.end.to_formatted_string(&Locale::en),
+                            );
+                        }
+                        debug!(
+                            "📚 Backfill #{}: {} events, {} keys",
+                            block_number.to_formatted_string(&Locale::en),
+                            event_count.to_formatted_string(&Locale::en),
+                            key_count.to_formatted_string(&Locale::en)
+                        );
                         stats_blocks += 1;
                         stats_events += event_count;
                         stats_keys += key_count;
@@ -1285,6 +1363,33 @@ mod tests {
     }
 
     #[test]
+    fn save_current_span_normalizes_zero_start_to_one() {
+        let trees = temp_trees();
+        let current = Span { start: 0, end: 25 };
+
+        save_current_span(&trees, &current, 2, true, true).unwrap();
+
+        let bytes = trees.span.get(25u32.to_be_bytes()).unwrap().unwrap();
+        let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
+        assert_eq!(u32::from(saved.start), 1);
+    }
+
+    #[test]
+    fn next_live_head_to_queue_starts_after_current_end() {
+        let current = Span { start: 100, end: 250 };
+
+        assert_eq!(next_live_head_to_queue(&current), 251);
+    }
+
+    #[test]
+    fn startup_mode_summary_describes_concurrent_anchor_and_live_head() {
+        assert_eq!(
+            startup_mode_summary(2_504, 2_506),
+            "📚 Backfill anchor #2,504; concurrently tailing live head from #2,506"
+        );
+    }
+
+    #[test]
     fn process_queued_head_result_advances_contiguously() {
         let trees = temp_trees();
         let indexer = test_indexer(trees.clone(), true);
@@ -1385,6 +1490,41 @@ mod tests {
         ));
         assert_eq!(current_span.end, 30);
         assert!(head_orphans.is_empty());
+    }
+
+    #[test]
+    fn advance_backfill_start_marks_completion_at_block_one() {
+        let trees = temp_trees();
+        let mut spans = Vec::new();
+        let mut current_span = Span { start: 2, end: 10 };
+        let mut orphans = AHashMap::new();
+
+        let reached_genesis = advance_backfill_start(
+            &mut current_span,
+            &mut spans,
+            &trees.span,
+            &mut orphans,
+            1,
+        )
+        .unwrap();
+
+        assert!(reached_genesis);
+        assert_eq!(current_span.start, 1);
+        assert!(orphans.is_empty());
+    }
+
+    #[test]
+    fn queue_next_backfill_block_skips_block_zero() {
+        let trees = temp_trees();
+        let indexer = test_indexer(trees, true);
+        let mut futures = Vec::new();
+        let spans = Vec::new();
+        let mut next_batch_block = Some(0);
+
+        queue_next_backfill_block(&mut futures, &spans, &mut next_batch_block, &indexer);
+
+        assert!(futures.is_empty());
+        assert_eq!(next_batch_block, None);
     }
 
     #[test]

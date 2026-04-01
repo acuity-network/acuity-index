@@ -477,25 +477,41 @@ revision_id = "u32"
     #[test]
     fn check_next_batch_block_skips_spans() {
         let spans = vec![Span { start: 10, end: 20 }, Span { start: 30, end: 40 }];
-        let mut next = 35u32;
+        let mut next = Some(35u32);
         check_next_batch_block(&spans, &mut next);
-        assert_eq!(next, 29);
+        assert_eq!(next, Some(29));
     }
 
     #[test]
     fn check_next_batch_block_no_overlap() {
         let spans = vec![Span { start: 10, end: 20 }];
-        let mut next = 25u32;
+        let mut next = Some(25u32);
         check_next_batch_block(&spans, &mut next);
-        assert_eq!(next, 25); // unchanged
+        assert_eq!(next, Some(25)); // unchanged
     }
 
     #[test]
     fn check_next_batch_block_multiple_overlaps() {
         let spans = vec![Span { start: 5, end: 10 }, Span { start: 11, end: 20 }];
-        let mut next = 15u32;
+        let mut next = Some(15u32);
         check_next_batch_block(&spans, &mut next);
-        assert_eq!(next, 4);
+        assert_eq!(next, Some(4));
+    }
+
+    #[test]
+    fn check_next_batch_block_skips_to_none_at_zero() {
+        let spans = vec![Span { start: 0, end: 4 }];
+        let mut next = Some(3u32);
+        check_next_batch_block(&spans, &mut next);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn check_next_batch_block_preserves_none() {
+        let spans = vec![Span { start: 0, end: 4 }];
+        let mut next = None;
+        check_next_batch_block(&spans, &mut next);
+        assert_eq!(next, None);
     }
 
     #[test]
@@ -530,6 +546,17 @@ revision_id = "u32"
 
         check_span(&trees.span, &mut spans, &mut current).unwrap();
         assert_eq!(current.start, 25);
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn check_span_does_not_underflow_at_zero() {
+        let trees = temp_trees();
+        let mut spans = vec![Span { start: 0, end: 0 }];
+        let mut current = Span { start: 0, end: 5 };
+
+        check_span(&trees.span, &mut spans, &mut current).unwrap();
+        assert_eq!(current.start, 0);
         assert_eq!(spans.len(), 1);
     }
 

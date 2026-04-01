@@ -6,7 +6,7 @@ use num_format::{Locale, ToFormattedString};
 use scale_value::{Composite, Value, ValueDef};
 use serde_json::json;
 use sled::Tree;
-use std::{collections::HashMap, future::Future, sync::Mutex};
+use std::{collections::HashMap, sync::Mutex};
 use subxt::{
     OnlineClient, PolkadotConfig, client::Block, config::RpcConfigFor,
     rpcs::methods::legacy::LegacyRpcMethods,
@@ -577,17 +577,21 @@ pub fn check_span(
     current_span: &mut Span,
 ) -> Result<(), IndexError> {
     while let Some(span) = spans.last() {
-        if current_span.start > span.start && current_span.start - 1 <= span.end {
-            let skipped = span.end - span.start + 1;
-            info!(
-                "📚 Skipping {} blocks #{} to #{}",
-                skipped.to_formatted_string(&Locale::en),
-                span.start.to_formatted_string(&Locale::en),
-                span.end.to_formatted_string(&Locale::en),
-            );
-            current_span.start = span.start;
-            span_db.remove(span.end.to_be_bytes())?;
-            spans.pop();
+        if let Some(prev_start) = prev_block(current_span.start) {
+            if current_span.start > span.start && prev_start <= span.end {
+                let skipped = span.end - span.start + 1;
+                info!(
+                    "📚 Skipping {} blocks #{} to #{}",
+                    skipped.to_formatted_string(&Locale::en),
+                    span.start.to_formatted_string(&Locale::en),
+                    span.end.to_formatted_string(&Locale::en),
+                );
+                current_span.start = span.start;
+                span_db.remove(span.end.to_be_bytes())?;
+                spans.pop();
+            } else {
+                break;
+            }
         } else {
             break;
         }
@@ -595,12 +599,19 @@ pub fn check_span(
     Ok(())
 }
 
-pub fn check_next_batch_block(spans: &[Span], next: &mut u32) {
+fn prev_block(block_number: u32) -> Option<u32> {
+    block_number.checked_sub(1)
+}
+
+pub fn check_next_batch_block(spans: &[Span], next: &mut Option<u32>) {
     let mut i = spans.len();
     while i != 0 {
         i -= 1;
-        if *next >= spans[i].start && *next <= spans[i].end {
-            *next = spans[i].start - 1;
+        let Some(block_number) = *next else {
+            break;
+        };
+        if block_number >= spans[i].start && block_number <= spans[i].end {
+            *next = prev_block(spans[i].start);
         }
     }
 }
@@ -619,6 +630,65 @@ fn save_span(
         store_events: u8::from(store_events),
     };
     span_db.insert(span.end.to_be_bytes(), value.as_bytes())?;
+    Ok(())
+}
+
+fn save_current_span(
+    trees: &Trees,
+    current_span: &Span,
+    versions_len: usize,
+    index_variant: bool,
+    store_events: bool,
+) -> Result<(), IndexError> {
+    if current_span.start != current_span.end {
+        save_span(
+            &trees.span,
+            current_span,
+            versions_len,
+            index_variant,
+            store_events,
+        )?;
+        info!(
+            "📚 Saved span #{} to #{}",
+            current_span.start.to_formatted_string(&Locale::en),
+            current_span.end.to_formatted_string(&Locale::en),
+        );
+    }
+    Ok(())
+}
+
+fn process_head_result(
+    trees: &Trees,
+    current_span: &mut Span,
+    versions_len: usize,
+    index_variant: bool,
+    store_events: bool,
+    indexer: &Indexer,
+    result: Result<(u32, u32, u32), IndexError>,
+) -> Result<(), IndexError> {
+    match result {
+        Ok((block_number, event_count, key_count)) => {
+            trees.span.remove(current_span.end.to_be_bytes())?;
+            current_span.end = block_number;
+            save_span(
+                &trees.span,
+                current_span,
+                versions_len,
+                index_variant,
+                store_events,
+            )?;
+            info!(
+                "✨ #{}: {} events, {} keys",
+                block_number.to_formatted_string(&Locale::en),
+                event_count.to_formatted_string(&Locale::en),
+                key_count.to_formatted_string(&Locale::en),
+            );
+            indexer.notify_status_subscribers();
+        }
+        Err(err) => {
+            error!("✨ Head indexing error: {err}");
+        }
+    }
     Ok(())
 }
 
@@ -657,22 +727,27 @@ pub async fn run_indexer(
         api.stream_best_blocks().await
     }?;
 
-    let mut next_batch_block: u32 = blocks_sub
+    let mut next_batch_block: Option<u32> = Some(
+        blocks_sub
         .next()
         .await
         .ok_or(IndexError::BlockNotFound(0))??
         .number()
         .try_into()
-        .unwrap();
+        .unwrap(),
+    );
 
     info!(
         "📚 Indexing backwards from #{}",
-        next_batch_block.to_formatted_string(&Locale::en)
+        next_batch_block.unwrap().to_formatted_string(&Locale::en)
     );
 
     let mut spans = load_spans(&trees.span, &config.versions, index_variant, store_events)?;
 
-    let mut current_span = if let Some(span) = spans.last().filter(|s| s.end == next_batch_block) {
+    let mut current_span = if let Some(span) = spans
+        .last()
+        .filter(|s| Some(s.end) == next_batch_block)
+    {
         let span = span.clone();
         info!(
             "📚 Resuming span #{} to #{}",
@@ -681,12 +756,12 @@ pub async fn run_indexer(
         );
         trees.span.remove(span.end.to_be_bytes())?;
         spans.pop();
-        next_batch_block = span.start - 1;
+        next_batch_block = prev_block(span.start);
         span
     } else {
         Span {
-            start: next_batch_block + 1,
-            end: next_batch_block + 1,
+            start: next_batch_block.unwrap() + 1,
+            end: next_batch_block.unwrap() + 1,
         }
     };
 
@@ -704,12 +779,15 @@ pub async fn run_indexer(
     let mut futures = Vec::with_capacity(queue_depth as usize);
     for _ in 0..queue_depth {
         check_next_batch_block(&spans, &mut next_batch_block);
-        futures.push(Box::pin(indexer.index_block(next_batch_block)));
+        let Some(block_number) = next_batch_block else {
+            break;
+        };
+        futures.push(Box::pin(indexer.index_block(block_number)));
         debug!(
             "⬆️  Queued #{}",
-            next_batch_block.to_formatted_string(&Locale::en)
+            block_number.to_formatted_string(&Locale::en)
         );
-        next_batch_block -= 1;
+        next_batch_block = prev_block(block_number);
     }
 
     let mut orphans: AHashMap<u32, ()> = AHashMap::new();
@@ -720,136 +798,146 @@ pub async fn run_indexer(
     let interval_dur = Duration::from_millis(2000);
     let mut interval = time::interval_at(Instant::now() + interval_dur, interval_dur);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut is_batching = true;
-
     loop {
-        tokio::select! {
-            biased;
+        if futures.is_empty() {
+            tokio::select! {
+                biased;
 
-            _ = exit_rx.changed() => {
-                if current_span.start != current_span.end {
-                    save_span(
-                        &trees.span,
+                _ = exit_rx.changed() => {
+                    save_current_span(
+                        &trees,
                         &current_span,
                         versions_len,
                         index_variant,
                         store_events,
                     )?;
-                    info!(
-                        "📚 Saved span #{} to #{}",
-                        current_span.start.to_formatted_string(&Locale::en),
-                        current_span.end.to_formatted_string(&Locale::en),
-                    );
+                    return Ok(());
                 }
-                return Ok(());
-            }
 
-            Some(msg) = sub_rx.recv() => {
-                process_sub_msg(&indexer, msg);
-            }
+                Some(msg) = sub_rx.recv() => {
+                    process_sub_msg(&indexer, msg);
+                }
 
-            result = &mut head_future => {
-                match result {
-                    Ok((block_number, event_count, key_count)) => {
-                        trees.span.remove(current_span.end.to_be_bytes())?;
-                        current_span.end = block_number;
-                        save_span(
-                            &trees.span,
-                            &current_span,
-                            versions_len,
-                            index_variant,
-                            store_events,
-                        )?;
+                result = &mut head_future => {
+                    process_head_result(
+                        &trees,
+                        &mut current_span,
+                        versions_len,
+                        index_variant,
+                        store_events,
+                        &indexer,
+                        result,
+                    )?;
+                    drop(head_future);
+                    head_future = Box::pin(indexer.index_head(blocks_sub.next()));
+                }
+            }
+        } else {
+            tokio::select! {
+                biased;
+
+                _ = exit_rx.changed() => {
+                    save_current_span(
+                        &trees,
+                        &current_span,
+                        versions_len,
+                        index_variant,
+                        store_events,
+                    )?;
+                    return Ok(());
+                }
+
+                Some(msg) = sub_rx.recv() => {
+                    process_sub_msg(&indexer, msg);
+                }
+
+                result = &mut head_future => {
+                    process_head_result(
+                        &trees,
+                        &mut current_span,
+                        versions_len,
+                        index_variant,
+                        store_events,
+                        &indexer,
+                        result,
+                    )?;
+                    drop(head_future);
+                    head_future = Box::pin(indexer.index_head(blocks_sub.next()));
+                }
+
+                _ = interval.tick() => {
+                    let now = Instant::now();
+                    let micros = now.duration_since(stats_start).as_micros();
+                    if micros != 0 {
+                        let rate = |n: u32| -> u128 {
+                            u128::from(n) * 1_000_000 / micros
+                        };
                         info!(
-                            "✨ #{}: {} events, {} keys",
-                            block_number.to_formatted_string(&Locale::en),
-                            event_count.to_formatted_string(&Locale::en),
-                            key_count.to_formatted_string(&Locale::en),
-                        );
-                        indexer.notify_status_subscribers();
-                        drop(head_future);
-                        head_future = Box::pin(
-                            indexer.index_head(blocks_sub.next())
+                            "📚 #{}: {}/s blocks, {}/s events, {}/s keys",
+                            current_span.start.to_formatted_string(&Locale::en),
+                            rate(stats_blocks).to_formatted_string(&Locale::en),
+                            rate(stats_events).to_formatted_string(&Locale::en),
+                            rate(stats_keys).to_formatted_string(&Locale::en),
                         );
                     }
-                    Err(err) => {
-                        error!("✨ Head indexing error: {err}");
-                        drop(head_future);
-                        head_future = Box::pin(
-                            indexer.index_head(blocks_sub.next())
-                        );
-                    }
+                    stats_blocks = 0;
+                    stats_events = 0;
+                    stats_keys = 0;
+                    stats_start = now;
                 }
-            }
 
-            _ = interval.tick(), if is_batching => {
-                let now = Instant::now();
-                let micros = now.duration_since(stats_start).as_micros();
-                if micros != 0 {
-                    let rate = |n: u32| -> u128 {
-                        u128::from(n) * 1_000_000 / micros
-                    };
-                    info!(
-                        "📚 #{}: {}/s blocks, {}/s events, {}/s keys",
-                        current_span.start.to_formatted_string(&Locale::en),
-                        rate(stats_blocks).to_formatted_string(&Locale::en),
-                        rate(stats_events).to_formatted_string(&Locale::en),
-                        rate(stats_keys).to_formatted_string(&Locale::en),
-                    );
-                }
-                stats_blocks = 0;
-                stats_events = 0;
-                stats_keys = 0;
-                stats_start = now;
-            }
-
-            (result, idx, _) = future::select_all(&mut futures),
-                if is_batching =>
-            {
-                match result {
-                    Ok((block_number, event_count, key_count)) => {
-                        if block_number == current_span.start - 1 {
-                            current_span.start = block_number;
-                            debug!(
-                                "⬇️  #{} indexed",
-                                block_number.to_formatted_string(&Locale::en)
-                            );
-                            check_span(
-                                &trees.span,
-                                &mut spans,
-                                &mut current_span,
-                            )?;
-                            while orphans
-                                .contains_key(&(current_span.start - 1))
-                            {
-                                current_span.start -= 1;
-                                orphans.remove(&current_span.start);
+                (result, idx, _) = future::select_all(&mut futures) => {
+                    match result {
+                        Ok((block_number, event_count, key_count)) => {
+                            if prev_block(current_span.start) == Some(block_number) {
+                                current_span.start = block_number;
+                                debug!(
+                                    "⬇️  #{} indexed",
+                                    block_number.to_formatted_string(&Locale::en)
+                                );
                                 check_span(
                                     &trees.span,
                                     &mut spans,
                                     &mut current_span,
                                 )?;
+                                while let Some(prev_start) = prev_block(current_span.start) {
+                                    if !orphans.contains_key(&prev_start) {
+                                        break;
+                                    }
+                                    current_span.start = prev_start;
+                                    orphans.remove(&current_span.start);
+                                    check_span(
+                                        &trees.span,
+                                        &mut spans,
+                                        &mut current_span,
+                                    )?;
+                                }
+                            } else {
+                                orphans.insert(block_number, ());
                             }
-                        } else {
-                            orphans.insert(block_number, ());
+                            stats_blocks += 1;
+                            stats_events += event_count;
+                            stats_keys += key_count;
                         }
-                        stats_blocks += 1;
-                        stats_events += event_count;
-                        stats_keys += key_count;
+                        Err(IndexError::BlockNotFound(n)) => {
+                            error!("📚 Block not found #{n}");
+                            futures.clear();
+                            continue;
+                        }
+                        Err(err) => {
+                            error!("📚 Batch error: {err:?}");
+                            futures.clear();
+                            continue;
+                        }
                     }
-                    Err(IndexError::BlockNotFound(n)) => {
-                        error!("📚 Block not found #{n}");
-                        is_batching = false;
-                    }
-                    Err(err) => {
-                        error!("📚 Batch error: {err:?}");
-                        is_batching = false;
+                    check_next_batch_block(&spans, &mut next_batch_block);
+                    if let Some(block_number) = next_batch_block {
+                        futures[idx] = Box::pin(indexer.index_block(block_number));
+                        next_batch_block = prev_block(block_number);
+                    } else {
+                        drop(futures.swap_remove(idx));
                     }
                 }
-                check_next_batch_block(&spans, &mut next_batch_block);
-                futures[idx] =
-                    Box::pin(indexer.index_block(next_batch_block));
-                next_batch_block -= 1;
             }
         }
     }

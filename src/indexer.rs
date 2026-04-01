@@ -83,13 +83,11 @@ impl Indexer {
 
     // ─── Block indexing ───────────────────────────────────────────────────────
 
-    pub async fn index_head(
-        &self,
+    pub async fn next_head_block_number(
         next: impl Future<Output = Option<Result<Block<PolkadotConfig>, subxt::error::BlocksError>>>,
-    ) -> Result<(u32, u32, u32), IndexError> {
+    ) -> Result<u32, IndexError> {
         let block = next.await.unwrap()?;
-        let block_number: u32 = block.number().try_into().unwrap();
-        self.index_block(block_number).await
+        Ok(block.number().try_into().unwrap())
     }
 
     pub async fn index_block(&self, block_number: u32) -> Result<(u32, u32, u32), IndexError> {
@@ -101,6 +99,10 @@ impl Indexer {
             .chain_get_block_hash(Some(block_number.into()))
             .await?
             .ok_or(IndexError::BlockNotFound(block_number))?;
+
+        if rpc.chain_get_block(Some(block_hash)).await?.is_none() {
+            return Err(IndexError::HistoricalBlockDataUnavailable { block_number });
+        }
 
         let at_block = api.at_block(block_hash).await?;
         let spec = at_block.spec_version();
@@ -657,33 +659,47 @@ fn save_current_span(
     Ok(())
 }
 
-fn process_head_result(
+fn process_queued_head_result(
     trees: &Trees,
     current_span: &mut Span,
     versions_len: usize,
     index_variant: bool,
     store_events: bool,
     indexer: &Indexer,
+    head_orphans: &mut AHashMap<u32, (u32, u32)>,
     result: Result<(u32, u32, u32), IndexError>,
 ) -> Result<(), IndexError> {
     match result {
         Ok((block_number, event_count, key_count)) => {
-            trees.span.remove(current_span.end.to_be_bytes())?;
-            current_span.end = block_number;
-            save_span(
-                &trees.span,
-                current_span,
-                versions_len,
-                index_variant,
-                store_events,
-            )?;
-            info!(
-                "✨ #{}: {} events, {} keys",
-                block_number.to_formatted_string(&Locale::en),
-                event_count.to_formatted_string(&Locale::en),
-                key_count.to_formatted_string(&Locale::en),
-            );
-            indexer.notify_status_subscribers();
+            head_orphans.insert(block_number, (event_count, key_count));
+            let mut advanced = false;
+            while let Some(next_block) = current_span.end.checked_add(1) {
+                let Some((events, keys)) = head_orphans.remove(&next_block) else {
+                    break;
+                };
+                trees.span.remove(current_span.end.to_be_bytes())?;
+                current_span.end = next_block;
+                save_span(
+                    &trees.span,
+                    current_span,
+                    versions_len,
+                    index_variant,
+                    store_events,
+                )?;
+                info!(
+                    "✨ #{}: {} events, {} keys",
+                    next_block.to_formatted_string(&Locale::en),
+                    events.to_formatted_string(&Locale::en),
+                    keys.to_formatted_string(&Locale::en),
+                );
+                advanced = true;
+            }
+            if advanced {
+                indexer.notify_status_subscribers();
+            }
+        }
+        Err(IndexError::HistoricalBlockDataUnavailable { block_number }) => {
+            return Err(IndexError::HistoricalBlockDataUnavailable { block_number });
         }
         Err(err) => {
             error!("✨ Head indexing error: {err}");
@@ -774,7 +790,24 @@ pub async fn run_indexer(
         &config,
     );
 
-    let mut head_future = Box::pin(indexer.index_head(blocks_sub.next()));
+    let mut latest_seen_head = current_span.end;
+    let mut next_head_to_queue = current_span.end.saturating_add(1);
+    let mut head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
+    let mut head_futures = Vec::with_capacity(queue_depth as usize);
+    let mut head_orphans: AHashMap<u32, (u32, u32)> = AHashMap::new();
+    macro_rules! queue_head_blocks {
+        () => {
+            while head_futures.len() < queue_depth as usize && next_head_to_queue <= latest_seen_head {
+                let block_number = next_head_to_queue;
+                head_futures.push(Box::pin(indexer.index_block(block_number)));
+                debug!(
+                    "⬆️  Queued head #{}",
+                    block_number.to_formatted_string(&Locale::en)
+                );
+                next_head_to_queue += 1;
+            }
+        };
+    }
 
     let mut futures = Vec::with_capacity(queue_depth as usize);
     for _ in 0..queue_depth {
@@ -818,18 +851,27 @@ pub async fn run_indexer(
                     process_sub_msg(&indexer, msg);
                 }
 
-                result = &mut head_future => {
-                    process_head_result(
+                result = &mut head_sub_future => {
+                    let block_number = result?;
+                    latest_seen_head = latest_seen_head.max(block_number);
+                    queue_head_blocks!();
+                    drop(head_sub_future);
+                    head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
+                }
+
+                (result, idx, _) = future::select_all(&mut head_futures), if !head_futures.is_empty() => {
+                    process_queued_head_result(
                         &trees,
                         &mut current_span,
                         versions_len,
                         index_variant,
                         store_events,
                         &indexer,
+                        &mut head_orphans,
                         result,
                     )?;
-                    drop(head_future);
-                    head_future = Box::pin(indexer.index_head(blocks_sub.next()));
+                    drop(head_futures.swap_remove(idx));
+                    queue_head_blocks!();
                 }
             }
         } else {
@@ -851,18 +893,27 @@ pub async fn run_indexer(
                     process_sub_msg(&indexer, msg);
                 }
 
-                result = &mut head_future => {
-                    process_head_result(
+                result = &mut head_sub_future => {
+                    let block_number = result?;
+                    latest_seen_head = latest_seen_head.max(block_number);
+                    queue_head_blocks!();
+                    drop(head_sub_future);
+                    head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
+                }
+
+                (result, idx, _) = future::select_all(&mut head_futures), if !head_futures.is_empty() => {
+                    process_queued_head_result(
                         &trees,
                         &mut current_span,
                         versions_len,
                         index_variant,
                         store_events,
                         &indexer,
+                        &mut head_orphans,
                         result,
                     )?;
-                    drop(head_future);
-                    head_future = Box::pin(indexer.index_head(blocks_sub.next()));
+                    drop(head_futures.swap_remove(idx));
+                    queue_head_blocks!();
                 }
 
                 _ = interval.tick() => {
@@ -1216,6 +1267,109 @@ mod tests {
         assert_eq!(u16::from(saved.version), 2);
         assert_eq!(saved.index_variant, 1);
         assert_eq!(saved.store_events, 0);
+    }
+
+    #[test]
+    fn process_queued_head_result_advances_contiguously() {
+        let trees = temp_trees();
+        let indexer = test_indexer(trees.clone(), true);
+        let initial = Span { start: 10, end: 10 };
+        save_span(&trees.span, &initial, 1, true, true).unwrap();
+
+        let mut current_span = initial;
+        let mut head_orphans = AHashMap::new();
+        process_queued_head_result(
+            &trees,
+            &mut current_span,
+            1,
+            true,
+            true,
+            &indexer,
+            &mut head_orphans,
+            Ok((11, 2, 3)),
+        )
+        .unwrap();
+
+        assert_eq!(current_span.end, 11);
+        assert!(head_orphans.is_empty());
+
+        let bytes = trees.span.get(11u32.to_be_bytes()).unwrap().unwrap();
+        let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
+        assert_eq!(u32::from(saved.start), 10);
+    }
+
+    #[test]
+    fn process_queued_head_result_buffers_out_of_order_blocks_until_gap_closes() {
+        let trees = temp_trees();
+        let indexer = test_indexer(trees.clone(), true);
+        let initial = Span { start: 20, end: 20 };
+        save_span(&trees.span, &initial, 1, true, true).unwrap();
+
+        let mut current_span = initial;
+        let mut head_orphans = AHashMap::new();
+
+        process_queued_head_result(
+            &trees,
+            &mut current_span,
+            1,
+            true,
+            true,
+            &indexer,
+            &mut head_orphans,
+            Ok((22, 1, 1)),
+        )
+        .unwrap();
+
+        assert_eq!(current_span.end, 20);
+        assert_eq!(head_orphans.get(&22), Some(&(1, 1)));
+
+        process_queued_head_result(
+            &trees,
+            &mut current_span,
+            1,
+            true,
+            true,
+            &indexer,
+            &mut head_orphans,
+            Ok((21, 5, 8)),
+        )
+        .unwrap();
+
+        assert_eq!(current_span.end, 22);
+        assert!(head_orphans.is_empty());
+
+        let bytes = trees.span.get(22u32.to_be_bytes()).unwrap().unwrap();
+        let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
+        assert_eq!(u32::from(saved.start), 20);
+    }
+
+    #[test]
+    fn process_queued_head_result_propagates_unavailable_history_errors() {
+        let trees = temp_trees();
+        let indexer = test_indexer(trees.clone(), true);
+        let initial = Span { start: 30, end: 30 };
+        save_span(&trees.span, &initial, 1, true, true).unwrap();
+
+        let mut current_span = initial;
+        let mut head_orphans = AHashMap::new();
+        let err = process_queued_head_result(
+            &trees,
+            &mut current_span,
+            1,
+            true,
+            true,
+            &indexer,
+            &mut head_orphans,
+            Err(IndexError::HistoricalBlockDataUnavailable { block_number: 31 }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            IndexError::HistoricalBlockDataUnavailable { block_number: 31 }
+        ));
+        assert_eq!(current_span.end, 30);
+        assert!(head_orphans.is_empty());
     }
 
     #[test]

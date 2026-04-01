@@ -26,6 +26,8 @@ pub enum IndexError {
     Hex(#[from] hex::FromHexError),
     #[error("block not found: {0}")]
     BlockNotFound(u32),
+    #[error("historical block data unavailable at #{block_number}; the node may be warp syncing or pruning block bodies")]
+    HistoricalBlockDataUnavailable { block_number: u32 },
     #[error("RPC error")]
     RpcError(#[from] subxt::rpcs::Error),
     #[error("codec error")]

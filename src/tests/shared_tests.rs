@@ -407,6 +407,15 @@ mod shared_tests {
     }
 
     #[test]
+    fn historical_block_data_unavailable_error_mentions_warp_sync_and_block_number() {
+        let err = IndexError::HistoricalBlockDataUnavailable { block_number: 42 };
+        let text = err.to_string();
+
+        assert!(text.contains("#42"));
+        assert!(text.contains("warp syncing"));
+    }
+
+    #[test]
     fn response_events_with_decoded_events_serializes() {
         let msg = ResponseMessage::Events {
             key: Key::Custom(CustomKey {

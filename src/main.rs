@@ -132,7 +132,7 @@ pub struct RunArgs {
     /// URL of Substrate node to connect to
     #[arg(short, long)]
     pub url: Option<String>,
-    /// Maximum number of concurrent block requests
+    /// Maximum number of concurrent block requests for backfill and HEAD catch-up
     #[arg(long, default_value_t = 1)]
     pub queue_depth: u8,
     /// Only index finalized blocks

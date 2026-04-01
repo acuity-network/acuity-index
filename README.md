@@ -13,7 +13,7 @@ indexed data through a WebSocket API.
 - **Resume-safe** — tracks indexed block spans and resumes after restart
 - **Backward indexing** — indexes from the chain tip backwards while simultaneously tracking new blocks
 - **WebSocket API** — query events by key, subscribe to live updates, and inspect chain metadata
-- **Concurrent block fetching** — configurable queue depth for parallel block requests
+- **Concurrent block fetching** — configurable queue depth for parallel backfill and HEAD catch-up requests
 
 ## Supported Chains
 
@@ -54,7 +54,7 @@ acuity-index [OPTIONS]
 | `--db-mode <MODE>` | `low-space` | `low-space` or `high-throughput` |
 | `--db-cache-capacity <SIZE>` | `1024.00 MiB` | Maximum sled page-cache size |
 | `-u, --url <URL>` | Chain default | WebSocket URL of the Substrate node |
-| `--queue-depth <N>` | `1` | Concurrent block requests during batch indexing |
+| `--queue-depth <N>` | `1` | Concurrent block requests during backfill and HEAD catch-up |
 | `-f, --finalized` | `false` | Only index finalized blocks |
 | `-i, --index-variant` | `false` | Also index events by pallet/variant index |
 | `-s, --store-events` | `false` | Store decoded events per `(block_number, event_index)` for retrieval |
@@ -86,6 +86,16 @@ Generate a starter config from a live node:
 ```bash
 acuity-index --url wss://mynode:443 --generate-chain-config ./chains/mychain.toml
 ```
+
+## Syncing And Warp-Synced Nodes
+
+`acuity-index` indexes backwards from the observed tip while also tracking new blocks at the head. When the node is syncing quickly, `--queue-depth` is used for both historical backfill and forward HEAD catch-up so the indexer can catch up instead of processing only one new head block at a time.
+
+The indexer now treats missing historical block bodies as a hard error. If the node can return a block hash but cannot return the block body for that hash, indexing stops with a `HistoricalBlockDataUnavailable` error instead of retrying indefinitely.
+
+This matters for nodes that are still syncing and for nodes started in modes like `warp` or with non-archive pruning, where headers may exist but historical block bodies are unavailable.
+
+For full historical indexing, use a node that can serve historical block bodies for the range you expect to index.
 
 ## Chain Configuration
 

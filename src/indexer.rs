@@ -539,7 +539,7 @@ pub fn load_spans(
     index_variant: bool,
     store_events: bool,
 ) -> Result<Vec<Span>, IndexError> {
-    let mut spans = vec![];
+    let mut spans: Vec<Span> = vec![];
     'span: for (key, value) in span_db.into_iter().flatten() {
         let span_value = SpanDbValue::read_from_bytes(&value).unwrap();
         let start: u32 = span_value.start.into();
@@ -585,13 +585,23 @@ pub fn load_spans(
             }
         }
         let span = Span { start, end };
-        info!(
-            "📚 Previous indexed span #{} to #{}.",
-            start.to_formatted_string(&Locale::en),
-            end.to_formatted_string(&Locale::en)
-        );
+        if let Some(previous) = spans.last_mut() {
+            if span.start <= previous.end.saturating_add(1) {
+                previous.end = previous.end.max(span.end);
+                continue;
+            }
+        }
         spans.push(span);
     }
+
+    for span in &spans {
+        info!(
+            "📚 Previous indexed span #{} to #{}.",
+            span.start.to_formatted_string(&Locale::en),
+            span.end.to_formatted_string(&Locale::en)
+        );
+    }
+
     Ok(spans)
 }
 

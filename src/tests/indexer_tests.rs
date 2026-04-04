@@ -589,6 +589,66 @@ revision_id = "u32"
     }
 
     #[test]
+    fn load_spans_merges_adjacent_spans() {
+        let trees = temp_trees();
+        for (start, end) in [(5u32, 15u32), (16u32, 20u32), (21u32, 24u32)] {
+            let sv = SpanDbValue {
+                start: start.into(),
+                version: 0u16.into(),
+                index_variant: 1,
+                store_events: 1,
+            };
+            trees
+                .span
+                .insert(end.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
+                .unwrap();
+        }
+
+        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
+        assert_eq!(spans, vec![Span { start: 5, end: 24 }]);
+    }
+
+    #[test]
+    fn load_spans_merges_overlapping_spans() {
+        let trees = temp_trees();
+        for (start, end) in [(5u32, 15u32), (10u32, 20u32)] {
+            let sv = SpanDbValue {
+                start: start.into(),
+                version: 0u16.into(),
+                index_variant: 1,
+                store_events: 1,
+            };
+            trees
+                .span
+                .insert(end.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
+                .unwrap();
+        }
+
+        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
+        assert_eq!(spans, vec![Span { start: 5, end: 20 }]);
+    }
+
+    #[test]
+    fn load_spans_keeps_gapped_spans_separate() {
+        let trees = temp_trees();
+        for (start, end) in [(5u32, 15u32), (17u32, 20u32)] {
+            let sv = SpanDbValue {
+                start: start.into(),
+                version: 0u16.into(),
+                index_variant: 1,
+                store_events: 1,
+            };
+            trees
+                .span
+                .insert(end.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
+                .unwrap();
+        }
+
+        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
+        assert_eq!(spans, vec![Span { start: 5, end: 15 }, Span { start: 17, end: 20 }]);
+    }
+
+    #[test]
     fn load_spans_drops_when_variant_indexing_enabled() {
         let trees = temp_trees();
         let sv = SpanDbValue {

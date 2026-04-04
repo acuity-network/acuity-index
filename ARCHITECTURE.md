@@ -139,6 +139,40 @@ Because futures can complete out of order, the code uses orphan maps:
 
 Blocks only extend the active span once continuity is satisfied.
 
+## Catchup With a Rapidly Syncing Node
+
+The indexer does not poll for "am I behind?". Instead the node pushes new block numbers over the WebSocket subscription and the indexer reacts immediately.
+
+### Live-head gap filling
+
+When a new head block is received (`src/indexer.rs:996-1022`), `latest_seen_head` is updated to `max(latest_seen_head, announced_block)`. Then `queue_head_blocks` (`src/indexer.rs:723-738`) fills the live-head queue:
+
+```rust
+while head_futures.len() < queue_depth && *next_head_to_queue <= latest_seen_head {
+    // queue index_block(next_head_to_queue)
+    *next_head_to_queue += 1;
+}
+```
+
+If the node jumps ahead by N blocks (e.g. during warp sync or a burst of finalization), all N blocks are queued immediately, up to `queue_depth` concurrently. The queue is refilled each time a future completes, so the pipeline stays saturated until the gap is closed.
+
+### Out-of-order completion
+
+Concurrent futures may complete out of order. Two orphan maps hold results that arrived early:
+
+- `head_orphans` (`src/indexer.rs:958`) — for live-head results. `process_queued_head_result` (`src/indexer.rs:797-844`) advances `current_span.end` only once the contiguous chain from the previous high-water mark is assembled.
+- `orphans` (`src/indexer.rs:969`) — for backfill results. `advance_backfill_start` (`src/indexer.rs:767-795`) enforces the same contiguity invariant in the descending direction.
+
+Blocks park in the orphan map until their predecessor is confirmed, then the map is drained contiguously.
+
+### Concurrent backfill
+
+While the live-head queue is catching up, the backfill queue descends from the starting head toward genesis at the same time, also running up to `queue_depth` concurrent futures. Already-indexed ranges are skipped by `check_next_batch_block` (`src/indexer.rs:640-651`). When the descending backfill reaches a previously indexed span, `check_span` (`src/indexer.rs:608-634`) merges them.
+
+### Primary tuning lever
+
+`--queue-depth` (`src/main.rs:136-137`, default `1`) controls how many concurrent block-indexing RPC calls are issued for both queues. Increasing it is the main way to speed up catchup against a node that is moving quickly.
+
 ## Span And Resume Semantics
 
 Resume behavior is implemented by the span helpers in `src/indexer.rs`.

@@ -284,7 +284,7 @@ revision_id = "u32"
         indexer.index_event_key(key.clone(), 100, 3).unwrap();
         indexer.index_event_key(key.clone(), 200, 1).unwrap();
 
-        let events = key.get_events(&trees);
+        let events = key.get_events(&trees, None, 100);
         assert_eq!(events.len(), 2);
         // Results come in reverse order (newest first).
         assert_eq!(events[0].block_number, 200);
@@ -300,7 +300,7 @@ revision_id = "u32"
         let key = custom_u32_key("para_id", 2000);
         indexer.index_event_key(key.clone(), 50, 0).unwrap();
 
-        let events = key.get_events(&trees);
+        let events = key.get_events(&trees, None, 100);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].block_number, 50);
         assert_eq!(events[0].event_index, 0);
@@ -331,7 +331,7 @@ revision_id = "u32"
         let key = custom_bytes32_key("item_id", [0x21; 32]);
         indexer.index_event_key(key.clone(), 75, 2).unwrap();
 
-        let events = key.get_events(&trees);
+        let events = key.get_events(&trees, None, 100);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].block_number, 75);
         assert_eq!(events[0].event_index, 2);
@@ -349,7 +349,7 @@ revision_id = "u32"
         });
         indexer.index_event_key(key.clone(), 88, 1).unwrap();
 
-        let events = key.get_events(&trees);
+        let events = key.get_events(&trees, None, 100);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].block_number, 88);
         assert_eq!(events[0].event_index, 1);
@@ -365,7 +365,7 @@ revision_id = "u32"
         indexer.index_event_key(key.clone(), 10, 2).unwrap();
         indexer.index_event_key(key.clone(), 20, 4).unwrap();
 
-        let events = key.get_events(&trees);
+        let events = key.get_events(&trees, None, 100);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].block_number, 20);
         assert_eq!(events[1].block_number, 10);
@@ -382,7 +382,7 @@ revision_id = "u32"
             indexer.index_event_key(key.clone(), i, 0).unwrap();
         }
 
-        let events = key.get_events(&trees);
+        let events = key.get_events(&trees, None, 100);
         assert_eq!(events.len(), 100);
         // Should be the most recent 100.
         assert_eq!(events[0].block_number, 149);
@@ -718,7 +718,7 @@ revision_id = "u32"
         let config = test_config();
         let indexer = Indexer::new_test(trees, &config);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             &indexer,
             SubscriptionMessage::SubscribeStatus { tx: tx.clone() },
@@ -738,7 +738,7 @@ revision_id = "u32"
         let indexer = Indexer::new_test(trees, &config);
 
         let key = builtin_u32_key("ref_index", 42);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(1);
 
         process_sub_msg(
             &indexer,
@@ -751,7 +751,7 @@ revision_id = "u32"
         indexer.index_event_key(key.clone(), 7, 1).unwrap();
         assert!(matches!(
             rx.recv().await,
-            Some(ResponseMessage::Events { .. })
+            Some(NotificationMessage { body: NotificationBody::EventNotification { .. } })
         ));
 
         process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeEvents { key, tx });
@@ -760,6 +760,73 @@ revision_id = "u32"
             .index_event_key(builtin_u32_key("ref_index", 42), 8, 2)
             .unwrap();
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn slow_status_subscriber_is_removed_after_backpressure() {
+        let trees = temp_trees();
+        let config = test_config();
+        let indexer = Indexer::new_test(trees, &config);
+
+        let (tx, mut rx) = mpsc::channel(1);
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeStatus { tx },
+        );
+
+        indexer.notify_status_subscribers();
+        indexer.notify_status_subscribers();
+
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first.body, NotificationBody::Status(_)));
+        assert!(rx.try_recv().is_err());
+
+        indexer.notify_status_subscribers();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn slow_event_subscriber_is_removed_after_backpressure() {
+        let trees = temp_trees();
+        let config = test_config();
+        let indexer = Indexer::new_test(trees, &config);
+
+        let key = builtin_u32_key("ref_index", 42);
+        let (tx, mut rx) = mpsc::channel(1);
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeEvents {
+                key: key.clone(),
+                tx,
+            },
+        );
+
+        indexer.index_event_key(key.clone(), 7, 1).unwrap();
+        indexer.index_event_key(key.clone(), 8, 2).unwrap();
+
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(
+            first.body,
+            NotificationBody::EventNotification { .. }
+        ));
+        assert!(rx.try_recv().is_err());
+
+        indexer.index_event_key(key, 9, 3).unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn termination_notification_serializes() {
+        let msg = NotificationMessage {
+            body: NotificationBody::SubscriptionTerminated {
+                reason: SubscriptionTerminationReason::Backpressure,
+                message: "subscriber disconnected due to backpressure".into(),
+            },
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("subscriptionTerminated"));
+        assert!(json.contains("backpressure"));
     }
 }
 

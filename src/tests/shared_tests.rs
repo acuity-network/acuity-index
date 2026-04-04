@@ -323,7 +323,7 @@ mod shared_tests {
 
         for (i, key) in keys.into_iter().enumerate() {
             key.write_db_key(&trees, 1000 + i as u32, i as u16).unwrap();
-            let events = key.get_events(&trees);
+            let events = key.get_events(&trees, None, 100);
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].block_number, 1000 + i as u32);
             assert_eq!(events[0].event_index, i as u16);
@@ -334,30 +334,38 @@ mod shared_tests {
 
     #[test]
     fn request_status() {
-        let msg: RequestMessage = serde_json::from_str(r#"{"type":"Status"}"#).unwrap();
-        assert!(matches!(msg, RequestMessage::Status));
+        let msg: RequestMessage = serde_json::from_str(r#"{"id":1,"type":"Status"}"#).unwrap();
+        assert_eq!(msg.id, 1);
+        assert!(matches!(msg.body, RequestBody::Status));
     }
 
     #[test]
     fn request_subscribe_status() {
-        let msg: RequestMessage = serde_json::from_str(r#"{"type":"SubscribeStatus"}"#).unwrap();
-        assert!(matches!(msg, RequestMessage::SubscribeStatus));
+        let msg: RequestMessage =
+            serde_json::from_str(r#"{"id":2,"type":"SubscribeStatus"}"#).unwrap();
+        assert_eq!(msg.id, 2);
+        assert!(matches!(msg.body, RequestBody::SubscribeStatus));
     }
 
     #[test]
     fn request_get_events_custom_u32() {
-        let json = r#"{"type":"GetEvents","key":{"type":"Custom","value":{"name":"para_id","kind":"u32","value":2000}}}"#;
+        let json = r#"{"id":3,"type":"GetEvents","key":{"type":"Custom","value":{"name":"para_id","kind":"u32","value":2000}},"limit":25}"#;
         let msg: RequestMessage = serde_json::from_str(json).unwrap();
-        match msg {
-            RequestMessage::GetEvents {
+        assert_eq!(msg.id, 3);
+        match msg.body {
+            RequestBody::GetEvents {
                 key:
                     Key::Custom(CustomKey {
                         name,
                         value: CustomValue::U32(id),
                     }),
+                limit,
+                before,
             } => {
                 assert_eq!(name, "para_id");
-                assert_eq!(id, 2000)
+                assert_eq!(id, 2000);
+                assert_eq!(limit, 25);
+                assert!(before.is_none());
             }
             _ => panic!("wrong variant"),
         }
@@ -367,19 +375,44 @@ mod shared_tests {
     fn request_get_events_account_id() {
         let hex = hex::encode([0xAA; 32]);
         let json = format!(
-            r#"{{"type":"GetEvents","key":{{"type":"Custom","value":{{"name":"account_id","kind":"bytes32","value":"0x{hex}"}}}}}}"#
+            r#"{{"id":4,"type":"GetEvents","key":{{"type":"Custom","value":{{"name":"account_id","kind":"bytes32","value":"0x{hex}"}}}},"before":{{"blockNumber":10,"eventIndex":2}}}}"#
         );
         let msg: RequestMessage = serde_json::from_str(&json).unwrap();
-        match msg {
-            RequestMessage::GetEvents {
+        assert_eq!(msg.id, 4);
+        match msg.body {
+            RequestBody::GetEvents {
                 key:
                     Key::Custom(CustomKey {
                         name,
                         value: CustomValue::Bytes32(b),
                     }),
+                limit,
+                before,
             } => {
                 assert_eq!(name, "account_id");
                 assert_eq!(b.0, [0xAA; 32]);
+                assert_eq!(limit, 100);
+                assert_eq!(
+                    before,
+                    Some(EventRef {
+                        block_number: 10,
+                        event_index: 2,
+                    })
+                );
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn request_get_events_defaults_limit_when_omitted() {
+        let json = r#"{"id":5,"type":"GetEvents","key":{"type":"Custom","value":{"name":"pool_id","kind":"u32","value":9}}}"#;
+        let msg: RequestMessage = serde_json::from_str(json).unwrap();
+
+        match msg.body {
+            RequestBody::GetEvents { limit, before, .. } => {
+                assert_eq!(limit, 100);
+                assert!(before.is_none());
             }
             _ => panic!("wrong variant"),
         }
@@ -417,28 +450,45 @@ mod shared_tests {
 
     #[test]
     fn response_events_with_decoded_events_serializes() {
-        let msg = ResponseMessage::Events {
-            key: Key::Custom(CustomKey {
-                name: "ref_index".into(),
-                value: CustomValue::U32(42),
-            }),
-            events: vec![EventRef {
-                block_number: 10,
-                event_index: 2,
-            }],
-            decoded_events: vec![DecodedEvent {
-                block_number: 10,
-                event_index: 2,
-                event: serde_json::json!({
-                    "specVersion": 1234,
-                    "eventName": "Deposit"
+        let msg = ResponseMessage {
+            id: 7,
+            body: ResponseBody::Events {
+                key: Key::Custom(CustomKey {
+                    name: "ref_index".into(),
+                    value: CustomValue::U32(42),
                 }),
-            }],
+                events: vec![EventRef {
+                    block_number: 10,
+                    event_index: 2,
+                }],
+                decoded_events: vec![DecodedEvent {
+                    block_number: 10,
+                    event_index: 2,
+                    event: serde_json::json!({
+                        "specVersion": 1234,
+                        "eventName": "Deposit"
+                    }),
+                }],
+            },
         };
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("decodedEvents"));
         assert!(json.contains("specVersion"));
         assert!(json.contains("Deposit"));
+    }
+
+    #[test]
+    fn notification_subscription_terminated_serializes() {
+        let msg = NotificationMessage {
+            body: NotificationBody::SubscriptionTerminated {
+                reason: SubscriptionTerminationReason::Backpressure,
+                message: "subscriber disconnected due to backpressure".into(),
+            },
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("subscriptionTerminated"));
+        assert!(json.contains("backpressure"));
     }
 }

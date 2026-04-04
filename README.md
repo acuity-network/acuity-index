@@ -197,84 +197,14 @@ key = "candidate_hash"
 
 ## WebSocket API
 
-Connect to `ws://localhost:8172` and send/receive JSON messages.
+The complete WebSocket API reference now lives in [`API.md`](API.md).
 
-### Request → Response
+It covers:
 
-| Request | Response |
-|---|---|
-| `{"type":"Status"}` | Indexed block spans |
-| `{"type":"Variants"}` | All pallet event variants from chain metadata |
-| `{"type":"GetEvents","key":{...}}` | Matching event refs (+ matching decoded events if `--store-events`) |
-| `{"type":"SizeOnDisk"}` | Database size in bytes |
-
-When `--store-events` is enabled, decoded events are stored individually using
-the composite key `(block_number, event_index)`. This lets the API return only
-the matched decoded events instead of whole block-wide event arrays.
-
-Each decoded event payload includes:
-
-- `specVersion`
-- `palletName`
-- `eventName`
-- `palletIndex`
-- `variantIndex`
-- `eventIndex`
-- `fields`
-
-Example `GetEvents` response with stored decoded events:
-
-```json
-{
-  "type": "events",
-  "data": {
-    "key": {"type": "RefIndex", "value": 42},
-    "events": [
-      {"blockNumber": 50, "eventIndex": 3}
-    ],
-    "decodedEvents": [
-      {
-        "blockNumber": 50,
-        "eventIndex": 3,
-        "event": {
-          "specVersion": 1234,
-          "palletName": "Referenda",
-          "eventName": "Submitted",
-          "palletIndex": 42,
-          "variantIndex": 0,
-          "eventIndex": 3,
-          "fields": {
-            "index": 42
-          }
-        }
-      }
-    ]
-  }
-}
-```
-
-### Subscriptions
-
-```json
-{"type":"SubscribeStatus"}
-{"type":"UnsubscribeStatus"}
-
-{"type":"SubscribeEvents","key":{"type":"AccountId","value":"0xabc..."}}
-{"type":"SubscribeEvents","key":{"type":"Custom","value":{"name":"item_id","kind":"bytes32","value":"0xabc..."}}}
-{"type":"UnsubscribeEvents","key":{"type":"Custom","value":{"name":"item_id","kind":"bytes32","value":"0xabc..."}}}
-```
-
-Subscribers receive push messages whenever a matching event is indexed.
-
-### Key Format
-
-Keys are JSON objects with a `type` discriminant:
-
-```json
-{"type":"AccountId",    "value":"0x1234..."}
-{"type":"EraIndex",     "value":1500}
-{"type":"Variant",      "value":[0, 3]}
-{"type":"Custom",       "value":{"name":"para_id","kind":"u32","value":1000}}
-{"type":"Custom",       "value":{"name":"published","kind":"bool","value":true}}
-{"type":"Custom",       "value":{"name":"revision","kind":"u128","value":"42"}}
-```
+- request and response envelopes
+- all request types
+- notification types
+- key formats
+- pagination semantics
+- error responses
+- backpressure and subscription termination behavior

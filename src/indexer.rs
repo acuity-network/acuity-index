@@ -36,8 +36,8 @@ pub struct Indexer {
     rpc: Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>,
     index_variant: bool,
     store_events: bool,
-    status_subs: Mutex<Vec<mpsc::UnboundedSender<ResponseMessage>>>,
-    events_subs: Mutex<HashMap<Key, Vec<mpsc::UnboundedSender<ResponseMessage>>>>,
+    status_subs: Mutex<Vec<mpsc::Sender<NotificationMessage>>>,
+    events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<NotificationMessage>>>>,
     /// sdk_pallets: set of pallet names using built-in SDK rules.
     sdk_pallets: std::collections::HashSet<String>,
     /// custom_index: pallet → event → params mapping from TOML.
@@ -288,15 +288,19 @@ impl Indexer {
     }
 
     pub fn notify_status_subscribers(&self) {
-        let msg = process_msg_status(&self.trees.span);
-        for tx in self.status_subs.lock().unwrap().iter() {
-            let _ = tx.send(msg.clone());
-        }
+        let msg = NotificationMessage {
+            body: NotificationBody::Status(match process_msg_status(&self.trees.span) {
+                ResponseBody::Status(spans) => spans,
+                _ => unreachable!(),
+            }),
+        };
+        let mut subs = self.status_subs.lock().unwrap();
+        subs.retain(|tx| keep_subscriber(tx, &msg));
     }
 
     fn notify_event_subscribers(&self, key: Key, event_ref: EventRef) {
-        let subs = self.events_subs.lock().unwrap();
-        if let Some(txs) = subs.get(&key) {
+        let mut subs = self.events_subs.lock().unwrap();
+        if let Some(txs) = subs.get_mut(&key) {
             let event_key = EventKey {
                 block_number: event_ref.block_number.into(),
                 event_index: event_ref.event_index.into(),
@@ -317,16 +321,34 @@ impl Indexer {
                 })
                 .unwrap_or_default();
 
-            let msg = ResponseMessage::Events {
-                key,
-                events: vec![event_ref],
-                decoded_events,
+            let notification = NotificationMessage {
+                body: NotificationBody::EventNotification {
+                    key: key.clone(),
+                    event: event_ref,
+                    decoded_event: decoded_events.into_iter().next(),
+                },
             };
-            for tx in txs {
-                let _ = tx.send(msg.clone());
-            }
+            txs.retain(|tx| keep_subscriber(tx, &notification));
+        }
+        if subs.get(&key).is_some_and(Vec::is_empty) {
+            subs.remove(&key);
         }
     }
+}
+
+fn keep_subscriber(tx: &mpsc::Sender<NotificationMessage>, msg: &NotificationMessage) -> bool {
+    if tx.try_send(msg.clone()).is_ok() {
+        return true;
+    }
+
+    error!("disconnecting slow WebSocket subscriber");
+    let _ = tx.try_send(NotificationMessage {
+        body: NotificationBody::SubscriptionTerminated {
+            reason: SubscriptionTerminationReason::Backpressure,
+            message: "subscriber disconnected due to backpressure".into(),
+        },
+    });
+    false
 }
 
 // ─── scale_value → Key conversion ────────────────────────────────────────────
@@ -1596,7 +1618,7 @@ mod tests {
             )
             .unwrap();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             &indexer,
             SubscriptionMessage::SubscribeEvents {
@@ -1607,13 +1629,13 @@ mod tests {
 
         indexer.index_event_key(key.clone(), 7, 3).unwrap();
 
-        let ResponseMessage::Events { decoded_events, .. } = rx.recv().await.unwrap() else {
+        let NotificationBody::EventNotification { decoded_event, .. } = rx.recv().await.unwrap().body else {
             panic!("expected events response");
         };
-        assert_eq!(decoded_events.len(), 1);
-        assert_eq!(decoded_events[0].block_number, 7);
-        assert_eq!(decoded_events[0].event_index, 3);
-        assert_eq!(decoded_events[0].event, serde_json::json!({"specVersion": 1234, "eventName": "Ready"}));
+        let decoded_event = decoded_event.expect("expected decoded event");
+        assert_eq!(decoded_event.block_number, 7);
+        assert_eq!(decoded_event.event_index, 3);
+        assert_eq!(decoded_event.event, serde_json::json!({"specVersion": 1234, "eventName": "Ready"}));
     }
 
     #[tokio::test]
@@ -1625,7 +1647,7 @@ mod tests {
             value: CustomValue::U32(42),
         });
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             &indexer,
             SubscriptionMessage::SubscribeEvents {
@@ -1636,22 +1658,22 @@ mod tests {
 
         indexer.index_event_key(key.clone(), 7, 3).unwrap();
 
-        let ResponseMessage::Events {
-            events,
-            decoded_events,
+        let NotificationBody::EventNotification {
+            event,
+            decoded_event,
             ..
-        } = rx.recv().await.unwrap()
+        } = rx.recv().await.unwrap().body
         else {
             panic!("expected events response");
         };
         assert_eq!(
-            events,
-            vec![EventRef {
+            event,
+            EventRef {
                 block_number: 7,
                 event_index: 3,
-            }]
+            }
         );
-        assert!(decoded_events.is_empty());
+        assert!(decoded_event.is_none());
     }
 
     #[test]
@@ -1725,7 +1747,7 @@ count = "u32"
     #[tokio::test]
     async fn process_sub_msg_ignores_missing_event_subscription_bucket() {
         let indexer = Indexer::new_test(temp_trees(), &test_config());
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(1);
 
         process_sub_msg(
             &indexer,

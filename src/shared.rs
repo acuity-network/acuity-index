@@ -4,7 +4,7 @@ use crate::config::ScalarKind;
 use serde::{Deserialize, Serialize};
 use sled::Tree;
 use std::fmt;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
 use zerocopy::{
     byteorder::{U16, U32},
@@ -390,26 +390,43 @@ impl Key {
         Ok(())
     }
 
-    pub fn get_events(&self, trees: &Trees) -> Vec<EventRef> {
+    pub fn get_events(
+        &self,
+        trees: &Trees,
+        before: Option<&EventRef>,
+        limit: usize,
+    ) -> Vec<EventRef> {
         use crate::websockets::get_events_index;
         match self {
-            Key::Variant(pi, vi) => get_events_variant(&trees.variant, *pi, *vi),
-            _ => get_events_index(&trees.index, &self.index_prefix().unwrap()),
+            Key::Variant(pi, vi) => get_events_variant(&trees.variant, *pi, *vi, before, limit),
+            _ => get_events_index(&trees.index, &self.index_prefix().unwrap(), before, limit),
         }
     }
 }
 
-fn get_events_variant(tree: &sled::Tree, pallet_id: u8, variant_id: u8) -> Vec<EventRef> {
+fn get_events_variant(
+    tree: &sled::Tree,
+    pallet_id: u8,
+    variant_id: u8,
+    before: Option<&EventRef>,
+    limit: usize,
+) -> Vec<EventRef> {
     use zerocopy::FromBytes;
     let mut events = Vec::new();
     let mut iter = tree.scan_prefix([pallet_id, variant_id]).keys();
     while let Some(Ok(key)) = iter.next_back() {
         let key = VariantKey::read_from_bytes(&key).unwrap();
-        events.push(EventRef {
+        let event = EventRef {
             block_number: key.block_number.into(),
             event_index: key.event_index.into(),
-        });
-        if events.len() == 100 {
+        };
+        if before.is_some_and(|cursor| {
+            (event.block_number, event.event_index) >= (cursor.block_number, cursor.event_index)
+        }) {
+            continue;
+        }
+        events.push(event);
+        if events.len() == limit {
             break;
         }
     }
@@ -472,24 +489,45 @@ impl fmt::Display for Span {
 }
 
 /// JSON request messages.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type")]
-pub enum RequestMessage {
+pub enum RequestBody {
     Status,
     SubscribeStatus,
     UnsubscribeStatus,
     Variants,
-    GetEvents { key: Key },
-    SubscribeEvents { key: Key },
-    UnsubscribeEvents { key: Key },
+    GetEvents {
+        key: Key,
+        #[serde(default = "default_get_events_limit")]
+        limit: u16,
+        before: Option<EventRef>,
+    },
+    SubscribeEvents {
+        key: Key,
+    },
+    UnsubscribeEvents {
+        key: Key,
+    },
     SizeOnDisk,
 }
 
+fn default_get_events_limit() -> u16 {
+    100
+}
+
+/// JSON request envelope.
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct RequestMessage {
+    pub id: u64,
+    #[serde(flatten)]
+    pub body: RequestBody,
+}
+
 /// JSON response messages.
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", content = "data")]
 #[serde(rename_all = "camelCase")]
-pub enum ResponseMessage {
+pub enum ResponseBody {
     Status(Vec<Span>),
     Variants(Vec<PalletMeta>),
     Events {
@@ -498,27 +536,87 @@ pub enum ResponseMessage {
         #[serde(rename = "decodedEvents")]
         decoded_events: Vec<DecodedEvent>,
     },
+    SubscriptionStatus {
+        action: SubscriptionAction,
+        target: SubscriptionTarget,
+    },
+    SizeOnDisk(u64),
+    Error(ApiError),
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct ResponseMessage {
+    pub id: u64,
+    #[serde(flatten)]
+    pub body: ResponseBody,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SubscriptionAction {
     Subscribed,
     Unsubscribed,
-    SizeOnDisk(u64),
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum SubscriptionTarget {
+    Status,
+    Events { key: Key },
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SubscriptionTerminationReason {
+    Backpressure,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct NotificationMessage {
+    #[serde(flatten)]
+    pub body: NotificationBody,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", content = "data")]
+#[serde(rename_all = "camelCase")]
+pub enum NotificationBody {
+    Status(Vec<Span>),
+    EventNotification {
+        key: Key,
+        event: EventRef,
+        #[serde(rename = "decodedEvent")]
+        decoded_event: Option<DecodedEvent>,
+    },
+    SubscriptionTerminated {
+        reason: SubscriptionTerminationReason,
+        message: String,
+    },
 }
 
 /// Subscription messages from WebSocket threads to the indexer thread.
 #[derive(Debug)]
 pub enum SubscriptionMessage {
     SubscribeStatus {
-        tx: UnboundedSender<ResponseMessage>,
+        tx: mpsc::Sender<NotificationMessage>,
     },
     UnsubscribeStatus {
-        tx: UnboundedSender<ResponseMessage>,
+        tx: mpsc::Sender<NotificationMessage>,
     },
     SubscribeEvents {
         key: Key,
-        tx: UnboundedSender<ResponseMessage>,
+        tx: mpsc::Sender<NotificationMessage>,
     },
     UnsubscribeEvents {
         key: Key,
-        tx: UnboundedSender<ResponseMessage>,
+        tx: mpsc::Sender<NotificationMessage>,
     },
 }
 
@@ -617,7 +715,7 @@ mod tests {
             key.write_db_key(&trees, i, 0).unwrap();
         }
 
-        let events = key.get_events(&trees);
+        let events = key.get_events(&trees, None, 100);
         assert_eq!(events.len(), 100);
         assert_eq!(events[0].block_number, 149);
         assert_eq!(events[99].block_number, 50);

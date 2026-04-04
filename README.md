@@ -5,6 +5,9 @@ It connects to a node via WebSocket, decodes on-chain events, stores them in
 an embedded [sled](https://github.com/spacejam/sled) database, and exposes the
 indexed data through a WebSocket API.
 
+For an implementation-level overview of how the indexer is structured, see
+[ARCHITECTURE.md](./ARCHITECTURE.md).
+
 ## Features
 
 - **Config-driven** — indexing rules are defined in TOML files; no recompilation needed for new chains
@@ -275,5 +278,3 @@ Keys are JSON objects with a `type` discriminant:
 {"type":"Custom",       "value":{"name":"published","kind":"bool","value":true}}
 {"type":"Custom",       "value":{"name":"revision","kind":"u128","value":"42"}}
 ```
-
-## Architecture

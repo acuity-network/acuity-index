@@ -1050,7 +1050,7 @@ pub async fn run_indexer(
                         u128::from(n) * 1_000_000 / micros
                     };
                     info!(
-                        "📚 Backfill from #{} (live end #{}): {}/s blocks, {}/s events, {}/s keys",
+                        "📚 Backfilled to #{} (live end #{}): {}/s blocks, {}/s events, {}/s keys",
                         current_span.start.to_formatted_string(&Locale::en),
                         current_span.end.to_formatted_string(&Locale::en),
                         rate(stats_blocks).to_formatted_string(&Locale::en),

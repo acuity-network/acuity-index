@@ -41,7 +41,7 @@ The normal startup path lives in `src/main.rs`:
 8. Spawn two long-running tasks:
    - `run_indexer(...)`
    - `websockets_listen(...)`
-9. Wait for termination signals, then notify both tasks to stop and flush sled.
+9. Wait for either a termination signal or indexer completion, then notify the remaining task to stop and flush sled.
 
 Important invariant:
 
@@ -160,6 +160,7 @@ When loading spans, the indexer may discard or trim them if they are stale relat
 Important invariant:
 
 - The active in-memory `current_span` is not always persisted immediately. On shutdown, `save_current_span(...)` persists the current progress back into the `span` tree.
+- If the upstream `subxt` block stream closes because the node disconnects or exits, the indexer treats that as a graceful shutdown condition: it saves the current span, returns `Ok(())`, and lets `main` shut down the WebSocket task and flush sled.
 
 ## Chain Config Model
 

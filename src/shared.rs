@@ -36,6 +36,8 @@ pub enum IndexError {
     MetadataError(#[from] subxt::error::MetadataTryFromError),
     #[error("block stream error")]
     BlocksError(#[from] subxt::error::BlocksError),
+    #[error("block stream closed")]
+    BlockStreamClosed,
     #[error("events error")]
     EventsError(#[from] subxt::error::EventsError),
     #[error("at-block error")]

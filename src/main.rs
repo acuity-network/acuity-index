@@ -16,7 +16,7 @@ use subxt::{
     rpcs::{RpcClient, methods::legacy::LegacyRpcMethods},
 };
 use tokio::{
-    join, spawn,
+    join, select, spawn,
     sync::{mpsc, watch},
 };
 use tracing::{error, info};
@@ -237,6 +237,23 @@ where
     args.into_iter().collect()
 }
 
+fn describe_indexer_shutdown_result(
+    result: Result<Result<(), shared::IndexError>, tokio::task::JoinError>,
+) -> &'static str {
+    match result {
+        Ok(Ok(())) => {
+            info!("Indexer stopped cleanly; beginning shutdown.");
+        }
+        Ok(Err(err)) => {
+            error!("Indexer stopped with error: {err}");
+        }
+        Err(err) => {
+            error!("Indexer task failed: {err}");
+        }
+    }
+    "indexer stopped"
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -380,10 +397,13 @@ async fn main() {
     ));
 
     let mut signals = Signals::new(TERM_SIGNALS).unwrap();
-    signals.next().await;
-    info!("Shutting down.");
+    let shutdown_reason = select! {
+        _ = signals.next() => "received termination signal",
+        result = indexer_task => describe_indexer_shutdown_result(result),
+    };
+    info!("Shutting down: {shutdown_reason}.");
     let _ = exit_tx.send(true);
-    let _ = join!(indexer_task, ws_task);
+    let _ = join!(ws_task);
     let _ = trees.flush();
     info!("Closed database.");
     exit(0);
@@ -434,6 +454,30 @@ mod main_tests {
         let args = Args::try_parse_from(["acuity-index", "--chain", "polkadot", "--store-events"]).unwrap();
 
         assert!(args.run.store_events);
+    }
+
+    #[test]
+    fn describe_indexer_shutdown_result_reports_clean_stop() {
+        assert_eq!(describe_indexer_shutdown_result(Ok(Ok(()))), "indexer stopped");
+    }
+
+    #[test]
+    fn describe_indexer_shutdown_result_reports_indexer_error() {
+        assert_eq!(
+            describe_indexer_shutdown_result(Ok(Err(shared::IndexError::BlockStreamClosed))),
+            "indexer stopped"
+        );
+    }
+
+    #[tokio::test]
+    async fn describe_indexer_shutdown_result_reports_join_error() {
+        let join_err = tokio::spawn(async {
+            panic!("boom");
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(describe_indexer_shutdown_result(Err(join_err)), "indexer stopped");
     }
 
     #[test]

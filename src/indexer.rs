@@ -86,7 +86,7 @@ impl Indexer {
     pub async fn next_head_block_number(
         next: impl Future<Output = Option<Result<Block<PolkadotConfig>, subxt::error::BlocksError>>>,
     ) -> Result<u32, IndexError> {
-        let block = next.await.unwrap()?;
+        let block = next.await.ok_or(IndexError::BlockStreamClosed)??;
         Ok(block.number().try_into().unwrap())
     }
 
@@ -984,7 +984,21 @@ pub async fn run_indexer(
             }
 
             result = &mut head_sub_future => {
-                let block_number = result?;
+                let block_number = match result {
+                    Ok(block_number) => block_number,
+                    Err(IndexError::BlockStreamClosed) => {
+                        info!("Node block stream closed; shutting down cleanly.");
+                        save_current_span(
+                            &trees,
+                            &current_span,
+                            versions_len,
+                            index_variant,
+                            store_events,
+                        )?;
+                        return Ok(());
+                    }
+                    Err(err) => return Err(err),
+                };
                 latest_seen_head = latest_seen_head.max(block_number);
                 queue_head_blocks(
                     &mut head_futures,

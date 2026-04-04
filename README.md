@@ -14,6 +14,7 @@ For an implementation-level overview of how the indexer is structured, see
 - **Built-in SDK pallets** — first-class support for common Polkadot SDK pallets (Balances, Staking, Referenda, NominationPools, etc.)
 - **Custom pallet rules** — map any event field to an index key via TOML
 - **Resume-safe** — tracks indexed block spans and resumes after restart
+- **Safe shutdown** — persists progress and exits cleanly on termination signals or when the upstream node disconnects
 - **Backward indexing** — indexes from the chain tip backwards while simultaneously tracking new blocks
 - **WebSocket API** — query events by key, subscribe to live updates, and inspect chain metadata
 - **Concurrent block fetching** — configurable queue depth for parallel backfill and HEAD catch-up requests
@@ -99,6 +100,17 @@ The indexer now treats missing historical block bodies as a hard error. If the n
 This matters for nodes that are still syncing and for nodes started in modes like `warp` or with non-archive pruning, where headers may exist but historical block bodies are unavailable.
 
 For full historical indexing, use a node that can serve historical block bodies for the range you expect to index.
+
+## Shutdown Behavior
+
+`acuity-index` persists the active in-memory span before exit so it can resume safely on the next start.
+
+Clean shutdown happens in two cases:
+
+- the process receives a termination signal
+- the upstream node closes the live block stream, such as when the node exits
+
+In both cases the process logs the shutdown reason, stops the WebSocket server, flushes sled, and exits cleanly instead of panicking.
 
 ## Chain Configuration
 

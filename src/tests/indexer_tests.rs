@@ -828,6 +828,15 @@ revision_id = "u32"
         assert!(json.contains("subscriptionTerminated"));
         assert!(json.contains("backpressure"));
     }
+
+    #[tokio::test]
+    async fn next_head_block_number_returns_closed_error_when_stream_ends() {
+        let err = Indexer::next_head_block_number(async { None })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, IndexError::BlockStreamClosed));
+    }
 }
 
 // Helper module to expose private functions for testing.

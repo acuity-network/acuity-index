@@ -41,6 +41,9 @@ Any Substrate chain can be supported by providing a custom TOML config with `--c
 cargo install --path .
 ```
 
+For Rust clients consuming the WebSocket API, see
+[`acuity-index-api-rs` on crates.io](https://crates.io/crates/acuity-index-api-rs).
+
 ## Usage
 
 ```bash
@@ -210,6 +213,9 @@ key = "candidate_hash"
 ## WebSocket API
 
 The complete WebSocket API reference now lives in [`API.md`](API.md).
+
+If you are integrating from Rust, the published client crate is
+[`acuity-index-api-rs`](https://crates.io/crates/acuity-index-api-rs).
 
 It covers:
 

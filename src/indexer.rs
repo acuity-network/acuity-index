@@ -1035,17 +1035,13 @@ pub async fn run_indexer(
             _ = interval.tick() => {
                 let now = Instant::now();
                 let micros = now.duration_since(stats_start).as_micros();
-                if micros != 0 {
+                if micros != 0 && next_batch_block.is_some() {
                     let rate = |n: u32| -> u128 {
                         u128::from(n) * 1_000_000 / micros
                     };
                     info!(
-                        "📚 Backfill {} (live end #{}): {}/s blocks, {}/s events, {}/s keys",
-                        if next_batch_block.is_none() {
-                            "complete".to_string()
-                        } else {
-                            format!("from #{}", current_span.start.to_formatted_string(&Locale::en))
-                        },
+                        "📚 Backfill from #{} (live end #{}): {}/s blocks, {}/s events, {}/s keys",
+                        current_span.start.to_formatted_string(&Locale::en),
                         current_span.end.to_formatted_string(&Locale::en),
                         rate(stats_blocks).to_formatted_string(&Locale::en),
                         rate(stats_events).to_formatted_string(&Locale::en),

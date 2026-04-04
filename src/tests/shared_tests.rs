@@ -451,7 +451,7 @@ mod shared_tests {
     #[test]
     fn response_events_with_decoded_events_serializes() {
         let msg = ResponseMessage {
-            id: 7,
+            id: Some(7),
             body: ResponseBody::Events {
                 key: Key::Custom(CustomKey {
                     name: "ref_index".into(),
@@ -476,6 +476,21 @@ mod shared_tests {
         assert!(json.contains("decodedEvents"));
         assert!(json.contains("specVersion"));
         assert!(json.contains("Deposit"));
+    }
+
+    #[test]
+    fn response_error_without_id_omits_id_field() {
+        let msg = ResponseMessage {
+            id: None,
+            body: ResponseBody::Error(ApiError {
+                code: "invalid_request",
+                message: "missing field `id`".into(),
+            }),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"error\""));
+        assert!(!json.contains("\"id\""));
     }
 
     #[test]

@@ -277,7 +277,7 @@ mod websocket_tests {
     #[test]
     fn error_response_serializes_structured_error() {
         let msg = ResponseMessage {
-            id: 9,
+            id: Some(9),
             body: ResponseBody::Error(ApiError {
                 code: "invalid_request",
                 message: "missing field `id`".into(),
@@ -294,7 +294,7 @@ mod websocket_tests {
     #[test]
     fn response_status_serializes() {
         let msg = ResponseMessage {
-            id: 1,
+            id: Some(1),
             body: ResponseBody::Status(vec![Span { start: 1, end: 100 }]),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -305,7 +305,7 @@ mod websocket_tests {
     #[test]
     fn response_subscription_status_serializes() {
         let msg = ResponseMessage {
-            id: 2,
+            id: Some(2),
             body: ResponseBody::SubscriptionStatus {
                 action: SubscriptionAction::Subscribed,
                 target: SubscriptionTarget::Status,
@@ -318,7 +318,7 @@ mod websocket_tests {
     #[test]
     fn response_size_on_disk_serializes() {
         let msg = ResponseMessage {
-            id: 3,
+            id: Some(3),
             body: ResponseBody::SizeOnDisk(123456),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -328,7 +328,7 @@ mod websocket_tests {
     #[test]
     fn response_events_serializes() {
         let msg = ResponseMessage {
-            id: 4,
+            id: Some(4),
             body: ResponseBody::Events {
                 key: Key::Custom(CustomKey {
                     name: "ref_index".into(),
@@ -350,7 +350,7 @@ mod websocket_tests {
     #[test]
     fn response_subscription_events_target_serializes_key() {
         let msg = ResponseMessage {
-            id: 10,
+            id: Some(10),
             body: ResponseBody::SubscriptionStatus {
                 action: SubscriptionAction::Subscribed,
                 target: SubscriptionTarget::Events {

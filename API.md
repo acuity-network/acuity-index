@@ -425,6 +425,8 @@ This notification is best-effort only. If the subscriber queue is already full, 
 
 Invalid requests and handler failures are returned as normal responses with `type: "error"` and the original request `id` when available.
 
+If the server cannot deserialize a request `id` at all, the error response omits the `id` field.
+
 Payload:
 
 - `code`: stable machine-readable string
@@ -448,7 +450,17 @@ Example:
 }
 ```
 
-Parse failures that occur before the server can deserialize an `id` are returned with `id: 0`.
+Example when no request `id` could be recovered:
+
+```json
+{
+  "type": "error",
+  "data": {
+    "code": "invalid_request",
+    "message": "missing field `id`"
+  }
+}
+```
 
 ## Pagination Semantics
 

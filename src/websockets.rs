@@ -58,7 +58,17 @@ fn clamp_events_limit(limit: u16) -> usize {
 }
 
 fn request_id_response(id: u64, body: ResponseBody) -> ResponseMessage {
-    ResponseMessage { id, body }
+    ResponseMessage { id: Some(id), body }
+}
+
+fn uncorrelated_error_response(code: &'static str, message: impl Into<String>) -> ResponseMessage {
+    ResponseMessage {
+        id: None,
+        body: ResponseBody::Error(ApiError {
+            code,
+            message: message.into(),
+        }),
+    }
 }
 
 fn error_response(id: u64, code: &'static str, message: impl Into<String>) -> ResponseMessage {
@@ -304,7 +314,8 @@ async fn handle_connection(
                             }
                             Err(err) => {
                                 error!("Parse error: {err}");
-                                let response = error_response(0, "invalid_request", err.to_string());
+                                let response =
+                                    uncorrelated_error_response("invalid_request", err.to_string());
                                 send_json_message(&mut ws_sender, &response).await?;
                             }
                         }
@@ -405,7 +416,7 @@ mod tests {
         assert_eq!(
             subscribed,
             ResponseMessage {
-                id: 1,
+                id: Some(1),
                 body: ResponseBody::SubscriptionStatus {
                     action: SubscriptionAction::Subscribed,
                     target: SubscriptionTarget::Events { key: key.clone() },
@@ -431,7 +442,7 @@ mod tests {
         assert_eq!(
             unsubscribed,
             ResponseMessage {
-                id: 2,
+                id: Some(2),
                 body: ResponseBody::SubscriptionStatus {
                     action: SubscriptionAction::Unsubscribed,
                     target: SubscriptionTarget::Events { key: key.clone() },
@@ -464,7 +475,7 @@ mod tests {
         assert!(matches!(
             status,
             ResponseMessage {
-                id: 1,
+                id: Some(1),
                 body: ResponseBody::SubscriptionStatus {
                     action: SubscriptionAction::Subscribed,
                     target: SubscriptionTarget::Status,
@@ -490,7 +501,7 @@ mod tests {
         assert!(matches!(
             size,
             ResponseMessage {
-                id: 2,
+                id: Some(2),
                 body: ResponseBody::SizeOnDisk(_),
             }
         ));
@@ -593,7 +604,7 @@ mod tests {
         assert!(matches!(
             status,
             ResponseMessage {
-                id: 1,
+                id: Some(1),
                 body: ResponseBody::Status(_),
             }
         ));
@@ -612,7 +623,7 @@ mod tests {
         assert!(matches!(
             unsubscribed,
             ResponseMessage {
-                id: 2,
+                id: Some(2),
                 body: ResponseBody::SubscriptionStatus {
                     action: SubscriptionAction::Unsubscribed,
                     target: SubscriptionTarget::Status,
@@ -642,7 +653,7 @@ mod tests {
         assert!(matches!(
             events,
             ResponseMessage {
-                id: 3,
+                id: Some(3),
                 body: ResponseBody::Events { .. },
             }
         ));
@@ -666,5 +677,15 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn uncorrelated_error_response_omits_id() {
+        let response = uncorrelated_error_response("invalid_request", "missing field `id`");
+
+        assert_eq!(response.id, None);
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"type\":\"error\""));
+        assert!(!json.contains("\"id\""));
     }
 }

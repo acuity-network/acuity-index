@@ -8,6 +8,9 @@ indexed data through a WebSocket API.
 For an implementation-level overview of how the indexer is structured, see
 [ARCHITECTURE.md](./ARCHITECTURE.md).
 
+For the current security review and deployment guidance for the public WebSocket
+service, see [SECURITY.md](./SECURITY.md).
+
 ## Features
 
 - **Config-driven** — indexing rules are defined in TOML files; no recompilation needed for new chains
@@ -213,6 +216,10 @@ key = "candidate_hash"
 ## WebSocket API
 
 The complete WebSocket API reference now lives in [`API.md`](API.md).
+
+The public WebSocket service also enforces connection and request limits. See
+[`SECURITY.md`](./SECURITY.md) for the current security review, deployment
+guidance, and operational limits.
 
 If you are integrating from Rust, the published client crate is
 [`acuity-index-api-rs`](https://crates.io/crates/acuity-index-api-rs).

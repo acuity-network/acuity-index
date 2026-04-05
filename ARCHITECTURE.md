@@ -266,9 +266,15 @@ The public API is implemented in `src/websockets.rs`.
 For each client connection:
 
 1. Accept a TCP connection.
-2. Upgrade it to WebSocket.
+2. Attempt to upgrade it to WebSocket.
 3. Read JSON requests into `RequestMessage`.
 4. Either handle the request locally or forward subscription intent to the indexer loop.
+
+Important operational details:
+
+- The listener enforces WebSocket frame and message size limits during handshake/runtime.
+- If the global connection cap is exhausted, the upgrade is rejected with HTTP `503 Service Unavailable`.
+- Each accepted connection is subject to an idle timeout and a per-connection subscription cap.
 
 ### Local reads
 
@@ -285,10 +291,17 @@ These are answered directly from sled or RPC in `process_msg(...)`:
 
 Subscription registration is split across tasks:
 
-- WebSocket handlers send `SubscriptionMessage` values over an internal unbounded channel.
+- WebSocket handlers send `SubscriptionMessage` values over an internal bounded channel.
 - The indexer loop owns the actual subscriber registries.
 - When a newly indexed event matches a subscribed key, the indexer pushes a `ResponseMessage::Events` update to those subscribers.
 - Status subscribers are notified when the live head advances the persisted span.
+
+Current WebSocket-side safeguards:
+
+- subscribe/unsubscribe forwarding uses bounded backpressure rather than unbounded buffering
+- per-connection subscriptions are capped
+- oversized custom key names and string values are rejected before subscription registration or sled scans
+- idle connections are disconnected automatically
 
 Important invariant:
 

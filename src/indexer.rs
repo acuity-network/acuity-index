@@ -855,7 +855,7 @@ pub async fn run_indexer(
     index_variant: bool,
     store_events: bool,
     mut exit_rx: watch::Receiver<bool>,
-    mut sub_rx: mpsc::UnboundedReceiver<SubscriptionMessage>,
+    mut sub_rx: mpsc::Receiver<SubscriptionMessage>,
 ) -> Result<(), IndexError> {
     info!(
         "📇 Finalized only: {}",
@@ -906,39 +906,37 @@ pub async fn run_indexer(
         &config,
     );
 
-    let mut current_span = if let Some(span) = spans
-        .last()
-        .filter(|s| Some(s.end) == next_batch_block)
-    {
-        let span = span.clone();
-        trees.span.remove(span.end.to_be_bytes())?;
-        spans.pop();
-        next_batch_block = prev_block(span.start);
-        info!(
-            "📚 Resuming span #{} to #{}; backfilling from #{}, tailing new blocks from #{}",
-            span.start.to_formatted_string(&Locale::en),
-            span.end.to_formatted_string(&Locale::en),
-            next_batch_block
-                .map(|n| n.to_formatted_string(&Locale::en))
-                .unwrap_or_else(|| "none".to_string()),
-            next_live_head_to_queue(&span).to_formatted_string(&Locale::en),
-        );
-        span
-    } else {
-        let chain_head = next_batch_block.unwrap();
-        indexer.index_block(chain_head).await?;
-        let span = Span {
-            start: chain_head,
-            end: chain_head,
+    let mut current_span =
+        if let Some(span) = spans.last().filter(|s| Some(s.end) == next_batch_block) {
+            let span = span.clone();
+            trees.span.remove(span.end.to_be_bytes())?;
+            spans.pop();
+            next_batch_block = prev_block(span.start);
+            info!(
+                "📚 Resuming span #{} to #{}; backfilling from #{}, tailing new blocks from #{}",
+                span.start.to_formatted_string(&Locale::en),
+                span.end.to_formatted_string(&Locale::en),
+                next_batch_block
+                    .map(|n| n.to_formatted_string(&Locale::en))
+                    .unwrap_or_else(|| "none".to_string()),
+                next_live_head_to_queue(&span).to_formatted_string(&Locale::en),
+            );
+            span
+        } else {
+            let chain_head = next_batch_block.unwrap();
+            indexer.index_block(chain_head).await?;
+            let span = Span {
+                start: chain_head,
+                end: chain_head,
+            };
+            next_batch_block = prev_block(chain_head);
+            info!(
+                "📚 Indexed chain head #{}; backfilling to genesis, tailing new blocks from #{}",
+                chain_head.to_formatted_string(&Locale::en),
+                next_live_head_to_queue(&span).to_formatted_string(&Locale::en),
+            );
+            span
         };
-        next_batch_block = prev_block(chain_head);
-        info!(
-            "📚 Indexed chain head #{}; backfilling to genesis, tailing new blocks from #{}",
-            chain_head.to_formatted_string(&Locale::en),
-            next_live_head_to_queue(&span).to_formatted_string(&Locale::en),
-        );
-        span
-    };
 
     debug!(
         "📚 Startup state: current span #{} to #{}, next backfill #{}, next live head #{}, previous spans {}",
@@ -1168,8 +1166,11 @@ mod tests {
 
     #[tokio::test]
     async fn guarded_empty_backfill_queue_skips_select_all() {
-        let mut futures: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = Result<(u32, u32, u32), IndexError>> + Send>>> =
-            Vec::new();
+        let mut futures: Vec<
+            std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(u32, u32, u32), IndexError>> + Send>,
+            >,
+        > = Vec::new();
 
         let branch_selected = tokio::select! {
             (..)= async {
@@ -1418,7 +1419,10 @@ mod tests {
 
     #[test]
     fn next_live_head_to_queue_starts_after_current_end() {
-        let current = Span { start: 100, end: 250 };
+        let current = Span {
+            start: 100,
+            end: 250,
+        };
 
         assert_eq!(next_live_head_to_queue(&current), 251);
     }
@@ -1533,14 +1537,9 @@ mod tests {
         let mut current_span = Span { start: 2, end: 10 };
         let mut orphans = AHashMap::new();
 
-        let reached_genesis = advance_backfill_start(
-            &mut current_span,
-            &mut spans,
-            &trees.span,
-            &mut orphans,
-            1,
-        )
-        .unwrap();
+        let reached_genesis =
+            advance_backfill_start(&mut current_span, &mut spans, &trees.span, &mut orphans, 1)
+                .unwrap();
 
         assert!(reached_genesis);
         assert_eq!(current_span.start, 1);
@@ -1633,7 +1632,8 @@ mod tests {
             .events
             .insert(
                 db_key.as_bytes(),
-                serde_json::to_vec(&serde_json::json!({"specVersion": 1234, "eventName": "Ready"})).unwrap(),
+                serde_json::to_vec(&serde_json::json!({"specVersion": 1234, "eventName": "Ready"}))
+                    .unwrap(),
             )
             .unwrap();
 
@@ -1648,13 +1648,18 @@ mod tests {
 
         indexer.index_event_key(key.clone(), 7, 3).unwrap();
 
-        let NotificationBody::EventNotification { decoded_event, .. } = rx.recv().await.unwrap().body else {
+        let NotificationBody::EventNotification { decoded_event, .. } =
+            rx.recv().await.unwrap().body
+        else {
             panic!("expected events response");
         };
         let decoded_event = decoded_event.expect("expected decoded event");
         assert_eq!(decoded_event.block_number, 7);
         assert_eq!(decoded_event.event_index, 3);
-        assert_eq!(decoded_event.event, serde_json::json!({"specVersion": 1234, "eventName": "Ready"}));
+        assert_eq!(
+            decoded_event.event,
+            serde_json::json!({"specVersion": 1234, "eventName": "Ready"})
+        );
     }
 
     #[tokio::test]

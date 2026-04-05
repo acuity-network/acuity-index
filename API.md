@@ -4,6 +4,9 @@
 
 Connect to `ws://localhost:8172` by default.
 
+For Internet-facing deployment guidance and the current security review, see
+[`SECURITY.md`](./SECURITY.md).
+
 The public API is a JSON-over-WebSocket protocol with two message classes:
 
 - request/response messages, which always carry a numeric `id`
@@ -462,6 +465,18 @@ Example when no request `id` could be recovered:
 }
 ```
 
+Additional error codes currently returned by the WebSocket layer include:
+
+- `subscription_limit` when a connection exceeds the per-connection subscription cap
+
+Operational failure modes that may also appear as request-scoped `internal_error`
+responses or connection drops include:
+
+- oversized WebSocket frame or message rejected during protocol handling
+- subscription control queue saturation
+- oversized custom key name or custom string key value
+- connection idle timeout
+
 ## Pagination Semantics
 
 `GetEvents` returns matches in descending order by `(blockNumber, eventIndex)`.
@@ -533,3 +548,20 @@ Subscription delivery uses bounded internal queues.
 - slow subscribers are removed instead of being buffered indefinitely
 - the server attempts to send `subscriptionTerminated` before removal
 - if that best-effort notification cannot be queued, the client may observe only the disconnect
+
+## Connection Limits
+
+The server currently applies these connection-level limits:
+
+- max WebSocket message size: `256 KiB`
+- max WebSocket frame size: `64 KiB`
+- max subscriptions per connection: `128`
+- idle timeout: `300s`
+
+If the global connection cap is exhausted, new upgrade attempts are rejected with
+HTTP `503 Service Unavailable`.
+
+For request validation, the server also enforces:
+
+- max custom key name length: `128` bytes
+- max custom string key length: `1024` bytes

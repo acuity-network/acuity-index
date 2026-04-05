@@ -33,7 +33,7 @@ use config::{ChainConfig, KUSAMA_TOML, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
 use config_gen::write_generated_chain_config;
 use indexer::run_indexer;
 use shared::Trees;
-use websockets::websockets_listen;
+use websockets::{SUBSCRIPTION_CONTROL_BUFFER_SIZE, websockets_listen};
 
 #[cfg(test)]
 mod tests;
@@ -373,7 +373,7 @@ async fn main() {
     }
 
     let (exit_tx, exit_rx) = watch::channel(false);
-    let (sub_tx, sub_rx) = mpsc::unbounded_channel();
+    let (sub_tx, sub_rx) = mpsc::channel(SUBSCRIPTION_CONTROL_BUFFER_SIZE);
 
     let indexer_task = spawn(run_indexer(
         trees.clone(),
@@ -451,14 +451,18 @@ mod main_tests {
 
     #[test]
     fn args_parse_store_events_flag() {
-        let args = Args::try_parse_from(["acuity-index", "--chain", "polkadot", "--store-events"]).unwrap();
+        let args = Args::try_parse_from(["acuity-index", "--chain", "polkadot", "--store-events"])
+            .unwrap();
 
         assert!(args.run.store_events);
     }
 
     #[test]
     fn describe_indexer_shutdown_result_reports_clean_stop() {
-        assert_eq!(describe_indexer_shutdown_result(Ok(Ok(()))), "indexer stopped");
+        assert_eq!(
+            describe_indexer_shutdown_result(Ok(Ok(()))),
+            "indexer stopped"
+        );
     }
 
     #[test]
@@ -477,13 +481,16 @@ mod main_tests {
         .await
         .unwrap_err();
 
-        assert_eq!(describe_indexer_shutdown_result(Err(join_err)), "indexer stopped");
+        assert_eq!(
+            describe_indexer_shutdown_result(Err(join_err)),
+            "indexer stopped"
+        );
     }
 
     #[test]
     fn args_parse_purge_index_chain() {
-        let args = Args::try_parse_from(["acuity-index", "purge-index", "--chain", "kusama"])
-            .unwrap();
+        let args =
+            Args::try_parse_from(["acuity-index", "purge-index", "--chain", "kusama"]).unwrap();
 
         match args.command {
             Some(Command::PurgeIndex { args: purge_args }) => {

@@ -126,7 +126,10 @@ fn collection_element_type_id(type_id: u32, types: &PortableRegistry) -> Option<
     }
 }
 
-fn event_collection_element_type_id(field: &Field<PortableForm>, types: &PortableRegistry) -> Option<u32> {
+fn event_collection_element_type_id(
+    field: &Field<PortableForm>,
+    types: &PortableRegistry,
+) -> Option<u32> {
     if let Some(type_name) = field.type_name.as_deref() {
         if type_name.contains("BoundedVec<") || type_name.starts_with("Vec<") {
             let ty = types.resolve(field.ty.id)?;
@@ -148,7 +151,9 @@ fn infer_item_key_name(
     ty: &Type<PortableForm>,
     idx: usize,
 ) -> String {
-    if type_last_segment(ty) == Some("ItemId") || type_name.is_some_and(|name| name.contains("ItemId")) {
+    if type_last_segment(ty) == Some("ItemId")
+        || type_name.is_some_and(|name| name.contains("ItemId"))
+    {
         return "item_id".to_owned();
     }
     let inferred = infer_key_name(field_name, type_name, ty, idx);
@@ -745,9 +750,7 @@ mod tests {
 
         let toml = render_chain_config_toml(&config).unwrap();
 
-        assert!(
-            toml.contains("[custom_keys]\nitem_id = \"bytes32\"\nrevision_id = \"u32\"\n")
-        );
+        assert!(toml.contains("[custom_keys]\nitem_id = \"bytes32\"\nrevision_id = \"u32\"\n"));
         assert!(toml.contains("[[pallets]]\nname = \"Content\"\nevents = ["));
         assert!(toml.contains("{ name = \"PublishItem\", params = ["));
         assert!(toml.contains("{ field = \"item_id\", key = \"item_id\" }"));

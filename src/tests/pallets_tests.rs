@@ -1344,13 +1344,17 @@ mod pallets_tests {
             index_indices("IndexFreed", &fields),
             vec![key_u32("account_index", 4)]
         );
-        assert!(index_indices("IndexFrozen", &fields).contains(&key_bytes32("account_id", account)));
+        assert!(
+            index_indices("IndexFrozen", &fields).contains(&key_bytes32("account_id", account))
+        );
         let treasury_fallback_fields = named(vec![
             ("proposal_index", u128_val(5)),
             ("beneficiary", bytes32_val(other)),
         ]);
-        assert!(index_treasury("Awarded", &treasury_fallback_fields)
-            .contains(&key_bytes32("account_id", other)));
+        assert!(
+            index_treasury("Awarded", &treasury_fallback_fields)
+                .contains(&key_bytes32("account_id", other))
+        );
         assert_eq!(
             index_treasury("Deposit", &fields),
             vec![key_bytes32("account_id", account)]
@@ -1372,10 +1376,14 @@ mod pallets_tests {
         assert!(index_nomination_pools("Bonded", &fields).contains(&key_u32("pool_id", 7)));
         assert!(index_nomination_pools("PaidOut", &fields).contains(&key_u32("pool_id", 7)));
         assert!(index_nomination_pools("Withdrawn", &fields).contains(&key_u32("pool_id", 7)));
-        assert!(index_nomination_pools("MemberRemoved", &fields)
-            .contains(&key_bytes32("account_id", account)));
-        assert!(index_nomination_pools("UnbondingPoolSlashed", &fields)
-            .contains(&key_u32("era_index", 8)));
+        assert!(
+            index_nomination_pools("MemberRemoved", &fields)
+                .contains(&key_bytes32("account_id", account))
+        );
+        assert!(
+            index_nomination_pools("UnbondingPoolSlashed", &fields)
+                .contains(&key_u32("era_index", 8))
+        );
         assert!(
             index_identity("JudgementRequested", &fields).contains(&key_u32("registrar_index", 6))
         );
@@ -1386,10 +1394,14 @@ mod pallets_tests {
         assert!(
             index_identity("SubIdentityAdded", &fields).contains(&key_bytes32("account_id", other))
         );
-        assert!(index_recovery("RecoveryCreated", &fields)
-            .contains(&key_bytes32("account_id", account)));
-        assert!(index_recovery("RecoveryInitiated", &fields)
-            .contains(&key_bytes32("account_id", other)));
+        assert!(
+            index_recovery("RecoveryCreated", &fields)
+                .contains(&key_bytes32("account_id", account))
+        );
+        assert!(
+            index_recovery("RecoveryInitiated", &fields)
+                .contains(&key_bytes32("account_id", other))
+        );
     }
 
     #[test]

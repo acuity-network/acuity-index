@@ -645,7 +645,10 @@ revision_id = "u32"
         }
 
         let spans = load_spans(&trees.span, &[0], true, true).unwrap();
-        assert_eq!(spans, vec![Span { start: 5, end: 15 }, Span { start: 17, end: 20 }]);
+        assert_eq!(
+            spans,
+            vec![Span { start: 5, end: 15 }, Span { start: 17, end: 20 }]
+        );
     }
 
     #[test]
@@ -811,7 +814,9 @@ revision_id = "u32"
         indexer.index_event_key(key.clone(), 7, 1).unwrap();
         assert!(matches!(
             rx.recv().await,
-            Some(NotificationMessage { body: NotificationBody::EventNotification { .. } })
+            Some(NotificationMessage {
+                body: NotificationBody::EventNotification { .. }
+            })
         ));
 
         process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeEvents { key, tx });
@@ -829,10 +834,7 @@ revision_id = "u32"
         let indexer = Indexer::new_test(trees, &config);
 
         let (tx, mut rx) = mpsc::channel(1);
-        process_sub_msg(
-            &indexer,
-            SubscriptionMessage::SubscribeStatus { tx },
-        );
+        process_sub_msg(&indexer, SubscriptionMessage::SubscribeStatus { tx });
 
         indexer.notify_status_subscribers();
         indexer.notify_status_subscribers();

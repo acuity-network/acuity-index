@@ -5,7 +5,7 @@
 
 use scale_value::{Composite, Value, ValueDef};
 
-use crate::shared::{Bytes32, CustomKey, CustomValue, Key, U128Text, U64Text};
+use crate::shared::{Bytes32, CustomKey, CustomValue, Key, U64Text, U128Text};
 
 pub const SUPPORTED_SDK_PALLETS: &[&str] = &[
     "Alliance",
@@ -1380,7 +1380,9 @@ mod tests {
             index_identity("IdentitySet", &fields),
             vec![custom_bytes32_key("account_id", Bytes32(who))]
         );
-        assert!(index_identity("SubIdentityRemoved", &fields)
-            .contains(&custom_bytes32_key("account_id", Bytes32(main))));
+        assert!(
+            index_identity("SubIdentityRemoved", &fields)
+                .contains(&custom_bytes32_key("account_id", Bytes32(main)))
+        );
     }
 }

@@ -7,8 +7,8 @@ use std::fmt;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
 use zerocopy::{
-    byteorder::{U16, U32},
     BigEndian, IntoBytes,
+    byteorder::{U16, U32},
 };
 use zerocopy_derive::*;
 
@@ -26,7 +26,9 @@ pub enum IndexError {
     Hex(#[from] hex::FromHexError),
     #[error("block not found: {0}")]
     BlockNotFound(u32),
-    #[error("historical block data unavailable at #{block_number}; the node may be warp syncing or pruning block bodies")]
+    #[error(
+        "historical block data unavailable at #{block_number}; the node may be warp syncing or pruning block bodies"
+    )]
     HistoricalBlockDataUnavailable { block_number: u32 },
     #[error("RPC error")]
     RpcError(#[from] subxt::rpcs::Error),
@@ -626,10 +628,10 @@ pub enum SubscriptionMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::de::value::{
-        Error as ValueError, StrDeserializer, U128Deserializer, U64Deserializer,
-    };
     use serde::Deserialize;
+    use serde::de::value::{
+        Error as ValueError, StrDeserializer, U64Deserializer, U128Deserializer,
+    };
 
     #[test]
     fn u64_text_serializes_and_deserializes_from_multiple_input_shapes() {

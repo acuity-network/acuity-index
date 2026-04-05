@@ -43,6 +43,8 @@ The normal startup path lives in `src/main.rs`:
    - `websockets_listen(...)`
 9. Wait for either a termination signal or indexer completion, then notify the remaining task to stop and flush sled.
 
+Startup error handling is centralized in a fallible `run()` path in `src/main.rs`. Configuration, database, RPC, and signal-registration failures now return structured errors that are logged once before the process exits.
+
 Important invariant:
 
 - A database directory is tied to a single chain genesis hash. If the config or connected node disagrees with the stored hash, the process exits instead of mixing data from different chains.
@@ -99,8 +101,12 @@ This is why the README describes the indexer as indexing backward while simultan
    - Optionally write a variant index record if `index_variant` is enabled.
    - Decode fields schema-lessly into `scale_value::Composite<()>`.
    - Derive indexing keys.
-   - Write event references for each derived key.
-   - Optionally store a JSON-encoded decoded event if `store_events` is enabled.
+    - Write event references for each derived key.
+    - Optionally store a JSON-encoded decoded event if `store_events` is enabled.
+
+Operational detail:
+
+- Runtime decoding of persisted sled keys/values is now defensive. Malformed span records or malformed index keys are skipped with error logging rather than panicking the process.
 
 ### Key derivation
 
@@ -302,6 +308,7 @@ Current WebSocket-side safeguards:
 - per-connection subscriptions are capped
 - oversized custom key names and string values are rejected before subscription registration or sled scans
 - idle connections are disconnected automatically
+- malformed persisted event/span index records are skipped during reads instead of crashing the server
 
 Important invariant:
 

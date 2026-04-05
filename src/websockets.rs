@@ -21,7 +21,7 @@ use tokio_tungstenite::tungstenite::{
     protocol::WebSocketConfig,
 };
 use tracing::{error, info};
-use zerocopy::{FromBytes, IntoBytes};
+use zerocopy::IntoBytes;
 
 const MAX_EVENTS_LIMIT: usize = 1000;
 const SUBSCRIPTION_BUFFER_SIZE: usize = 256;
@@ -66,9 +66,9 @@ pub fn get_events_index(
             continue;
         }
         let suffix = &raw[raw.len() - 6..];
-        let event = EventRef {
-            block_number: u32::from_be_bytes(suffix[..4].try_into().unwrap()),
-            event_index: u16::from_be_bytes(suffix[4..].try_into().unwrap()),
+        let Some(event) = decode_event_ref_suffix(suffix) else {
+            error!("Skipping malformed event index key");
+            continue;
         };
         if before.is_some_and(|cursor| !event_is_before(&event, cursor)) {
             continue;
@@ -164,9 +164,15 @@ fn error_response(id: u64, code: &'static str, message: impl Into<String>) -> Re
 pub fn process_msg_status(span_db: &Tree) -> ResponseBody {
     let mut spans = vec![];
     for (key, value) in span_db.into_iter().flatten() {
-        let sv = SpanDbValue::read_from_bytes(&value).unwrap();
+        let Some(sv) = read_span_db_value(&value) else {
+            error!("Skipping malformed span value");
+            continue;
+        };
         let start: u32 = sv.start.into();
-        let end: u32 = u32::from_be_bytes(key.as_ref().try_into().unwrap());
+        let Some(end) = decode_u32_key(key.as_ref()) else {
+            error!("Skipping malformed span key");
+            continue;
+        };
         spans.push(Span { start, end });
     }
     ResponseBody::Status(spans)

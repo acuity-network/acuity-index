@@ -87,13 +87,32 @@ impl Indexer {
         next: impl Future<Output = Option<Result<Block<PolkadotConfig>, subxt::error::BlocksError>>>,
     ) -> Result<u32, IndexError> {
         let block = next.await.ok_or(IndexError::BlockStreamClosed)??;
-        Ok(block.number().try_into().unwrap())
+        block
+            .number()
+            .try_into()
+            .map_err(|_| internal_error("block number exceeds u32"))
+    }
+
+    fn runtime_clients(
+        &self,
+    ) -> Result<(
+        &OnlineClient<PolkadotConfig>,
+        &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    ), IndexError> {
+        let api = self
+            .api
+            .as_ref()
+            .ok_or_else(|| internal_error("indexer API client not initialized"))?;
+        let rpc = self
+            .rpc
+            .as_ref()
+            .ok_or_else(|| internal_error("indexer RPC client not initialized"))?;
+        Ok((api, rpc))
     }
 
     pub async fn index_block(&self, block_number: u32) -> Result<(u32, u32, u32), IndexError> {
         let mut key_count = 0u32;
-        let api = self.api.as_ref().unwrap();
-        let rpc = self.rpc.as_ref().unwrap();
+        let (api, rpc) = self.runtime_clients()?;
 
         let block_hash = rpc
             .chain_get_block_hash(Some(block_number.into()))
@@ -117,7 +136,9 @@ impl Indexer {
                 }
             };
 
-            let event_index: u16 = i.try_into().unwrap();
+            let event_index: u16 = i
+                .try_into()
+                .map_err(|_| internal_error(format!("event index exceeds u16 for block {block_number}")))?;
             let pallet_name = event.pallet_name();
             let event_name = event.event_name();
             let pallet_index = event.pallet_index();
@@ -294,12 +315,12 @@ impl Indexer {
                 _ => unreachable!(),
             }),
         };
-        let mut subs = self.status_subs.lock().unwrap();
+        let mut subs = lock_or_recover(&self.status_subs, "status_subs");
         subs.retain(|tx| keep_subscriber(tx, &msg));
     }
 
     fn notify_event_subscribers(&self, key: Key, event_ref: EventRef) {
-        let mut subs = self.events_subs.lock().unwrap();
+        let mut subs = lock_or_recover(&self.events_subs, "events_subs");
         if let Some(txs) = subs.get_mut(&key) {
             let event_key = EventKey {
                 block_number: event_ref.block_number.into(),
@@ -509,21 +530,17 @@ pub fn composite_to_json(c: &Composite<()>) -> serde_json::Value {
 pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) {
     match msg {
         SubscriptionMessage::SubscribeStatus { tx } => {
-            indexer.status_subs.lock().unwrap().push(tx);
+            lock_or_recover(&indexer.status_subs, "status_subs").push(tx);
         }
         SubscriptionMessage::UnsubscribeStatus { tx } => {
-            indexer
-                .status_subs
-                .lock()
-                .unwrap()
-                .retain(|t| !tx.same_channel(t));
+            lock_or_recover(&indexer.status_subs, "status_subs").retain(|t| !tx.same_channel(t));
         }
         SubscriptionMessage::SubscribeEvents { key, tx } => {
-            let mut subs = indexer.events_subs.lock().unwrap();
+            let mut subs = lock_or_recover(&indexer.events_subs, "events_subs");
             subs.entry(key).or_default().push(tx);
         }
         SubscriptionMessage::UnsubscribeEvents { key, tx } => {
-            let mut subs = indexer.events_subs.lock().unwrap();
+            let mut subs = lock_or_recover(&indexer.events_subs, "events_subs");
             if let Some(txs) = subs.get_mut(&key) {
                 txs.retain(|t| !tx.same_channel(t));
             }
@@ -541,9 +558,15 @@ pub fn load_spans(
 ) -> Result<Vec<Span>, IndexError> {
     let mut spans: Vec<Span> = vec![];
     'span: for (key, value) in span_db.into_iter().flatten() {
-        let span_value = SpanDbValue::read_from_bytes(&value).unwrap();
+        let Some(span_value) = read_span_db_value(&value) else {
+            error!("Skipping malformed span value during span load");
+            continue;
+        };
         let start: u32 = span_value.start.into();
-        let mut end: u32 = u32::from_be_bytes(key.as_ref().try_into().unwrap());
+        let Some(mut end) = decode_u32_key(key.as_ref()) else {
+            error!("Skipping malformed span key during span load");
+            continue;
+        };
         if index_variant && span_value.index_variant != 1 {
             span_db.remove(&key)?;
             info!(
@@ -564,7 +587,10 @@ pub fn load_spans(
         }
         let span_version: u16 = span_value.version.into();
         for (version, block_number) in versions.iter().enumerate() {
-            if span_version < version.try_into().unwrap() && end >= *block_number {
+            let version_u16: u16 = version
+                .try_into()
+                .map_err(|_| internal_error("version index exceeds u16"))?;
+            if span_version < version_u16 && end >= *block_number {
                 span_db.remove(&key)?;
                 if start >= *block_number {
                     info!(
@@ -879,14 +905,14 @@ pub async fn run_indexer(
             .ok_or(IndexError::BlockNotFound(0))?
             .number
             .try_into()
-            .unwrap()
+            .map_err(|_| internal_error("finalized head number exceeds u32"))?
     } else {
         rpc.chain_get_header(None)
             .await?
             .ok_or(IndexError::BlockNotFound(0))?
             .number
             .try_into()
-            .unwrap()
+            .map_err(|_| internal_error("best head number exceeds u32"))?
     });
 
     let mut blocks_sub = if finalized {
@@ -923,7 +949,9 @@ pub async fn run_indexer(
             );
             span
         } else {
-            let chain_head = next_batch_block.unwrap();
+            let Some(chain_head) = next_batch_block else {
+                return Err(internal_error("missing chain head during startup"));
+            };
             indexer.index_block(chain_head).await?;
             let span = Span {
                 start: chain_head,

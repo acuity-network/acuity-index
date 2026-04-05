@@ -254,10 +254,26 @@ fn describe_indexer_shutdown_result(
     "indexer stopped"
 }
 
-// ─── Entry point ──────────────────────────────────────────────────────────────
+fn parse_db_cache_capacity(value: &str) -> Result<u64, shared::IndexError> {
+    let bytes = Byte::parse_str(value, true).map_err(|err| {
+        shared::internal_error(format!("invalid db cache capacity '{value}': {err}"))
+    })?;
+    bytes.as_u64_checked().ok_or_else(|| {
+        shared::internal_error(format!("db cache capacity '{value}' does not fit in u64"))
+    })
+}
 
-#[tokio::main]
-async fn main() {
+fn init_db_genesis(trees: &Trees, genesis_hash_config: &[u8]) -> Result<Vec<u8>, shared::IndexError> {
+    match trees.root.get("genesis_hash")? {
+        Some(v) => Ok(v.to_vec()),
+        None => {
+            trees.root.insert("genesis_hash", genesis_hash_config)?;
+            Ok(genesis_hash_config.to_vec())
+        }
+    }
+}
+
+async fn run() -> Result<(), shared::IndexError> {
     let args = Args::parse_from(normalize_args(std::env::args()));
     let log_level = args.verbose.log_level_filter().as_trace();
     tracing_subscriber::fmt().with_max_level(log_level).init();
@@ -280,96 +296,58 @@ async fn main() {
     }
 
     let run_args = &args.run;
-
     let chain_config = load_chain_config(run_args.chain, run_args.chain_config.as_deref());
 
     info!("Indexing chain: {}", chain_config.name);
 
-    let genesis_hash_config = chain_config.genesis_hash_bytes().unwrap_or_else(|e| {
-        error!("Invalid genesis hash in config: {e}");
-        exit(1);
-    });
+    let genesis_hash_config = chain_config.genesis_hash_bytes().map_err(|e| {
+        shared::internal_error(format!("invalid genesis hash in config: {e}"))
+    })?;
 
-    // Open database.
     let db_path = resolve_db_path(&chain_config.name, run_args.db_path.as_deref());
     info!("Database path: {}", db_path.display());
 
-    let db_cache_capacity = Byte::parse_str(&run_args.db_cache_capacity, true)
-        .unwrap()
-        .as_u64_checked()
-        .unwrap();
+    let db_cache_capacity = parse_db_cache_capacity(&run_args.db_cache_capacity)?;
 
     let db_config = sled::Config::new()
         .path(db_path)
         .mode(run_args.db_mode.clone().into())
         .cache_capacity(db_cache_capacity);
 
-    let trees = Trees::open(db_config).unwrap_or_else(|e| {
-        error!("Failed to open database: {e}");
-        exit(1);
-    });
+    let trees = Trees::open(db_config)?;
 
-    // Verify genesis hash.
-    let stored_genesis = match trees.root.get("genesis_hash").unwrap() {
-        Some(v) => v.to_vec(),
-        None => {
-            trees
-                .root
-                .insert("genesis_hash", genesis_hash_config.as_ref())
-                .unwrap();
-            genesis_hash_config.to_vec()
-        }
-    };
+    let stored_genesis = init_db_genesis(&trees, genesis_hash_config.as_ref())?;
     if stored_genesis != genesis_hash_config {
-        error!(
-            "Database genesis hash mismatch.\n  Expected: 0x{}\n  Stored:   0x{}",
+        return Err(shared::internal_error(format!(
+            "database genesis hash mismatch. expected 0x{}, stored 0x{}",
             hex::encode(genesis_hash_config),
             hex::encode(stored_genesis),
-        );
-        let _ = trees.flush();
-        exit(1);
+        )));
     }
 
-    // Connect to node.
     let url = run_args
         .url
         .clone()
         .unwrap_or_else(|| chain_config.default_url.clone());
     info!("Connecting to {url}");
 
-    let rpc_client = RpcClient::from_url(&url).await.unwrap_or_else(|e| {
-        error!("Connection failed: {e}");
-        let _ = trees.flush();
-        exit(1);
-    });
-
-    let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone())
-        .await
-        .unwrap_or_else(|e| {
-            error!("API init failed: {e}");
-            let _ = trees.flush();
-            exit(1);
-        });
-
+    let rpc_client = RpcClient::from_url(&url).await?;
+    let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone()).await?;
     let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client);
 
-    // Verify chain genesis hash.
     let chain_genesis = api.genesis_hash().as_ref().to_vec();
     if chain_genesis != genesis_hash_config {
-        error!(
-            "Chain genesis hash mismatch.\n  Expected: 0x{}\n  Chain:    0x{}",
+        return Err(shared::internal_error(format!(
+            "chain genesis hash mismatch. expected 0x{}, chain 0x{}",
             hex::encode(genesis_hash_config),
             hex::encode(chain_genesis),
-        );
-        let _ = trees.flush();
-        exit(1);
+        )));
     }
 
-    // Signal handling.
     let term_now = Arc::new(AtomicBool::new(false));
     for sig in TERM_SIGNALS {
-        flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term_now)).unwrap();
-        flag::register(*sig, Arc::clone(&term_now)).unwrap();
+        flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term_now))?;
+        flag::register(*sig, Arc::clone(&term_now))?;
     }
 
     let (exit_tx, exit_rx) = watch::channel(false);
@@ -396,7 +374,7 @@ async fn main() {
         sub_tx,
     ));
 
-    let mut signals = Signals::new(TERM_SIGNALS).unwrap();
+    let mut signals = Signals::new(TERM_SIGNALS)?;
     let shutdown_reason = select! {
         _ = signals.next() => "received termination signal",
         result = indexer_task => describe_indexer_shutdown_result(result),
@@ -406,6 +384,17 @@ async fn main() {
     let _ = join!(ws_task);
     let _ = trees.flush();
     info!("Closed database.");
+    Ok(())
+}
+
+// ─── Entry point ──────────────────────────────────────────────────────────────
+
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
+        error!("{err}");
+        exit(1);
+    }
     exit(0);
 }
 

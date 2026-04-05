@@ -115,18 +115,19 @@ Assessment:
 
 - Lower severity than unauthenticated data access, but worth reviewing if the service is public.
 
-### 5. Internal panic paths still exist outside the hardened request edge
+### 5. Internal panic paths remain mostly limited to test-only code and explicit fatal startup assertions
 
-There are still `unwrap()` calls in internal code paths, including persisted data decoding and normal Rust test helpers.
+The production runtime no longer relies on `unwrap()` for persisted data decoding, subscription lock handling, or normal startup error flow. Remaining `unwrap()` usage is primarily in Rust test code, with a small number of explicit fail-fast assertions still used for conditions like process startup that cannot be recovered meaningfully in place.
 
 Impact:
 
-- These appear lower risk for direct Internet-triggered exploitation than the WebSocket request path that has already been hardened.
-- They can still affect robustness if internal invariants are violated or storage becomes inconsistent.
+- This is lower risk for direct Internet-triggered exploitation than the public WebSocket request path.
+- Corrupt persisted span/index records are now skipped with logging instead of taking down the process.
+- Residual fail-fast behavior is concentrated in startup-only paths and test helpers rather than steady-state request handling.
 
 Assessment:
 
-- This is now primarily a reliability concern, not the top Internet-facing security issue.
+- This is now primarily a reliability and operability concern, not the top Internet-facing security issue.
 
 ## Cargo Audit
 

@@ -118,6 +118,8 @@ Clean shutdown happens in two cases:
 
 In both cases the process logs the shutdown reason, stops the WebSocket server, flushes sled, and exits cleanly instead of panicking.
 
+Startup failures such as invalid cache-size configuration, genesis-hash mismatches, database open errors, RPC initialization failures, and signal-registration failures are also reported as structured errors and logged before the process exits.
+
 ## Chain Configuration
 
 Each chain is described by a TOML file. Built-in configs are embedded at

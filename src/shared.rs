@@ -3,12 +3,16 @@
 use crate::config::ScalarKind;
 use serde::{Deserialize, Serialize};
 use sled::Tree;
-use std::fmt;
+use std::{
+    fmt,
+    sync::{Mutex, MutexGuard},
+};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
+use tracing::error;
 use zerocopy::{
-    BigEndian, IntoBytes,
     byteorder::{U16, U32},
+    BigEndian, FromBytes, IntoBytes,
 };
 use zerocopy_derive::*;
 
@@ -52,6 +56,39 @@ pub enum IndexError {
     Io(#[from] std::io::Error),
     #[error("TOML serialization error")]
     TomlSer(#[from] toml::ser::Error),
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+pub fn internal_error(message: impl Into<String>) -> IndexError {
+    IndexError::Internal(message.into())
+}
+
+pub fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!("Recovering poisoned mutex: {name}");
+            poisoned.into_inner()
+        }
+    }
+}
+
+pub fn decode_u32_key(bytes: &[u8]) -> Option<u32> {
+    let key: [u8; 4] = bytes.try_into().ok()?;
+    Some(u32::from_be_bytes(key))
+}
+
+pub fn decode_event_ref_suffix(bytes: &[u8]) -> Option<EventRef> {
+    let suffix: [u8; 6] = bytes.try_into().ok()?;
+    Some(EventRef {
+        block_number: u32::from_be_bytes(suffix[..4].try_into().ok()?),
+        event_index: u16::from_be_bytes(suffix[4..].try_into().ok()?),
+    })
+}
+
+pub fn read_span_db_value(bytes: &[u8]) -> Option<SpanDbValue> {
+    SpanDbValue::read_from_bytes(bytes).ok()
 }
 
 // ─── On-disk key formats ──────────────────────────────────────────────────────
@@ -384,8 +421,10 @@ impl Key {
                 };
                 trees.variant.insert(key.as_bytes(), &[])?;
             }
-            _ => {
-                let mut key = self.index_prefix().unwrap();
+            Key::Custom(_) => {
+                let mut key = self.index_prefix().ok_or_else(|| {
+                    sled::Error::Io(std::io::Error::other("custom key missing index prefix"))
+                })?;
                 key.extend_from_slice(&block_number.to_be_bytes());
                 key.extend_from_slice(&event_index.to_be_bytes());
                 trees.index.insert(key, &[])?;
@@ -403,7 +442,10 @@ impl Key {
         use crate::websockets::get_events_index;
         match self {
             Key::Variant(pi, vi) => get_events_variant(&trees.variant, *pi, *vi, before, limit),
-            _ => get_events_index(&trees.index, &self.index_prefix().unwrap(), before, limit),
+            Key::Custom(_) => self
+                .index_prefix()
+                .map(|prefix| get_events_index(&trees.index, &prefix, before, limit))
+                .unwrap_or_default(),
         }
     }
 }
@@ -419,7 +461,10 @@ fn get_events_variant(
     let mut events = Vec::new();
     let mut iter = tree.scan_prefix([pallet_id, variant_id]).keys();
     while let Some(Ok(key)) = iter.next_back() {
-        let key = VariantKey::read_from_bytes(&key).unwrap();
+        let Ok(key) = VariantKey::read_from_bytes(&key) else {
+            error!("Skipping malformed variant index key");
+            continue;
+        };
         let event = EventRef {
             block_number: key.block_number.into(),
             event_index: key.event_index.into(),
@@ -628,10 +673,10 @@ pub enum SubscriptionMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::Deserialize;
     use serde::de::value::{
-        Error as ValueError, StrDeserializer, U64Deserializer, U128Deserializer,
+        Error as ValueError, StrDeserializer, U128Deserializer, U64Deserializer,
     };
+    use serde::Deserialize;
 
     #[test]
     fn u64_text_serializes_and_deserializes_from_multiple_input_shapes() {

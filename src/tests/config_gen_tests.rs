@@ -3,6 +3,7 @@ mod config_gen_tests {
     use crate::{
         config::{ParamConfig, ScalarKind},
         config_gen::infer_param,
+        shared::{metadata_version, unsupported_metadata_error},
     };
     use scale_info::{MetaType, PortableRegistry, Registry, TypeDef, TypeInfo};
 
@@ -182,5 +183,22 @@ mod config_gen_tests {
                 "missing sdk pallet {pallet_name}"
             );
         }
+    }
+
+    #[test]
+    fn metadata_version_reads_prefixed_version_byte() {
+        assert_eq!(metadata_version(b"meta\x0drest"), Some(13));
+        assert_eq!(metadata_version(b"meta\x0erest"), Some(14));
+        assert_eq!(metadata_version(b"met"), None);
+        assert_eq!(metadata_version(b"nope\x0e"), None);
+    }
+
+    #[test]
+    fn unsupported_metadata_error_explains_v14_requirement() {
+        let err = unsupported_metadata_error(13, "statemine", 2);
+        assert_eq!(
+            err.to_string(),
+            "internal error: unsupported metadata version v13 from runtime statemine specVersion 2; the node may still be syncing early chain history before a runtime upgrade"
+        );
     }
 }

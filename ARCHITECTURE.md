@@ -318,6 +318,16 @@ Important invariant:
 
 `src/config_gen.rs` inspects metadata from a live chain and builds a starter TOML config.
 
+It currently requires runtime metadata v14 or higher. The generator relies on
+`subxt` to convert the raw `state_getMetadata` payload into the metadata model
+used for pallet/event inspection, and that conversion path does not support the
+legacy v13 payloads returned by older runtimes.
+
+In practice this limitation usually appears when a node is still syncing early
+chain history and its current best block is still running a pre-upgrade runtime.
+The generator checks the raw metadata version first and returns a targeted error
+that explains the likely sync/runtime-upgrade cause.
+
 This is heuristic, not perfect. It tries to:
 
 - detect account-like fields

@@ -97,6 +97,16 @@ Generate a starter config from a live node:
 acuity-index --url wss://mynode:443 --generate-chain-config ./chains/mychain.toml
 ```
 
+`--generate-chain-config` currently requires runtime metadata v14 or higher.
+The generator uses `subxt` metadata decoding to inspect pallets and event fields,
+and the current implementation only converts modern FRAME metadata layouts. Nodes
+serving older metadata, such as v13 from early chain history before a runtime
+upgrade, are rejected with an explicit error instead of a generic decode failure.
+
+This most often happens when pointing at a node that is still syncing from an old
+genesis/runtime snapshot. In that case, wait until the chain has synced past the
+runtime upgrade that introduced v14+ metadata and try again.
+
 ## Syncing And Warp-Synced Nodes
 
 `acuity-index` indexes backwards from the observed tip while also tracking new blocks at the head. When the node is syncing quickly, `--queue-depth` is used for both historical backfill and forward HEAD catch-up so the indexer can catch up instead of processing only one new head block at a time.

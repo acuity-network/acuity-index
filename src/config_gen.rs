@@ -1,7 +1,7 @@
 use crate::{
     config::{ChainConfig, EventConfig, PalletConfig, ParamConfig, ScalarKind},
     pallets::is_supported_sdk_pallet,
-    shared::IndexError,
+    shared::{IndexError, metadata_version, unsupported_metadata_error},
 };
 use scale_info::{
     Field, PortableRegistry, Type, TypeDef, TypeDefPrimitive, Variant, form::PortableForm,
@@ -10,7 +10,7 @@ use std::{collections::HashMap, fs, path::Path};
 use subxt::{
     Metadata, OnlineClient, PolkadotConfig,
     config::RpcConfigFor,
-    rpcs::{RpcClient, methods::legacy::LegacyRpcMethods},
+    rpcs::{RpcClient, methods::legacy::LegacyRpcMethods, rpc_params},
 };
 
 fn is_account_field_name(name: &str) -> bool {
@@ -456,21 +456,28 @@ pub async fn write_generated_chain_config(
 ) -> Result<ChainConfig, IndexError> {
     let rpc_client = RpcClient::from_url(url).await?;
     let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone()).await?;
-    let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client);
+    let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client.clone());
 
     let runtime_version = rpc.state_get_runtime_version(None).await?;
-    let metadata: Metadata = rpc
-        .state_get_metadata(None)
-        .await?
-        .to_frame_metadata()?
-        .try_into()?;
-    let genesis_hash = hex::encode(api.genesis_hash().as_ref());
-    let chain_name = runtime_version
+    let metadata_hex: String = rpc_client
+        .request(
+            "state_getMetadata",
+            rpc_params![Option::<subxt::utils::H256>::None],
+        )
+        .await?;
+    let metadata_bytes = hex::decode(metadata_hex.strip_prefix("0x").unwrap_or(&metadata_hex))?;
+    let spec_name = runtime_version
         .other
         .get("specName")
         .and_then(|value| value.as_str())
-        .unwrap_or("custom-runtime")
-        .to_owned();
+        .unwrap_or("custom-runtime");
+    let spec_version = u64::from(runtime_version.spec_version);
+    if let Some(version) = metadata_version(&metadata_bytes) && version < 14 {
+        return Err(unsupported_metadata_error(version, spec_name, spec_version));
+    }
+    let metadata: Metadata = rpc.state_get_metadata(None).await?.to_frame_metadata()?.try_into()?;
+    let genesis_hash = hex::encode(api.genesis_hash().as_ref());
+    let chain_name = spec_name.to_owned();
 
     let config = build_chain_config(&chain_name, &genesis_hash, url, &metadata);
     let toml = render_chain_config_toml(&config)?;

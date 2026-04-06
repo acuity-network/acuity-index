@@ -34,7 +34,7 @@ pub enum IndexError {
         "historical block data unavailable at #{block_number}; the node may be warp syncing or pruning block bodies"
     )]
     HistoricalBlockDataUnavailable { block_number: u32 },
-    #[error("RPC error")]
+    #[error("RPC error: {0}")]
     RpcError(#[from] subxt::rpcs::Error),
     #[error("codec error")]
     CodecError(#[from] subxt::ext::codec::Error),
@@ -62,6 +62,24 @@ pub enum IndexError {
 
 pub fn internal_error(message: impl Into<String>) -> IndexError {
     IndexError::Internal(message.into())
+}
+
+pub fn metadata_version(metadata_bytes: &[u8]) -> Option<u8> {
+    if metadata_bytes.len() < 5 {
+        return None;
+    }
+
+    if &metadata_bytes[..4] != b"meta" {
+        return None;
+    }
+
+    Some(metadata_bytes[4])
+}
+
+pub fn unsupported_metadata_error(version: u8, spec_name: &str, spec_version: u64) -> IndexError {
+    internal_error(format!(
+        "unsupported metadata version v{version} from runtime {spec_name} specVersion {spec_version}; the node may still be syncing early chain history before a runtime upgrade"
+    ))
 }
 
 pub fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {

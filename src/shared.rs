@@ -31,9 +31,9 @@ pub enum IndexError {
     #[error("block not found: {0}")]
     BlockNotFound(u32),
     #[error(
-        "historical block data unavailable at #{block_number}; the node may be warp syncing or pruning block bodies"
+        "node is pruning historical state at #{block_number}; --state-pruning must be set to archive-canonical"
     )]
-    HistoricalBlockDataUnavailable { block_number: u32 },
+    StatePruningMisconfigured { block_number: u32 },
     #[error("RPC error: {0}")]
     RpcError(#[from] subxt::rpcs::Error),
     #[error("codec error")]

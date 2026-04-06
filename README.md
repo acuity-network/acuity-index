@@ -37,6 +37,7 @@ Any Substrate chain can be supported by providing a custom TOML config with `--c
 
 - Rust **stable** (see `rust-toolchain.toml`)
 - A running Substrate node with WebSocket RPC enabled
+- The node must be started with `--state-pruning archive-canonical`
 
 ## Installation
 
@@ -111,11 +112,15 @@ runtime upgrade that introduced v14+ metadata and try again.
 
 `acuity-index` indexes backwards from the observed tip while also tracking new blocks at the head. When the node is syncing quickly, `--queue-depth` is used for both historical backfill and forward HEAD catch-up so the indexer can catch up instead of processing only one new head block at a time.
 
-The indexer now treats missing historical block bodies as a hard error. If the node can return a block hash but cannot return the block body for that hash, indexing stops with a `HistoricalBlockDataUnavailable` error instead of retrying indefinitely.
+The indexer requires historical state to be available. If the node prunes historical state, indexing stops with an explicit error explaining that `--state-pruning` must be set to `archive-canonical`.
 
-This matters for nodes that are still syncing and for nodes started in modes like `warp` or with non-archive pruning, where headers may exist but historical block bodies are unavailable.
+For `polkadot-omni-node`, a working example is:
 
-For full historical indexing, use a node that can serve historical block bodies for the range you expect to index.
+```bash
+polkadot-omni-node --chain target/dev-chain-spec.json --dev --dev-block-time 1000 --state-pruning archive-canonical
+```
+
+Without `--state-pruning archive-canonical`, the node may still serve recent heads, but `acuity-index` will fail once it needs historical state during backfill.
 
 ## Shutdown Behavior
 

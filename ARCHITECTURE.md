@@ -93,16 +93,15 @@ This is why the README describes the indexer as indexing backward while simultan
 `Indexer::index_block(block_number)` does the block-level work:
 
 1. Fetch the block hash from RPC.
-2. Confirm the block body is available.
-3. Create a block-scoped `subxt` view with `api.at_block(hash)`.
-4. Fetch and iterate decoded runtime events.
-5. For each event:
-   - Read pallet name, event name, pallet index, and variant index.
-   - Optionally write a variant index record if `index_variant` is enabled.
-   - Decode fields schema-lessly into `scale_value::Composite<()>`.
-   - Derive indexing keys.
-    - Write event references for each derived key.
-    - Optionally store a JSON-encoded decoded event if `store_events` is enabled.
+2. Create a block-scoped `subxt` view with `api.at_block(hash)`.
+3. Fetch and iterate decoded runtime events.
+4. For each event:
+    - Read pallet name, event name, pallet index, and variant index.
+    - Optionally write a variant index record if `index_variant` is enabled.
+    - Decode fields schema-lessly into `scale_value::Composite<()>`.
+    - Derive indexing keys.
+     - Write event references for each derived key.
+     - Optionally store a JSON-encoded decoded event if `store_events` is enabled.
 
 Operational detail:
 
@@ -116,9 +115,9 @@ Operational detail:
 2. Otherwise fall back to the resolved TOML config from `ChainConfig::build_custom_index()`.
 3. If neither path yields keys, the event is ignored unless variant indexing causes it to be stored/queryable by variant.
 
-### Why `HistoricalBlockDataUnavailable` exists
+### Historical state requirement
 
-`Indexer::index_block` treats a missing block body as a hard error even if the block hash exists. This protects the process from looping forever against warp-synced or pruned nodes that cannot serve historical bodies.
+`Indexer::index_block` requires historical state to be available for `api.at_block(hash)`. If the connected node has pruned historical state, the indexer exits with `StatePruningMisconfigured` and instructs the operator to run the node with `--state-pruning archive-canonical`.
 
 ## Concurrency Model
 

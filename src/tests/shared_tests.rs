@@ -440,12 +440,12 @@ mod shared_tests {
     }
 
     #[test]
-    fn historical_block_data_unavailable_error_mentions_warp_sync_and_block_number() {
-        let err = IndexError::HistoricalBlockDataUnavailable { block_number: 42 };
+    fn state_pruning_misconfigured_error_mentions_required_flags() {
+        let err = IndexError::StatePruningMisconfigured { block_number: 42 };
         let text = err.to_string();
 
         assert!(text.contains("#42"));
-        assert!(text.contains("warp syncing"));
+        assert!(text.contains("--state-pruning must be set to archive-canonical"));
     }
 
     #[test]

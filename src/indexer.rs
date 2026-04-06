@@ -8,7 +8,10 @@ use serde_json::json;
 use sled::Tree;
 use std::{collections::HashMap, sync::Mutex};
 use subxt::{
-    OnlineClient, PolkadotConfig, client::Block, config::RpcConfigFor,
+    OnlineClient, PolkadotConfig,
+    client::Block,
+    config::RpcConfigFor,
+    error::{BackendError, OnlineClientAtBlockError, RpcError},
     rpcs::methods::legacy::LegacyRpcMethods,
 };
 use tokio::{
@@ -95,10 +98,13 @@ impl Indexer {
 
     fn runtime_clients(
         &self,
-    ) -> Result<(
-        &OnlineClient<PolkadotConfig>,
-        &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
-    ), IndexError> {
+    ) -> Result<
+        (
+            &OnlineClient<PolkadotConfig>,
+            &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+        ),
+        IndexError,
+    > {
         let api = self
             .api
             .as_ref()
@@ -119,11 +125,13 @@ impl Indexer {
             .await?
             .ok_or(IndexError::BlockNotFound(block_number))?;
 
-        if rpc.chain_get_block(Some(block_hash)).await?.is_none() {
-            return Err(IndexError::HistoricalBlockDataUnavailable { block_number });
-        }
-
-        let at_block = api.at_block(block_hash).await?;
+        let at_block = api.at_block(block_hash).await.map_err(|err| {
+            if is_state_pruned_error(&err) {
+                IndexError::StatePruningMisconfigured { block_number }
+            } else {
+                err.into()
+            }
+        })?;
         let spec = at_block.spec_version();
         let events = at_block.events().fetch().await?;
 
@@ -136,9 +144,9 @@ impl Indexer {
                 }
             };
 
-            let event_index: u16 = i
-                .try_into()
-                .map_err(|_| internal_error(format!("event index exceeds u16 for block {block_number}")))?;
+            let event_index: u16 = i.try_into().map_err(|_| {
+                internal_error(format!("event index exceeds u16 for block {block_number}"))
+            })?;
             let pallet_name = event.pallet_name();
             let event_name = event.event_name();
             let pallet_index = event.pallet_index();
@@ -354,6 +362,18 @@ impl Indexer {
         if subs.get(&key).is_some_and(Vec::is_empty) {
             subs.remove(&key);
         }
+    }
+}
+
+fn is_state_pruned_error(err: &OnlineClientAtBlockError) -> bool {
+    match err {
+        OnlineClientAtBlockError::CannotGetSpecVersion {
+            reason: BackendError::Rpc(RpcError::ClientError(subxt::rpcs::Error::User(user_err))),
+            ..
+        } => {
+            user_err.code == 4003 && user_err.message.contains("State already discarded")
+        }
+        _ => false,
     }
 }
 
@@ -859,8 +879,8 @@ fn process_queued_head_result(
             }
             Ok(())
         }
-        Err(IndexError::HistoricalBlockDataUnavailable { block_number }) => {
-            Err(IndexError::HistoricalBlockDataUnavailable { block_number })
+        Err(IndexError::StatePruningMisconfigured { block_number }) => {
+            Err(IndexError::StatePruningMisconfigured { block_number })
         }
         Err(err) => {
             error!("✨ Head indexing error: {err}");
@@ -1126,6 +1146,9 @@ pub async fn run_indexer(
                         futures.clear();
                         continue;
                     }
+                    Err(IndexError::StatePruningMisconfigured { block_number }) => {
+                        return Err(IndexError::StatePruningMisconfigured { block_number });
+                    }
                     Err(err) => {
                         error!("📚 Batch error: {err:?}");
                         futures.clear();
@@ -1142,9 +1165,9 @@ pub async fn run_indexer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zerocopy::FromBytes;
     use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
     use serde_json::json;
+    use zerocopy::FromBytes;
     use zerocopy::IntoBytes;
 
     fn temp_trees() -> Trees {
@@ -1531,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn process_queued_head_result_propagates_unavailable_history_errors() {
+    fn process_queued_head_result_propagates_state_pruning_errors() {
         let trees = temp_trees();
         let indexer = test_indexer(trees.clone(), true);
         let initial = Span { start: 30, end: 30 };
@@ -1547,13 +1570,13 @@ mod tests {
             true,
             &indexer,
             &mut head_orphans,
-            Err(IndexError::HistoricalBlockDataUnavailable { block_number: 31 }),
+            Err(IndexError::StatePruningMisconfigured { block_number: 31 }),
         )
         .unwrap_err();
 
         assert!(matches!(
             err,
-            IndexError::HistoricalBlockDataUnavailable { block_number: 31 }
+            IndexError::StatePruningMisconfigured { block_number: 31 }
         ));
         assert_eq!(current_span.end, 30);
         assert!(head_orphans.is_empty());

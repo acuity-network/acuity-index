@@ -16,7 +16,7 @@ use tokio::{
     time::{self, Duration, Instant, MissedTickBehavior},
 };
 use tracing::{debug, error, info};
-use zerocopy::{FromBytes, IntoBytes};
+use zerocopy::IntoBytes;
 
 use crate::{
     config::{ChainConfig, KeyTypeName, ParamKey, ResolvedParamConfig},
@@ -1142,6 +1142,7 @@ pub async fn run_indexer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zerocopy::FromBytes;
     use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
     use serde_json::json;
     use zerocopy::IntoBytes;

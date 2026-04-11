@@ -15,7 +15,7 @@ service, see [SECURITY.md](./SECURITY.md).
 
 - **Config-driven** — indexing rules are defined in TOML files; no recompilation needed for new chains
 - **Built-in SDK pallets** — first-class support for common Polkadot SDK pallets (Balances, Staking, Referenda, NominationPools, etc.)
-- **Custom pallet rules** — map any event field to an index key via TOML
+- **Custom pallet rules** — map event fields to scalar or binary composite index keys via TOML
 - **Resume-safe** — tracks indexed block spans and resumes after restart
 - **Safe shutdown** — persists progress and exits cleanly on termination signals or when the upstream node disconnects
 - **Backward indexing** — indexes from the chain tip backwards while simultaneously tracking new blocks
@@ -164,6 +164,7 @@ sdk = true
 # Custom keys must be declared once at schema level
 [custom_keys]
 item_id = "bytes32"
+item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
 
 # Custom pallet — built-in and generic scalar mappings
 [[pallets]]
@@ -179,6 +180,10 @@ key = "account_id"  # built-in key
 [[pallets.events.params]]
 field = "item_id"
 key = "item_id"     # custom query key name
+
+[[pallets.events.params]]
+fields = ["item_id", "revision_id"]
+key = "item_revision" # binary composite query key
 ```
 
 ### Built-in Key Types
@@ -230,6 +235,41 @@ field = "candidate_hash"
 key = "candidate_hash"
 ```
 
+### Composite Custom Keys
+
+Composite custom keys let the indexer build one binary query key from multiple
+event fields. They are defined in `[custom_keys]` and referenced with
+`fields = ["...", "..."]` in event params.
+
+Example:
+
+```toml
+[custom_keys]
+item_id = "bytes32"
+revision_id = "u32"
+item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
+
+[[pallets]]
+name = "ContentReactions"
+
+[[pallets.events]]
+name = "SetReactions"
+
+[[pallets.events.params]]
+fields = ["item_id", "revision_id"]
+key = "item_revision"
+
+[[pallets.events.params]]
+field = "reactor"
+key = "account_id"
+```
+
+Notes:
+
+- Use `field = "..."` for built-in keys and scalar custom keys.
+- Use `fields = [...]` only for composite custom keys.
+- Composite key values are ordered and binary encoded, so field order matters.
+
 ## WebSocket API
 
 The complete WebSocket API reference now lives in [`API.md`](API.md).
@@ -247,6 +287,7 @@ It covers:
 - all request types
 - notification types
 - key formats
+- composite key request shapes
 - pagination semantics
 - error responses
 - backpressure and subscription termination behavior

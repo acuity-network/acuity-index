@@ -71,7 +71,8 @@ mod config_gen_tests {
             param,
             (
                 ParamConfig {
-                    field: "owner".into(),
+                    field: Some("owner".into()),
+                    fields: vec![],
                     key: "account_id".into(),
                     multi: false,
                 },
@@ -91,7 +92,8 @@ mod config_gen_tests {
 
         assert!(params.contains(&(
             ParamConfig {
-                field: "para_id".into(),
+                field: Some("para_id".into()),
+                fields: vec![],
                 key: "para_id".into(),
                 multi: false,
             },
@@ -99,7 +101,8 @@ mod config_gen_tests {
         )));
         assert!(params.contains(&(
             ParamConfig {
-                field: "revision".into(),
+                field: Some("revision".into()),
+                fields: vec![],
                 key: "revision".into(),
                 multi: false,
             },
@@ -107,7 +110,8 @@ mod config_gen_tests {
         )));
         assert!(params.contains(&(
             ParamConfig {
-                field: "slug".into(),
+                field: Some("slug".into()),
+                fields: vec![],
                 key: "slug".into(),
                 multi: false,
             },
@@ -115,7 +119,8 @@ mod config_gen_tests {
         )));
         assert!(params.contains(&(
             ParamConfig {
-                field: "published".into(),
+                field: Some("published".into()),
+                fields: vec![],
                 key: "published".into(),
                 multi: false,
             },
@@ -123,7 +128,8 @@ mod config_gen_tests {
         )));
         assert!(params.contains(&(
             ParamConfig {
-                field: "hash".into(),
+                field: Some("hash".into()),
+                fields: vec![],
                 key: "hash".into(),
                 multi: false,
             },
@@ -139,7 +145,8 @@ mod config_gen_tests {
             param,
             (
                 ParamConfig {
-                    field: "0".into(),
+                    field: Some("0".into()),
+                    fields: vec![],
                     key: "para_id".into(),
                     multi: false,
                 },

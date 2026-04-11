@@ -200,6 +200,25 @@ mod websocket_tests {
     }
 
     #[test]
+    fn get_events_composite_multiple() {
+        let trees = temp_trees();
+        let key = Key::Custom(CustomKey {
+            name: "item_revision".into(),
+            value: CustomValue::Composite(vec![
+                CustomValue::Bytes32(Bytes32([0x11; 32])),
+                CustomValue::U32(7),
+            ]),
+        });
+        key.write_db_key(&trees, 5, 0).unwrap();
+        key.write_db_key(&trees, 15, 1).unwrap();
+
+        let events = get_events_index(&trees.index, &key.index_prefix().unwrap(), None, 100);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].block_number, 15);
+        assert_eq!(events[1].block_number, 5);
+    }
+
+    #[test]
     fn get_events_before_cursor_filters_newer_results() {
         let trees = temp_trees();
         let key = Key::Custom(CustomKey {

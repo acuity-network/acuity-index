@@ -224,7 +224,13 @@ Pallet configuration supports two modes:
 `ParamConfig::resolve(...)` turns TOML key names into runtime `ParamKey` values:
 
 - `ParamKey::BuiltIn(KeyTypeName)` for built-in semantic keys like `account_id` or `ref_index`
-- `ParamKey::Custom { name, kind }` for user-defined keys declared in `[custom_keys]`
+- `ParamKey::Custom { name, kind }` for scalar user-defined keys declared in `[custom_keys]`
+- `ParamKey::CompositeCustom { name, fields }` for binary composite user-defined keys built from multiple event fields
+
+Custom event params may use either `field = "..."` for scalar/built-in keys or
+`fields = ["...", "..."]` for composite custom keys. Composite keys are encoded
+as ordered binary tuples by the indexer and queried through the same `Key::Custom`
+API surface.
 
 Important invariant:
 

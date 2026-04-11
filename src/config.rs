@@ -60,15 +60,41 @@ pub enum ScalarKind {
     Bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CustomKeyConfig {
+    Scalar(ScalarKind),
+    Composite(CompositeKeyConfig),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub struct CompositeKeyConfig {
+    pub kind: CompositeKind,
+    pub fields: Vec<ScalarKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositeKind {
+    Composite,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamKey {
     BuiltIn(KeyTypeName),
-    Custom { name: String, kind: ScalarKind },
+    Custom {
+        name: String,
+        kind: ScalarKind,
+    },
+    CompositeCustom {
+        name: String,
+        fields: Vec<ScalarKind>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedParamConfig {
-    pub field: String,
+    pub fields: Vec<String>,
     pub key: ParamKey,
     pub multi: bool,
 }
@@ -79,7 +105,10 @@ pub type CustomIndex = HashMap<String, HashMap<String, Vec<ResolvedParamConfig>>
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ParamConfig {
     /// Field name (string) or positional index (stringified number, e.g. "0").
-    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
     pub key: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub multi: bool,
@@ -88,26 +117,82 @@ pub struct ParamConfig {
 impl ParamConfig {
     pub fn resolve(
         &self,
-        custom_keys: &HashMap<String, ScalarKind>,
+        custom_keys: &HashMap<String, CustomKeyConfig>,
     ) -> Result<ResolvedParamConfig, String> {
+        let fields = match (&self.field, self.fields.is_empty()) {
+            (Some(field), true) => vec![field.clone()],
+            (None, false) => self.fields.clone(),
+            (Some(_), false) => {
+                return Err(format!(
+                    "param for key '{}' must specify either field or fields, not both",
+                    self.key
+                ));
+            }
+            (None, true) => {
+                return Err(format!(
+                    "param for key '{}' must specify field or fields",
+                    self.key
+                ));
+            }
+        };
+
         let key = match KeyTypeName::parse(&self.key) {
-            Some(key) => ParamKey::BuiltIn(key),
+            Some(key) => {
+                if fields.len() != 1 {
+                    return Err(format!(
+                        "built-in key '{}' for field(s) {:?} requires exactly one source field",
+                        self.key, fields
+                    ));
+                }
+                ParamKey::BuiltIn(key)
+            }
             None => match custom_keys.get(&self.key) {
-                Some(kind) => ParamKey::Custom {
-                    name: self.key.clone(),
-                    kind: kind.clone(),
-                },
+                Some(CustomKeyConfig::Scalar(kind)) => {
+                    if fields.len() != 1 {
+                        return Err(format!(
+                            "scalar key '{}' for field(s) {:?} requires exactly one source field",
+                            self.key, fields
+                        ));
+                    }
+                    ParamKey::Custom {
+                        name: self.key.clone(),
+                        kind: kind.clone(),
+                    }
+                }
+                Some(CustomKeyConfig::Composite(config)) => {
+                    if self.multi {
+                        return Err(format!(
+                            "composite key '{}' does not support multi=true",
+                            self.key
+                        ));
+                    }
+                    if config.kind != CompositeKind::Composite {
+                        return Err(format!("unsupported composite key kind for '{}'", self.key));
+                    }
+                    if fields.len() != config.fields.len() {
+                        return Err(format!(
+                            "composite key '{}' expects {} fields, got {}",
+                            self.key,
+                            config.fields.len(),
+                            fields.len()
+                        ));
+                    }
+                    ParamKey::CompositeCustom {
+                        name: self.key.clone(),
+                        fields: config.fields.clone(),
+                    }
+                }
                 None => {
                     return Err(format!(
-                        "unknown key '{}' for field '{}' (define it in custom_keys)",
-                        self.key, self.field
+                        "unknown key '{}' for field(s) {:?} (define it in custom_keys)",
+                        self.key, fields
                     ));
                 }
             },
         };
 
         Ok(ResolvedParamConfig {
-            field: self.field.clone(),
+            fields,
             key,
             multi: self.multi,
         })
@@ -141,7 +226,7 @@ pub struct ChainConfig {
     pub default_url: String,
     pub versions: Vec<u32>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub custom_keys: HashMap<String, ScalarKind>,
+    pub custom_keys: HashMap<String, CustomKeyConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pallets: Vec<PalletConfig>,
 }
@@ -227,14 +312,18 @@ mod tests {
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
             versions: vec![0],
-            custom_keys: HashMap::from([("item_id".into(), ScalarKind::Bytes32)]),
+            custom_keys: HashMap::from([(
+                "item_id".into(),
+                CustomKeyConfig::Scalar(ScalarKind::Bytes32),
+            )]),
             pallets: vec![PalletConfig {
                 name: "Content".into(),
                 sdk: false,
                 events: vec![EventConfig {
                     name: "Published".into(),
                     params: vec![ParamConfig {
-                        field: "item_id".into(),
+                        field: Some("item_id".into()),
+                        fields: vec![],
                         key: "item_id".into(),
                         multi: false,
                     }],

@@ -22,7 +22,7 @@ use tracing::{debug, error, info};
 use zerocopy::IntoBytes;
 
 use crate::{
-    config::{ChainConfig, KeyTypeName, ParamKey, ResolvedParamConfig},
+    config::{ChainConfig, KeyTypeName, ParamKey, ResolvedParamConfig, ScalarKind},
     pallets::{
         extract_bool, extract_bytes32, extract_string, extract_u32, extract_u64, extract_u128,
         get_field, index_sdk_pallet,
@@ -263,13 +263,16 @@ impl Indexer {
     fn keys_from_params(&self, params: &[ResolvedParamConfig], fields: &Composite<()>) -> Vec<Key> {
         let mut keys = Vec::new();
         for param in params {
-            let value = match get_field(fields, &param.field) {
-                Some(v) => v,
-                None => continue,
-            };
             if param.multi {
+                let Some(field) = param.fields.first() else {
+                    continue;
+                };
+                let value = match get_field(fields, field) {
+                    Some(v) => v,
+                    None => continue,
+                };
                 keys.extend(values_to_keys(value, &param.key));
-            } else if let Some(key) = value_to_key(value, &param.key) {
+            } else if let Some(key) = values_to_key(fields, &param.fields, &param.key) {
                 keys.push(key);
             }
         }
@@ -435,23 +438,19 @@ fn value_to_builtin_key(value: &Value<()>, key_type: &KeyTypeName) -> Option<Key
     }))
 }
 
-fn value_to_custom_key(
-    value: &Value<()>,
-    name: &str,
-    kind: &crate::config::ScalarKind,
-) -> Option<Key> {
-    let value = match kind {
-        crate::config::ScalarKind::Bytes32 => {
-            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b)))
-        }
-        crate::config::ScalarKind::U32 => extract_u32(value).map(CustomValue::U32),
-        crate::config::ScalarKind::U64 => extract_u64(value).map(|v| CustomValue::U64(U64Text(v))),
-        crate::config::ScalarKind::U128 => {
-            extract_u128(value).map(|v| CustomValue::U128(U128Text(v)))
-        }
-        crate::config::ScalarKind::String => extract_string(value).map(CustomValue::String),
-        crate::config::ScalarKind::Bool => extract_bool(value).map(CustomValue::Bool),
-    }?;
+fn value_to_custom_value(value: &Value<()>, kind: &ScalarKind) -> Option<CustomValue> {
+    match kind {
+        ScalarKind::Bytes32 => extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
+        ScalarKind::U32 => extract_u32(value).map(CustomValue::U32),
+        ScalarKind::U64 => extract_u64(value).map(|v| CustomValue::U64(U64Text(v))),
+        ScalarKind::U128 => extract_u128(value).map(|v| CustomValue::U128(U128Text(v))),
+        ScalarKind::String => extract_string(value).map(CustomValue::String),
+        ScalarKind::Bool => extract_bool(value).map(CustomValue::Bool),
+    }
+}
+
+fn value_to_custom_key(value: &Value<()>, name: &str, kind: &ScalarKind) -> Option<Key> {
+    let value = value_to_custom_value(value, kind)?;
 
     Some(Key::Custom(CustomKey {
         name: name.to_owned(),
@@ -459,10 +458,35 @@ fn value_to_custom_key(
     }))
 }
 
+fn values_to_key(fields: &Composite<()>, field_names: &[String], key: &ParamKey) -> Option<Key> {
+    match key {
+        ParamKey::BuiltIn(_) | ParamKey::Custom { .. } => {
+            let field = field_names.first()?;
+            let value = get_field(fields, field)?;
+            value_to_key(value, key)
+        }
+        ParamKey::CompositeCustom {
+            name,
+            fields: kinds,
+        } => {
+            let mut values = Vec::with_capacity(field_names.len());
+            for (field_name, kind) in field_names.iter().zip(kinds) {
+                let value = get_field(fields, field_name)?;
+                values.push(value_to_custom_value(value, kind)?);
+            }
+            Some(Key::Custom(CustomKey {
+                name: name.clone(),
+                value: CustomValue::Composite(values),
+            }))
+        }
+    }
+}
+
 fn value_to_key(value: &Value<()>, key: &ParamKey) -> Option<Key> {
     match key {
         ParamKey::BuiltIn(key_type) => value_to_builtin_key(value, key_type),
         ParamKey::Custom { name, kind } => value_to_custom_key(value, name, kind),
+        ParamKey::CompositeCustom { .. } => None,
     }
 }
 

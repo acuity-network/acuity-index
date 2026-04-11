@@ -1,5 +1,5 @@
 use crate::{
-    config::{ChainConfig, EventConfig, PalletConfig, ParamConfig, ScalarKind},
+    config::{ChainConfig, CustomKeyConfig, EventConfig, PalletConfig, ParamConfig, ScalarKind},
     pallets::is_supported_sdk_pallet,
     shared::{IndexError, metadata_version, unsupported_metadata_error},
 };
@@ -229,7 +229,8 @@ pub(crate) fn infer_param(
         {
             return Some((
                 ParamConfig {
-                    field: field_ref,
+                    field: Some(field_ref),
+                    fields: vec![],
                     key: "account_id".to_owned(),
                     multi: true,
                 },
@@ -240,7 +241,8 @@ pub(crate) fn infer_param(
         let kind = infer_scalar_kind(element_type_id, types)?;
         return Some((
             ParamConfig {
-                field: field_ref,
+                field: Some(field_ref),
+                fields: vec![],
                 key: infer_item_key_name(field_name, type_name, element_ty, idx),
                 multi: true,
             },
@@ -254,7 +256,8 @@ pub(crate) fn infer_param(
     {
         return Some((
             ParamConfig {
-                field: field_ref,
+                field: Some(field_ref),
+                fields: vec![],
                 key: "account_id".to_owned(),
                 multi: false,
             },
@@ -266,7 +269,8 @@ pub(crate) fn infer_param(
 
     Some((
         ParamConfig {
-            field: field_ref,
+            field: Some(field_ref),
+            fields: vec![],
             key: infer_key_name(field_name, type_name, ty, idx),
             multi: false,
         },
@@ -277,7 +281,7 @@ pub(crate) fn infer_param(
 fn event_config(
     variant: &Variant<PortableForm>,
     types: &PortableRegistry,
-    custom_keys: &mut HashMap<String, ScalarKind>,
+    custom_keys: &mut HashMap<String, CustomKeyConfig>,
 ) -> EventConfig {
     EventConfig {
         name: variant.name.clone(),
@@ -288,7 +292,7 @@ fn event_config(
             .filter_map(|(idx, field)| infer_param(field, idx, types))
             .map(|(param, kind)| {
                 if let Some(kind) = kind {
-                    custom_keys.insert(param.key.clone(), kind);
+                    custom_keys.insert(param.key.clone(), CustomKeyConfig::Scalar(kind));
                 }
                 param
             })
@@ -360,8 +364,20 @@ fn inline_params(params: &[ParamConfig]) -> Result<String, IndexError> {
 
     let mut out = String::from("[");
     for param in params {
-        out.push_str("\n    { field = ");
-        out.push_str(&inline_string(&param.field)?);
+        out.push_str("\n    { ");
+        if let Some(field) = &param.field {
+            out.push_str("field = ");
+            out.push_str(&inline_string(field)?);
+        } else {
+            out.push_str("fields = [");
+            for (index, field) in param.fields.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&inline_string(field)?);
+            }
+            out.push(']');
+        }
         out.push_str(", key = ");
         out.push_str(&inline_string(&param.key)?);
         if param.multi {
@@ -423,7 +439,23 @@ pub(crate) fn render_chain_config_toml(config: &ChainConfig) -> Result<String, I
         for (name, kind) in custom_keys {
             out.push_str(name);
             out.push_str(" = ");
-            out.push_str(&inline_string(scalar_kind_name(kind))?);
+            match kind {
+                CustomKeyConfig::Scalar(kind) => {
+                    out.push_str(&inline_string(scalar_kind_name(kind))?);
+                }
+                CustomKeyConfig::Composite(config) => {
+                    out.push_str("{ kind = ");
+                    out.push_str(&inline_string("composite")?);
+                    out.push_str(", fields = [");
+                    for (index, field_kind) in config.fields.iter().enumerate() {
+                        if index > 0 {
+                            out.push_str(", ");
+                        }
+                        out.push_str(&inline_string(scalar_kind_name(field_kind))?);
+                    }
+                    out.push_str("] }");
+                }
+            }
             out.push('\n');
         }
         out.push('\n');
@@ -633,7 +665,10 @@ mod tests {
         assert_eq!(config.params.len(), 2);
         assert_eq!(config.params[0].key, "account_id");
         assert_eq!(config.params[1].key, "revision");
-        assert_eq!(custom_keys.get("revision"), Some(&ScalarKind::U64));
+        assert_eq!(
+            custom_keys.get("revision"),
+            Some(&CustomKeyConfig::Scalar(ScalarKind::U64))
+        );
     }
 
     #[test]
@@ -664,7 +699,8 @@ mod tests {
             infer_param(&owner_field, 0, &types),
             Some((
                 ParamConfig {
-                    field: "0".into(),
+                    field: Some("0".into()),
+                    fields: vec![],
                     key: "account_id".into(),
                     multi: false,
                 },
@@ -709,8 +745,11 @@ mod tests {
             default_url: "ws://127.0.0.1:9944".into(),
             versions: vec![0],
             custom_keys: HashMap::from([
-                ("item_id".into(), ScalarKind::Bytes32),
-                ("revision_id".into(), ScalarKind::U32),
+                ("item_id".into(), CustomKeyConfig::Scalar(ScalarKind::Bytes32)),
+                (
+                    "revision_id".into(),
+                    CustomKeyConfig::Scalar(ScalarKind::U32),
+                ),
             ]),
             pallets: vec![PalletConfig {
                 name: "Content".into(),
@@ -720,12 +759,14 @@ mod tests {
                         name: "PublishItem".into(),
                         params: vec![
                             ParamConfig {
-                                field: "item_id".into(),
+                                field: Some("item_id".into()),
+                                fields: vec![],
                                 key: "item_id".into(),
                                 multi: false,
                             },
                             ParamConfig {
-                                field: "owner".into(),
+                                field: Some("owner".into()),
+                                fields: vec![],
                                 key: "account_id".into(),
                                 multi: false,
                             },
@@ -735,17 +776,20 @@ mod tests {
                         name: "PublishRevision".into(),
                         params: vec![
                             ParamConfig {
-                                field: "item_id".into(),
+                                field: Some("item_id".into()),
+                                fields: vec![],
                                 key: "item_id".into(),
                                 multi: false,
                             },
                             ParamConfig {
-                                field: "owner".into(),
+                                field: Some("owner".into()),
+                                fields: vec![],
                                 key: "account_id".into(),
                                 multi: false,
                             },
                             ParamConfig {
-                                field: "revision_id".into(),
+                                field: Some("revision_id".into()),
+                                fields: vec![],
                                 key: "revision_id".into(),
                                 multi: false,
                             },

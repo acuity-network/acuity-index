@@ -1,6 +1,5 @@
 //! Shared data types for acuity-index.
 
-use crate::config::ScalarKind;
 use serde::{Deserialize, Serialize};
 use sled::Tree;
 use std::{
@@ -299,28 +298,19 @@ pub enum CustomValue {
     U128(U128Text),
     String(String),
     Bool(bool),
+    Composite(Vec<CustomValue>),
 }
 
 impl CustomValue {
-    pub fn kind(&self) -> ScalarKind {
-        match self {
-            CustomValue::Bytes32(_) => ScalarKind::Bytes32,
-            CustomValue::U32(_) => ScalarKind::U32,
-            CustomValue::U64(_) => ScalarKind::U64,
-            CustomValue::U128(_) => ScalarKind::U128,
-            CustomValue::String(_) => ScalarKind::String,
-            CustomValue::Bool(_) => ScalarKind::Bool,
-        }
-    }
-
     fn tag(&self) -> u8 {
-        match self.kind() {
-            ScalarKind::Bytes32 => 0,
-            ScalarKind::U32 => 1,
-            ScalarKind::U64 => 2,
-            ScalarKind::U128 => 3,
-            ScalarKind::String => 4,
-            ScalarKind::Bool => 5,
+        match self {
+            CustomValue::Bytes32(_) => 0,
+            CustomValue::U32(_) => 1,
+            CustomValue::U64(_) => 2,
+            CustomValue::U128(_) => 3,
+            CustomValue::String(_) => 4,
+            CustomValue::Bool(_) => 5,
+            CustomValue::Composite(_) => 6,
         }
     }
 
@@ -332,6 +322,20 @@ impl CustomValue {
             CustomValue::U128(v) => v.0.to_be_bytes().to_vec(),
             CustomValue::String(v) => v.as_bytes().to_vec(),
             CustomValue::Bool(v) => vec![u8::from(*v)],
+            CustomValue::Composite(values) => {
+                let count = u16::try_from(values.len()).expect("composite value too large");
+                let mut encoded = Vec::new();
+                encoded.extend_from_slice(&count.to_be_bytes());
+                for value in values {
+                    encoded.push(value.tag());
+                    let value_bytes = value.db_bytes();
+                    let value_len =
+                        u32::try_from(value_bytes.len()).expect("composite component too large");
+                    encoded.extend_from_slice(&value_len.to_be_bytes());
+                    encoded.extend_from_slice(&value_bytes);
+                }
+                encoded
+            }
         }
     }
 }
@@ -691,6 +695,7 @@ pub enum SubscriptionMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ScalarKind;
     use serde::de::value::{
         Error as ValueError, StrDeserializer, U128Deserializer, U64Deserializer,
     };
@@ -746,7 +751,6 @@ mod tests {
         ];
 
         for (value, kind, tag) in cases {
-            assert_eq!(value.kind(), kind);
             let key = CustomKey {
                 name: "example".into(),
                 value,
@@ -755,7 +759,36 @@ mod tests {
             assert_eq!(u16::from_be_bytes(prefix[0..2].try_into().unwrap()), 7);
             assert_eq!(&prefix[2..9], b"example");
             assert_eq!(prefix[9], tag);
+            match &key.value {
+                CustomValue::Bytes32(_) => assert_eq!(kind, ScalarKind::Bytes32),
+                CustomValue::U32(_) => assert_eq!(kind, ScalarKind::U32),
+                CustomValue::U64(_) => assert_eq!(kind, ScalarKind::U64),
+                CustomValue::U128(_) => assert_eq!(kind, ScalarKind::U128),
+                CustomValue::String(_) => assert_eq!(kind, ScalarKind::String),
+                CustomValue::Bool(_) => assert_eq!(kind, ScalarKind::Bool),
+                CustomValue::Composite(_) => panic!("unexpected composite value"),
+            }
         }
+    }
+
+    #[test]
+    fn custom_value_composite_db_prefix_and_serde_round_trip() {
+        let value = CustomValue::Composite(vec![
+            CustomValue::Bytes32(Bytes32([0xAA; 32])),
+            CustomValue::U32(7),
+        ]);
+
+        let key = CustomKey {
+            name: "item_revision".into(),
+            value: value.clone(),
+        };
+        let prefix = key.db_prefix();
+        assert_eq!(prefix[15], 6);
+
+        let json = serde_json::to_string(&value).unwrap();
+        assert!(json.contains("\"kind\":\"composite\""));
+        let decoded: CustomValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, value);
     }
 
     #[test]

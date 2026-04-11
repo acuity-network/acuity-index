@@ -148,6 +148,26 @@ Request:
 }
 ```
 
+Composite custom keys use an ordered array of typed values:
+
+```json
+{
+  "id": 3,
+  "type": "GetEvents",
+  "key": {
+    "type": "Custom",
+    "value": {
+      "name": "item_revision",
+      "kind": "composite",
+      "value": [
+        {"kind": "bytes32", "value": "0xabc123..."},
+        {"kind": "u32", "value": 7}
+      ]
+    }
+  }
+}
+```
+
 Response type: `events`
 
 Response payload:

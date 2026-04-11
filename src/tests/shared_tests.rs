@@ -372,6 +372,36 @@ mod shared_tests {
     }
 
     #[test]
+    fn request_get_events_composite_key() {
+        let hex = hex::encode([0xAB; 32]);
+        let json = format!(
+            r#"{{"id":6,"type":"GetEvents","key":{{"type":"Custom","value":{{"name":"item_revision","kind":"composite","value":[{{"kind":"bytes32","value":"0x{hex}"}},{{"kind":"u32","value":7}}]}}}}}}"#
+        );
+        let msg: RequestMessage = serde_json::from_str(&json).unwrap();
+
+        match msg.body {
+            RequestBody::GetEvents {
+                key:
+                    Key::Custom(CustomKey {
+                        name,
+                        value: CustomValue::Composite(values),
+                    }),
+                ..
+            } => {
+                assert_eq!(name, "item_revision");
+                assert_eq!(
+                    values,
+                    vec![
+                        CustomValue::Bytes32(Bytes32([0xAB; 32])),
+                        CustomValue::U32(7)
+                    ]
+                );
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
     fn request_get_events_account_id() {
         let hex = hex::encode([0xAA; 32]);
         let json = format!(

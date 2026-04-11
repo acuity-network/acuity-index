@@ -213,7 +213,7 @@ events = [
         let claims = idx.get("Claims").unwrap();
         let claimed_params = claims.get("Claimed").unwrap();
         assert_eq!(claimed_params.len(), 2);
-        assert_eq!(claimed_params[0].field, "who");
+        assert_eq!(claimed_params[0].fields, vec!["who".to_owned()]);
         assert_eq!(
             claimed_params[0].key,
             ParamKey::BuiltIn(KeyTypeName::AccountId)
@@ -315,6 +315,99 @@ revision_id = "u32"
             ParamKey::BuiltIn(KeyTypeName::AccountId)
         );
         assert!(publish_revision[3].multi);
+    }
+
+    #[test]
+    fn custom_toml_supports_composite_keys() {
+        let toml_str = r#"
+name = "acuity"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[custom_keys]
+item_id = "bytes32"
+revision_id = "u32"
+item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
+
+        [[pallets]]
+        name = "ContentReactions"
+        events = [
+          { name = "SetReactions", params = [
+            { fields = ["item_id", "revision_id"], key = "item_revision" },
+            { field = "reactor", key = "account_id" },
+          ]},
+        ]
+"#;
+        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let idx = cfg.build_custom_index().unwrap();
+        let reactions = idx.get("ContentReactions").unwrap();
+        let params = reactions.get("SetReactions").unwrap();
+
+        assert_eq!(
+            cfg.custom_keys.get("item_revision"),
+            Some(&CustomKeyConfig::Composite(CompositeKeyConfig {
+                kind: CompositeKind::Composite,
+                fields: vec![ScalarKind::Bytes32, ScalarKind::U32],
+            }))
+        );
+        assert_eq!(
+            params[0].key,
+            ParamKey::CompositeCustom {
+                name: "item_revision".into(),
+                fields: vec![ScalarKind::Bytes32, ScalarKind::U32],
+            }
+        );
+        assert_eq!(
+            params[0].fields,
+            vec!["item_id".to_owned(), "revision_id".to_owned()]
+        );
+    }
+
+    #[test]
+    fn custom_toml_rejects_composite_key_with_wrong_number_of_fields() {
+        let toml_str = r#"
+name = "acuity"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[custom_keys]
+item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
+
+        [[pallets]]
+        name = "ContentReactions"
+        events = [
+          { name = "SetReactions", params = [
+            { field = "item_id", key = "item_revision" },
+          ]},
+        ]
+"#;
+        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.build_custom_index().is_err());
+    }
+
+    #[test]
+    fn custom_toml_rejects_field_and_fields_together() {
+        let toml_str = r#"
+name = "acuity"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[custom_keys]
+item_id = "bytes32"
+
+        [[pallets]]
+        name = "Content"
+        events = [
+          { name = "PublishItem", params = [
+            { field = "item_id", fields = ["item_id"], key = "item_id" },
+          ]},
+        ]
+"#;
+        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.build_custom_index().is_err());
     }
 
     #[test]

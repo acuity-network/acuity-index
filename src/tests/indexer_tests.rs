@@ -54,6 +54,13 @@ mod indexer_tests {
         })
     }
 
+    fn custom_composite_key(name: &str, values: Vec<CustomValue>) -> Key {
+        Key::Custom(CustomKey {
+            name: name.to_owned(),
+            value: CustomValue::Composite(values),
+        })
+    }
+
     fn custom_bytes32_key(name: &str, value: [u8; 32]) -> Key {
         Key::Custom(CustomKey {
             name: name.to_owned(),
@@ -84,6 +91,7 @@ versions = [0]
 [custom_keys]
 item_id = "bytes32"
 revision_id = "u32"
+item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
 
             [[pallets]]
             name = "Content"
@@ -99,6 +107,16 @@ revision_id = "u32"
                 { field = "revision_id", key = "revision_id" },
                 { field = "links", key = "item_id", multi = true },
                 { field = "mentions", key = "account_id", multi = true },
+              ]},
+            ]
+
+            [[pallets]]
+            name = "ContentReactions"
+            events = [
+              { name = "SetReactions", params = [
+                { fields = ["item_id", "revision_id"], key = "item_revision" },
+                { field = "item_owner", key = "account_id" },
+                { field = "reactor", key = "account_id" },
               ]},
             ]
 "#,
@@ -245,6 +263,57 @@ revision_id = "u32"
         assert!(revision_keys.contains(&custom_bytes32_key("item_id", link_b)));
         assert!(revision_keys.contains(&builtin_bytes32_key("account_id", mention_a)));
         assert!(revision_keys.contains(&builtin_bytes32_key("account_id", mention_b)));
+    }
+
+    #[test]
+    fn keys_for_event_custom_pallet_composite_key() {
+        let trees = temp_trees();
+        let config = acuity_config();
+        let indexer = Indexer::new_test(trees, &config);
+
+        let item_id = [0xCDu8; 32];
+        let item_owner = [0xABu8; 32];
+        let reactor = [0xEFu8; 32];
+        let fields = named(vec![
+            ("item_id", bytes32_val(item_id)),
+            ("revision_id", u128_val(7)),
+            ("item_owner", bytes32_val(item_owner)),
+            ("reactor", bytes32_val(reactor)),
+        ]);
+
+        let keys = indexer.keys_for_event("ContentReactions", "SetReactions", &fields);
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains(&custom_composite_key(
+            "item_revision",
+            vec![CustomValue::Bytes32(Bytes32(item_id)), CustomValue::U32(7)],
+        )));
+        assert!(keys.contains(&builtin_bytes32_key("account_id", item_owner)));
+        assert!(keys.contains(&builtin_bytes32_key("account_id", reactor)));
+    }
+
+    #[test]
+    fn keys_for_event_skips_composite_key_when_a_field_is_missing() {
+        let trees = temp_trees();
+        let config = acuity_config();
+        let indexer = Indexer::new_test(trees, &config);
+
+        let item_owner = [0xABu8; 32];
+        let reactor = [0xEFu8; 32];
+        let fields = named(vec![
+            ("item_id", bytes32_val([0xCDu8; 32])),
+            ("item_owner", bytes32_val(item_owner)),
+            ("reactor", bytes32_val(reactor)),
+        ]);
+
+        let keys = indexer.keys_for_event("ContentReactions", "SetReactions", &fields);
+        assert_eq!(keys.len(), 2);
+        assert!(!keys.iter().any(|key| matches!(
+            key,
+            Key::Custom(CustomKey {
+                name,
+                value: CustomValue::Composite(_),
+            }) if name == "item_revision"
+        )));
     }
 
     // ─── keys_for_event: unknown pallet/event ─────────────────────────────

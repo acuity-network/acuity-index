@@ -715,14 +715,11 @@ fn save_span(
 
 fn save_current_span(
     trees: &Trees,
-    current_span: Option<&Span>,
+    current_span: &Span,
     versions_len: usize,
     index_variant: bool,
     store_events: bool,
 ) -> Result<(), IndexError> {
-    let Some(current_span) = current_span else {
-        return Ok(());
-    };
     if current_span.start != current_span.end {
         let persisted_start = current_span.start.max(1);
         let persisted_span = Span {
@@ -743,22 +740,6 @@ fn save_current_span(
         );
     }
     Ok(())
-}
-
-fn save_new_current_span(
-    trees: &Trees,
-    current_span: &Span,
-    versions_len: usize,
-    index_variant: bool,
-    store_events: bool,
-) -> Result<(), IndexError> {
-    save_span(
-        &trees.span,
-        current_span,
-        versions_len,
-        index_variant,
-        store_events,
-    )
 }
 
 type BlockIndexFuture<'a> = std::pin::Pin<
@@ -861,7 +842,7 @@ fn advance_backfill_start(
 
 fn process_queued_head_result(
     trees: &Trees,
-    current_span: &mut Option<Span>,
+    current_span: &mut Span,
     versions_len: usize,
     index_variant: bool,
     store_events: bool,
@@ -873,45 +854,13 @@ fn process_queued_head_result(
         Ok((block_number, event_count, key_count)) => {
             head_orphans.insert(block_number, (event_count, key_count));
             let mut advanced = false;
-            if current_span.is_none() {
-                let Some((events, keys)) = head_orphans.remove(&block_number) else {
-                    return Ok(());
-                };
-                let new_span = Span {
-                    start: block_number,
-                    end: block_number,
-                };
-                save_new_current_span(
-                    trees,
-                    &new_span,
-                    versions_len,
-                    index_variant,
-                    store_events,
-                )?;
-                info!(
-                    "📚 Indexed chain head #{}; backfilling to genesis, tailing new blocks from #{}",
-                    block_number.to_formatted_string(&Locale::en),
-                    next_live_head_to_queue(&new_span).to_formatted_string(&Locale::en),
-                );
-                info!(
-                    "✨ Indexed head #{}: {} events, {} keys",
-                    block_number.to_formatted_string(&Locale::en),
-                    events.to_formatted_string(&Locale::en),
-                    keys.to_formatted_string(&Locale::en),
-                );
-                *current_span = Some(new_span);
-                advanced = true;
-            }
-            while let Some(next_block) = current_span.as_ref().and_then(|span| span.end.checked_add(1)) {
+            while let Some(next_block) = current_span.end.checked_add(1) {
                 let Some((events, keys)) = head_orphans.remove(&next_block) else {
                     break;
                 };
-                let span = current_span
-                    .as_mut()
-                    .ok_or_else(|| internal_error("missing current span while advancing head"))?;
                 advance_span_end(
                     trees,
-                    span,
+                    current_span,
                     next_block,
                     versions_len,
                     index_variant,
@@ -1018,59 +967,48 @@ pub async fn run_indexer(
                     .unwrap_or_else(|| "none".to_string()),
                 next_live_head_to_queue(&span).to_formatted_string(&Locale::en),
             );
-            Some(span)
+            span
         } else {
             let Some(chain_head) = next_batch_block else {
                 return Err(internal_error("missing chain head during startup"));
             };
+            indexer.index_block(chain_head).await?;
+            let span = Span {
+                start: chain_head,
+                end: chain_head,
+            };
+            next_batch_block = prev_block(chain_head);
             info!(
-                "📚 Waiting for first indexable head at #{} before starting backfill",
+                "📚 Indexed chain head #{}; backfilling to genesis, tailing new blocks from #{}",
                 chain_head.to_formatted_string(&Locale::en),
+                next_live_head_to_queue(&span).to_formatted_string(&Locale::en),
             );
-            None
+            span
         };
 
     debug!(
-        "📚 Startup state: current span {}, next backfill #{}, next live head #{}, previous spans {}",
-        current_span
-            .as_ref()
-            .map(|span| format!(
-                "#{} to #{}",
-                span.start.to_formatted_string(&Locale::en),
-                span.end.to_formatted_string(&Locale::en)
-            ))
-            .unwrap_or_else(|| "none".to_string()),
+        "📚 Startup state: current span #{} to #{}, next backfill #{}, next live head #{}, previous spans {}",
+        current_span.start.to_formatted_string(&Locale::en),
+        current_span.end.to_formatted_string(&Locale::en),
         next_batch_block
             .map(|n| n.to_formatted_string(&Locale::en).to_string())
             .unwrap_or_else(|| "none".to_string()),
-        current_span
-            .as_ref()
-            .map(next_live_head_to_queue)
-            .unwrap_or_else(|| next_batch_block.unwrap_or(0))
-            .to_formatted_string(&Locale::en),
+        next_live_head_to_queue(&current_span).to_formatted_string(&Locale::en),
         spans.len().to_formatted_string(&Locale::en),
     );
 
-    let mut latest_seen_head = current_span
-        .as_ref()
-        .map(|span| span.end)
-        .unwrap_or_else(|| next_batch_block.unwrap_or(0));
-    let mut next_head_to_queue = current_span
-        .as_ref()
-        .map(next_live_head_to_queue)
-        .unwrap_or(latest_seen_head);
+    let mut latest_seen_head = current_span.end;
+    let mut next_head_to_queue = next_live_head_to_queue(&current_span);
     let mut head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
     let mut head_futures = Vec::with_capacity(queue_depth as usize);
     let mut head_orphans: AHashMap<u32, (u32, u32)> = AHashMap::new();
 
     let mut futures = Vec::with_capacity(queue_depth as usize);
-    if current_span.is_some() {
-        for _ in 0..queue_depth {
-            let before = futures.len();
-            queue_next_backfill_block(&mut futures, &spans, &mut next_batch_block, &indexer);
-            if futures.len() == before {
-                break;
-            }
+    for _ in 0..queue_depth {
+        let before = futures.len();
+        queue_next_backfill_block(&mut futures, &spans, &mut next_batch_block, &indexer);
+        if futures.len() == before {
+            break;
         }
     }
 
@@ -1089,7 +1027,7 @@ pub async fn run_indexer(
             _ = exit_rx.changed() => {
                 save_current_span(
                     &trees,
-                    current_span.as_ref(),
+                    &current_span,
                     versions_len,
                     index_variant,
                     store_events,
@@ -1108,7 +1046,7 @@ pub async fn run_indexer(
                         info!("Node block stream closed; shutting down cleanly.");
                         save_current_span(
                             &trees,
-                            current_span.as_ref(),
+                            &current_span,
                             versions_len,
                             index_variant,
                             store_events,
@@ -1153,13 +1091,10 @@ pub async fn run_indexer(
             _ = interval.tick() => {
                 let now = Instant::now();
                 let micros = now.duration_since(stats_start).as_micros();
-                if micros != 0 && next_batch_block.is_some() && current_span.is_some() {
+                if micros != 0 && next_batch_block.is_some() {
                     let rate = |n: u32| -> u128 {
                         u128::from(n) * 1_000_000 / micros
                     };
-                    let current_span = current_span
-                        .as_ref()
-                        .ok_or_else(|| internal_error("missing current span during backfill stats"))?;
                     info!(
                         "📚 Backfilled to #{}: {} blocks/s, {} events/s, {} keys/s",
                         current_span.start.to_formatted_string(&Locale::en),
@@ -1177,15 +1112,12 @@ pub async fn run_indexer(
             (result, idx, _) = async { future::select_all(&mut futures).await }, if !futures.is_empty() => {
                 match result {
                     Ok((block_number, event_count, key_count)) => {
-                        let span = current_span
-                            .as_mut()
-                            .ok_or_else(|| internal_error("missing current span during backfill"))?;
                         if block_number == 0 {
                             next_batch_block = None;
                             continue;
                         }
                         let reached_genesis = advance_backfill_start(
-                            span,
+                            &mut current_span,
                             &mut spans,
                             &trees.span,
                             &mut orphans,
@@ -1195,8 +1127,8 @@ pub async fn run_indexer(
                             next_batch_block = None;
                             info!(
                                 "📚 Genesis reached: indexed span #{} to #{}",
-                                span.start.to_formatted_string(&Locale::en),
-                                span.end.to_formatted_string(&Locale::en),
+                                current_span.start.to_formatted_string(&Locale::en),
+                                current_span.end.to_formatted_string(&Locale::en),
                             );
                         }
                         debug!(
@@ -1530,7 +1462,7 @@ mod tests {
         let trees = temp_trees();
         let current = Span { start: 0, end: 25 };
 
-        save_current_span(&trees, Some(&current), 2, true, true).unwrap();
+        save_current_span(&trees, &current, 2, true, true).unwrap();
 
         let bytes = trees.span.get(25u32.to_be_bytes()).unwrap().unwrap();
         let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
@@ -1554,7 +1486,7 @@ mod tests {
         let initial = Span { start: 10, end: 10 };
         save_span(&trees.span, &initial, 1, true, true).unwrap();
 
-        let mut current_span = Some(initial);
+        let mut current_span = initial;
         let mut head_orphans = AHashMap::new();
         process_queued_head_result(
             &trees,
@@ -1568,7 +1500,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(current_span.as_ref().map(|span| span.end), Some(11));
+        assert_eq!(current_span.end, 11);
         assert!(head_orphans.is_empty());
 
         let bytes = trees.span.get(11u32.to_be_bytes()).unwrap().unwrap();
@@ -1583,7 +1515,7 @@ mod tests {
         let initial = Span { start: 20, end: 20 };
         save_span(&trees.span, &initial, 1, true, true).unwrap();
 
-        let mut current_span = Some(initial);
+        let mut current_span = initial;
         let mut head_orphans = AHashMap::new();
 
         process_queued_head_result(
@@ -1598,7 +1530,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(current_span.as_ref().map(|span| span.end), Some(20));
+        assert_eq!(current_span.end, 20);
         assert_eq!(head_orphans.get(&22), Some(&(1, 1)));
 
         process_queued_head_result(
@@ -1613,7 +1545,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(current_span.as_ref().map(|span| span.end), Some(22));
+        assert_eq!(current_span.end, 22);
         assert!(head_orphans.is_empty());
 
         let bytes = trees.span.get(22u32.to_be_bytes()).unwrap().unwrap();
@@ -1628,7 +1560,7 @@ mod tests {
         let initial = Span { start: 30, end: 30 };
         save_span(&trees.span, &initial, 1, true, true).unwrap();
 
-        let mut current_span = Some(initial);
+        let mut current_span = initial;
         let mut head_orphans = AHashMap::new();
         let err = process_queued_head_result(
             &trees,
@@ -1646,38 +1578,8 @@ mod tests {
             err,
             IndexError::StatePruningMisconfigured { block_number: 31 }
         ));
-        assert_eq!(current_span.as_ref().map(|span| span.end), Some(30));
+        assert_eq!(current_span.end, 30);
         assert!(head_orphans.is_empty());
-    }
-
-    #[test]
-    fn process_queued_head_result_initializes_empty_startup_span() {
-        let trees = temp_trees();
-        let indexer = test_indexer(trees.clone(), true);
-        let mut current_span = None;
-        let mut head_orphans = AHashMap::new();
-
-        process_queued_head_result(
-            &trees,
-            &mut current_span,
-            1,
-            true,
-            true,
-            &indexer,
-            &mut head_orphans,
-            Ok((42, 3, 4)),
-        )
-        .unwrap();
-
-        assert_eq!(
-            current_span.as_ref().map(|span| (span.start, span.end)),
-            Some((42, 42))
-        );
-        assert!(head_orphans.is_empty());
-
-        let bytes = trees.span.get(42u32.to_be_bytes()).unwrap().unwrap();
-        let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
-        assert_eq!(u32::from(saved.start), 42);
     }
 
     #[test]

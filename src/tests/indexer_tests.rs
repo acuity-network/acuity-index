@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod indexer_tests {
-    use crate::config::ChainConfig;
+    use crate::config::IndexSpec;
     use crate::indexer::*;
     use crate::shared::*;
     use scale_value::{Composite, Primitive, Value, ValueDef};
@@ -76,11 +76,11 @@ mod indexer_tests {
         custom_bytes32_key(name, value)
     }
 
-    fn test_config() -> ChainConfig {
+    fn test_config() -> IndexSpec {
         toml::from_str(crate::config::POLKADOT_TOML).unwrap()
     }
 
-    fn acuity_config() -> ChainConfig {
+    fn acuity_config() -> IndexSpec {
         toml::from_str(
             r#"
 name = "acuity-runtime"

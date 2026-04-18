@@ -22,7 +22,7 @@ use tracing::{debug, error, info};
 use zerocopy::IntoBytes;
 
 use crate::{
-    config::{ChainConfig, KeyTypeName, ParamKey, ResolvedParamConfig, ScalarKind},
+    config::{IndexSpec, KeyTypeName, ParamKey, ResolvedParamConfig, ScalarKind},
     pallets::{
         extract_bool, extract_bytes32, extract_string, extract_u32, extract_u64, extract_u128,
         get_field, index_sdk_pallet,
@@ -52,35 +52,33 @@ impl Indexer {
         trees: Trees,
         api: OnlineClient<PolkadotConfig>,
         rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
-        index_variant: bool,
-        store_events: bool,
-        config: &ChainConfig,
+        config: &IndexSpec,
     ) -> Self {
         Indexer {
             trees,
             api: Some(api),
             rpc: Some(rpc),
-            index_variant,
-            store_events,
+            index_variant: config.index_variant,
+            store_events: config.store_events,
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index().expect("validated chain config"),
+            custom_index: config.build_custom_index().expect("validated index spec"),
         }
     }
 
     #[cfg(test)]
-    pub fn new_test(trees: Trees, config: &ChainConfig) -> Self {
+    pub fn new_test(trees: Trees, config: &IndexSpec) -> Self {
         Indexer {
             trees,
             api: None,
             rpc: None,
-            index_variant: true,
-            store_events: true,
+            index_variant: config.index_variant,
+            store_events: config.store_events,
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index().expect("validated chain config"),
+            custom_index: config.build_custom_index().expect("validated index spec"),
         }
     }
 
@@ -925,14 +923,15 @@ pub async fn run_indexer(
     trees: Trees,
     api: OnlineClient<PolkadotConfig>,
     rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
-    config: ChainConfig,
+    spec: IndexSpec,
     finalized: bool,
     queue_depth: u32,
-    index_variant: bool,
-    store_events: bool,
     mut exit_rx: watch::Receiver<bool>,
     mut sub_rx: mpsc::Receiver<SubscriptionMessage>,
 ) -> Result<(), IndexError> {
+    let index_variant = spec.index_variant;
+    let store_events = spec.store_events;
+
     info!(
         "📇 Finalized only: {}",
         if finalized { "yes" } else { "no" }
@@ -946,7 +945,7 @@ pub async fn run_indexer(
         if store_events { "yes" } else { "no" }
     );
 
-    let versions_len = config.versions.len();
+    let versions_len = spec.versions.len();
 
     let mut next_batch_block: Option<u32> = Some(if finalized {
         let finalized_hash = rpc.chain_get_finalized_head().await?;
@@ -971,15 +970,13 @@ pub async fn run_indexer(
         api.stream_best_blocks().await
     }?;
 
-    let mut spans = load_spans(&trees.span, &config.versions, index_variant, store_events)?;
+    let mut spans = load_spans(&trees.span, &spec.versions, index_variant, store_events)?;
 
     let indexer = Indexer::new(
         trees.clone(),
         api,
         rpc,
-        index_variant,
-        store_events,
-        &config,
+        &spec,
     );
 
     let mut current_span =
@@ -1226,7 +1223,7 @@ mod tests {
         Trees::open(db_config).unwrap()
     }
 
-    fn test_config() -> ChainConfig {
+    fn test_config() -> IndexSpec {
         toml::from_str(crate::config::POLKADOT_TOML).unwrap()
     }
 
@@ -1236,12 +1233,12 @@ mod tests {
             trees,
             api: None,
             rpc: None,
-            index_variant: true,
+            index_variant: config.index_variant,
             store_events,
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index().expect("validated chain config"),
+            custom_index: config.build_custom_index().expect("validated index spec"),
         }
     }
 
@@ -1823,7 +1820,7 @@ mod tests {
 
     #[test]
     fn keys_for_event_handles_unknown_sdk_pallet_and_param_failures() {
-        let config: ChainConfig = toml::from_str(
+        let config: IndexSpec = toml::from_str(
             r#"
 name = "test"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"

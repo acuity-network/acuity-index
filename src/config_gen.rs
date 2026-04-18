@@ -1,5 +1,5 @@
 use crate::{
-    config::{ChainConfig, CustomKeyConfig, EventConfig, PalletConfig, ParamConfig, ScalarKind},
+    config::{CustomKeyConfig, EventConfig, IndexSpec, PalletConfig, ParamConfig, ScalarKind},
     pallets::is_supported_sdk_pallet,
     shared::{IndexError, metadata_version, unsupported_metadata_error},
 };
@@ -300,12 +300,12 @@ fn event_config(
     }
 }
 
-pub(crate) fn build_chain_config(
+pub(crate) fn build_index_spec(
     name: &str,
     genesis_hash: &str,
     default_url: &str,
     metadata: &Metadata,
-) -> ChainConfig {
+) -> IndexSpec {
     let types = metadata.types();
     let mut custom_keys = HashMap::new();
     let pallets = metadata
@@ -332,14 +332,15 @@ pub(crate) fn build_chain_config(
         })
         .collect();
 
-    ChainConfig {
+    IndexSpec {
         name: name.to_owned(),
         genesis_hash: genesis_hash.to_owned(),
         default_url: default_url.to_owned(),
         versions: vec![0],
+        index_variant: false,
+        store_events: false,
         custom_keys,
         pallets,
-        options: None,
     }
 }
 
@@ -411,31 +412,36 @@ fn inline_events(events: &[EventConfig]) -> Result<String, IndexError> {
     Ok(out)
 }
 
-pub(crate) fn render_chain_config_toml(config: &ChainConfig) -> Result<String, IndexError> {
+pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexError> {
     let mut out = String::new();
     out.push_str("name = ");
-    out.push_str(&inline_string(&config.name)?);
+    out.push_str(&inline_string(&spec.name)?);
     out.push('\n');
     out.push_str("genesis_hash = ");
-    out.push_str(&inline_string(&config.genesis_hash)?);
+    out.push_str(&inline_string(&spec.genesis_hash)?);
     out.push('\n');
     out.push_str("default_url = ");
-    out.push_str(&inline_string(&config.default_url)?);
+    out.push_str(&inline_string(&spec.default_url)?);
     out.push('\n');
-    out.push_str("versions = ");
-    out.push('[');
-    for (index, version) in config.versions.iter().enumerate() {
+    out.push_str("versions = [");
+    for (index, version) in spec.versions.iter().enumerate() {
         if index > 0 {
             out.push_str(", ");
         }
         out.push_str(&version.to_string());
     }
     out.push(']');
+    if spec.index_variant {
+        out.push_str("\nindex_variant = true");
+    }
+    if spec.store_events {
+        out.push_str("\nstore_events = true");
+    }
     out.push_str("\n\n");
 
-    if !config.custom_keys.is_empty() {
+    if !spec.custom_keys.is_empty() {
         out.push_str("[custom_keys]\n");
-        let mut custom_keys: Vec<_> = config.custom_keys.iter().collect();
+        let mut custom_keys: Vec<_> = spec.custom_keys.iter().collect();
         custom_keys.sort_by(|(left, _), (right, _)| left.cmp(right));
         for (name, kind) in custom_keys {
             out.push_str(name);
@@ -444,11 +450,11 @@ pub(crate) fn render_chain_config_toml(config: &ChainConfig) -> Result<String, I
                 CustomKeyConfig::Scalar(kind) => {
                     out.push_str(&inline_string(scalar_kind_name(kind))?);
                 }
-                CustomKeyConfig::Composite(config) => {
+                CustomKeyConfig::Composite(cfg) => {
                     out.push_str("{ kind = ");
                     out.push_str(&inline_string("composite")?);
                     out.push_str(", fields = [");
-                    for (index, field_kind) in config.fields.iter().enumerate() {
+                    for (index, field_kind) in cfg.fields.iter().enumerate() {
                         if index > 0 {
                             out.push_str(", ");
                         }
@@ -462,7 +468,7 @@ pub(crate) fn render_chain_config_toml(config: &ChainConfig) -> Result<String, I
         out.push('\n');
     }
 
-    for (index, pallet) in config.pallets.iter().enumerate() {
+    for (index, pallet) in spec.pallets.iter().enumerate() {
         out.push_str("[[pallets]]\n");
         out.push_str("name = ");
         out.push_str(&inline_string(&pallet.name)?);
@@ -475,7 +481,7 @@ pub(crate) fn render_chain_config_toml(config: &ChainConfig) -> Result<String, I
             out.push_str(&inline_events(&pallet.events)?);
             out.push('\n');
         }
-        if index + 1 != config.pallets.len() {
+        if index + 1 != spec.pallets.len() {
             out.push('\n');
         }
     }
@@ -483,10 +489,10 @@ pub(crate) fn render_chain_config_toml(config: &ChainConfig) -> Result<String, I
     Ok(out)
 }
 
-pub async fn write_generated_chain_config(
+pub async fn write_generated_index_spec(
     url: &str,
     output_path: &Path,
-) -> Result<ChainConfig, IndexError> {
+) -> Result<IndexSpec, IndexError> {
     let rpc_client = RpcClient::from_url(url).await?;
     let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone()).await?;
     let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client.clone());
@@ -512,15 +518,15 @@ pub async fn write_generated_chain_config(
     let genesis_hash = hex::encode(api.genesis_hash().as_ref());
     let chain_name = spec_name.to_owned();
 
-    let config = build_chain_config(&chain_name, &genesis_hash, url, &metadata);
-    let toml = render_chain_config_toml(&config)?;
+    let spec = build_index_spec(&chain_name, &genesis_hash, url, &metadata);
+    let toml = render_index_spec_toml(&spec)?;
 
     if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     fs::write(output_path, toml)?;
 
-    Ok(config)
+    Ok(spec)
 }
 
 #[cfg(test)]
@@ -739,12 +745,14 @@ mod tests {
     }
 
     #[test]
-    fn render_chain_config_toml_inlines_events_and_params() {
-        let config = ChainConfig {
+    fn render_index_spec_toml_inlines_events_and_params() {
+        let spec = IndexSpec {
             name: "acuity-runtime".into(),
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
             versions: vec![0],
+            index_variant: false,
+            store_events: false,
             custom_keys: HashMap::from([
                 ("item_id".into(), CustomKeyConfig::Scalar(ScalarKind::Bytes32)),
                 (
@@ -798,10 +806,9 @@ mod tests {
                     },
                 ],
             }],
-            options: None,
         };
 
-        let toml = render_chain_config_toml(&config).unwrap();
+        let toml = render_index_spec_toml(&spec).unwrap();
 
         assert!(toml.contains("[custom_keys]\nitem_id = \"bytes32\"\nrevision_id = \"u32\"\n"));
         assert!(toml.contains("[[pallets]]\nname = \"Content\"\nevents = ["));

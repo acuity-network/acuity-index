@@ -3,30 +3,30 @@ mod config_tests {
     use crate::config::*;
     use std::collections::HashSet;
 
-    fn load_polkadot() -> ChainConfig {
+    fn load_polkadot() -> IndexSpec {
         toml::from_str(POLKADOT_TOML).unwrap()
     }
 
-    fn load_kusama() -> ChainConfig {
+    fn load_kusama() -> IndexSpec {
         toml::from_str(KUSAMA_TOML).unwrap()
     }
 
-    fn load_westend() -> ChainConfig {
+    fn load_westend() -> IndexSpec {
         toml::from_str(WESTEND_TOML).unwrap()
     }
 
-    fn load_paseo() -> ChainConfig {
+    fn load_paseo() -> IndexSpec {
         toml::from_str(PASEO_TOML).unwrap()
     }
 
-    fn pallet<'a>(cfg: &'a ChainConfig, name: &str) -> &'a PalletConfig {
+    fn pallet<'a>(cfg: &'a IndexSpec, name: &str) -> &'a PalletConfig {
         cfg.pallets
             .iter()
             .find(|p| p.name == name)
             .unwrap_or_else(|| panic!("missing pallet {name}"))
     }
 
-    fn has_events(cfg: &ChainConfig, pallet_name: &str, required: &[&str]) {
+    fn has_events(cfg: &IndexSpec, pallet_name: &str, required: &[&str]) {
         let pallet = pallet(cfg, pallet_name);
         let names: HashSet<&str> = pallet.events.iter().map(|e| e.name.as_str()).collect();
         for event_name in required {
@@ -66,28 +66,30 @@ mod config_tests {
 
     #[test]
     fn genesis_hash_bytes_invalid() {
-        let cfg = ChainConfig {
+        let cfg = IndexSpec {
             name: "bad".into(),
             genesis_hash: "zzzz".into(),
             default_url: "wss://x".into(),
             versions: vec![0],
+            index_variant: false,
+            store_events: false,
             custom_keys: Default::default(),
             pallets: vec![],
-            options: None,
         };
         assert!(cfg.genesis_hash_bytes().is_err());
     }
 
     #[test]
     fn genesis_hash_bytes_wrong_length() {
-        let cfg = ChainConfig {
+        let cfg = IndexSpec {
             name: "bad".into(),
             genesis_hash: "aabb".into(),
             default_url: "wss://x".into(),
             versions: vec![0],
+            index_variant: false,
+            store_events: false,
             custom_keys: Default::default(),
             pallets: vec![],
-            options: None,
         };
         assert!(cfg.genesis_hash_bytes().is_err());
     }
@@ -167,7 +169,7 @@ mod config_tests {
 
     #[test]
     fn build_custom_index_excludes_sdk() {
-        let cfg: ChainConfig = toml::from_str(
+        let cfg: IndexSpec = toml::from_str(
             r#"
 name = "test"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
@@ -250,7 +252,7 @@ versions = [0]
           ]},
         ]
 "#;
-        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.name, "test");
         assert_eq!(cfg.sdk_pallets().len(), 1);
         assert!(cfg.sdk_pallets().contains("Foo"));
@@ -284,7 +286,7 @@ revision_id = "u32"
           ]},
         ]
 "#;
-        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
         let idx = cfg.build_custom_index().unwrap();
         let content = idx.get("Content").unwrap();
         let publish_revision = content.get("PublishRevision").unwrap();
@@ -341,7 +343,7 @@ item_revision = { fields = ["bytes32", "u32"] }
           ]},
         ]
 "#;
-        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
         let idx = cfg.build_custom_index().unwrap();
         let reactions = idx.get("ContentReactions").unwrap();
         let params = reactions.get("SetReactions").unwrap();
@@ -384,7 +386,7 @@ item_revision = { fields = ["bytes32", "u32"] }
           ]},
         ]
 "#;
-        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
         assert!(cfg.build_custom_index().is_err());
     }
 
@@ -407,7 +409,7 @@ item_id = "bytes32"
           ]},
         ]
 "#;
-        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
         assert!(cfg.build_custom_index().is_err());
     }
 
@@ -427,7 +429,7 @@ versions = [0]
           ]},
         ]
 "#;
-        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
         assert!(cfg.build_custom_index().is_err());
     }
 
@@ -503,63 +505,74 @@ versions = [0]
     }
 
     #[test]
-    fn options_section_parses_from_toml() {
+    fn index_spec_parses_index_variant_and_store_events() {
         let toml_str = r#"
 name = "test"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
 versions = [0]
+index_variant = true
+store_events = true
+"#;
+        let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
+        assert!(cfg.index_variant);
+        assert!(cfg.store_events);
+    }
 
-[options]
+    #[test]
+    fn index_variant_and_store_events_default_to_false() {
+        let toml_str = r#"
+name = "test"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+"#;
+        let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.index_variant);
+        assert!(!cfg.store_events);
+    }
+
+    #[test]
+    fn options_config_parses_from_toml() {
+        let toml_str = r#"
 url = "ws://custom:9999"
 db_path = "/data/acuity/db"
 db_mode = "high_throughput"
 db_cache_capacity = "2 GiB"
 queue_depth = 4
 finalized = true
-index_variant = true
-store_events = true
 port = 9999
 "#;
-        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
-        let opts = cfg.options.expect("options should be present");
+        let opts: OptionsConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(opts.url.as_deref(), Some("ws://custom:9999"));
         assert_eq!(opts.db_path.as_deref(), Some("/data/acuity/db"));
         assert_eq!(opts.db_mode.as_deref(), Some("high_throughput"));
         assert_eq!(opts.db_cache_capacity.as_deref(), Some("2 GiB"));
         assert_eq!(opts.queue_depth, Some(4));
         assert_eq!(opts.finalized, Some(true));
-        assert_eq!(opts.index_variant, Some(true));
-        assert_eq!(opts.store_events, Some(true));
         assert_eq!(opts.port, Some(9999));
     }
 
     #[test]
-    fn options_section_defaults_to_none() {
-        let toml_str = r#"
-name = "test"
-genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
-default_url = "ws://127.0.0.1:9944"
-versions = [0]
-"#;
-        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
-        assert!(cfg.options.is_none());
+    fn options_config_defaults_to_none() {
+        let toml_str = "";
+        let opts: OptionsConfig = toml::from_str(toml_str).unwrap();
+        assert!(opts.url.is_none());
+        assert!(opts.db_path.is_none());
+        assert!(opts.db_mode.is_none());
+        assert!(opts.db_cache_capacity.is_none());
+        assert!(opts.queue_depth.is_none());
+        assert!(opts.finalized.is_none());
+        assert!(opts.port.is_none());
     }
 
     #[test]
-    fn options_section_partial_fields() {
+    fn options_config_partial_fields() {
         let toml_str = r#"
-name = "test"
-genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
-default_url = "ws://127.0.0.1:9944"
-versions = [0]
-
-[options]
 finalized = true
 port = 4000
 "#;
-        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
-        let opts = cfg.options.unwrap();
+        let opts: OptionsConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(opts.finalized, Some(true));
         assert_eq!(opts.port, Some(4000));
         assert!(opts.url.is_none());
@@ -567,7 +580,5 @@ port = 4000
         assert!(opts.db_mode.is_none());
         assert!(opts.db_cache_capacity.is_none());
         assert!(opts.queue_depth.is_none());
-        assert!(opts.index_variant.is_none());
-        assert!(opts.store_events.is_none());
     }
 }

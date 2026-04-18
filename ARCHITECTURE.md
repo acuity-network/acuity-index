@@ -13,7 +13,7 @@ This file is meant to help AI agents quickly find the right code and understand 
 ## Runtime Components
 
 - `src/main.rs`
-  Parses CLI args, loads chain config, opens sled, verifies genesis hash, and runs a reconnect loop that connects to the chain, spawns the indexer task plus the WebSocket server, and retries with exponential backoff on transient RPC failures.
+  Parses CLI args, loads index spec and options config, opens sled, verifies genesis hash, and runs a reconnect loop that connects to the chain, spawns the indexer task plus the WebSocket server, and retries with exponential backoff on transient RPC failures.
 - `src/indexer.rs`
   Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, decoded event storage, and subscription fanout. Saves the current span before returning on any error so the reconnect loop can resume without data loss.
 - `src/config.rs`
@@ -25,15 +25,15 @@ This file is meant to help AI agents quickly find the right code and understand 
 - `src/shared.rs`
   Holds shared wire types, on-disk key formats, database tree handles, and common enums like `Key`, `RequestMessage`, and `ResponseMessage`.
 - `src/config_gen.rs`
-  Builds starter chain TOML configs from live runtime metadata.
+  Builds starter index spec TOML files from live runtime metadata.
 
 ## Startup Sequence
 
 The normal startup path lives in `src/main.rs`:
 
 1. Parse CLI args.
-2. Load a built-in chain TOML or a user-supplied `--chain-config`.
-3. Validate the config and resolve runtime options (CLI > config `[options]` > defaults).
+2. Load a built-in index spec TOML or a user-supplied `--chain-config` index specification.
+3. Validate the spec and resolve runtime options (CLI > `--options-config` > defaults).
 4. Resolve the database path and open sled.
 5. Verify or initialize the stored `genesis_hash` in the root database.
 6. Enter the reconnect loop (see [RPC Reconnection](#rpc-reconnection) below). On each iteration:
@@ -113,7 +113,7 @@ Operational detail:
 `Indexer::keys_for_event(...)` uses this priority order:
 
 1. If the pallet is marked `sdk = true`, try built-in pallet logic from `src/pallets.rs`.
-2. Otherwise fall back to the resolved TOML config from `ChainConfig::build_custom_index()`.
+2. Otherwise fall back to the resolved TOML config from `IndexSpec::build_custom_index()`.
 3. If neither path yields keys, the event is ignored unless variant indexing causes it to be stored/queryable by variant.
 
 ### Historical state requirement
@@ -177,7 +177,7 @@ While the live-head queue is catching up, the backfill queue descends from the s
 
 ### Primary tuning lever
 
-`--queue-depth` (default `1`, overridable via CLI or config `[options].queue_depth`) controls how many concurrent block-indexing RPC calls are issued for both queues. Increasing it is the main way to speed up catchup against a node that is moving quickly.
+`--queue-depth` (default `1`, overridable via CLI or `--options-config`) controls how many concurrent block-indexing RPC calls are issued for both queues. Increasing it is the main way to speed up catchup against a node that is moving quickly.
 
 ## Span And Resume Semantics
 
@@ -187,7 +187,7 @@ Each stored span means: blocks `start..=end` have been indexed with a specific i
 
 Span values also persist:
 
-- config version boundary info derived from `ChainConfig.versions`
+- config version boundary info derived from `IndexSpec.versions`
 - whether `index_variant` was enabled
 - whether `store_events` was enabled
 
@@ -195,7 +195,7 @@ When loading spans, the indexer may discard or trim them if they are stale relat
 
 - If variant indexing is now enabled but was previously disabled, affected spans are removed for reindexing.
 - If decoded event storage is now enabled but was previously disabled, affected spans are removed for reindexing.
-- If `config.versions` indicates the chain config changed starting at some block, affected spans are removed or split so that only the stale portion is reindexed.
+- If `spec.versions` indicates the index spec changed starting at some block, affected spans are removed or split so that only the stale portion is reindexed.
 
 Important invariants:
 
@@ -241,24 +241,25 @@ During backoff sleeps, SIGTERM is checked via `signals.next()` so the process ex
 
 Because `run_indexer` saves the current span before returning on any error path, the reconnect loop preserves all committed indexing progress. On reconnection, `load_spans` reconstructs the span state from sled, and any blocks not covered by a span are re-indexed. This makes the reconnection path idempotent.
 
-## Chain Config Model
+## Index Spec Model
 
-The TOML schema is defined in `src/config.rs`.
+The TOML schema for `IndexSpec` is defined in `src/config.rs`.
 
 Top-level fields:
 
 - `name`
 - `genesis_hash`
 - `default_url`
+- `index_variant`
+- `store_events`
 - `versions`
 - `custom_keys`
 - `pallets`
-- `options` (optional)
 
-The `options` field is an optional table that sets runtime defaults for CLI options
-like `url`, `db_path`, `db_mode`, `db_cache_capacity`, `queue_depth`, `finalized`,
-`index_variant`, `store_events`, and `port`. At startup, `resolve_args()` merges
-values with **CLI > config `[options]` > built-in defaults** precedence. Boolean
+Runtime options (`url`, `db_path`, `db_mode`, `db_cache_capacity`, `queue_depth`,
+`finalized`, and `port`) are loaded from a separate `OptionsConfig` TOML file via the
+`--options-config` CLI flag. At startup, `resolve_args()` merges values with
+**CLI flags > `--options-config` file > built-in defaults** precedence. Boolean
 flags use OR logic: `cli_flag || options_flag.unwrap_or(false)`.
 
 Pallet configuration supports two modes:
@@ -401,7 +402,7 @@ Agents should treat generated configs as a starting point that may need cleanup 
   `src/pallets.rs`
 - Change WebSocket request/response shapes:
   `src/shared.rs`, `src/websockets.rs`
-- Change chain-config generation heuristics:
+- Change index-spec generation heuristics:
   `src/config_gen.rs`
 
 ## Gotchas

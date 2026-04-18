@@ -28,8 +28,8 @@ mod pallets;
 mod shared;
 mod websockets;
 
-use config::{ChainConfig, OptionsConfig, KUSAMA_TOML, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
-use config_gen::write_generated_chain_config;
+use config::{IndexSpec, OptionsConfig, KUSAMA_TOML, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
+use config_gen::write_generated_index_spec;
 use indexer::run_indexer;
 use shared::Trees;
 use websockets::{SUBSCRIPTION_CONTROL_BUFFER_SIZE, websockets_listen};
@@ -100,25 +100,28 @@ pub enum Command {
         #[command(flatten)]
         args: PurgeIndexArgs,
     },
-    /// Generate a starter chain TOML config from live node metadata
-    GenerateChainConfig {
+    /// Generate a starter index spec TOML from live node metadata
+    GenerateIndexSpec {
         /// URL of Substrate node to connect to
         #[arg(short, long)]
         url: String,
-        /// Path to write the generated chain TOML config
+        /// Path to write the generated index spec TOML file
         output: String,
     },
 }
 
 #[derive(Parser, Debug)]
-#[command(group(ArgGroup::new("chain_source").required(true).args(["chain", "chain_config"])))]
+#[command(group(ArgGroup::new("chain_source").required(true).args(["chain", "index_config"])))]
 pub struct RunArgs {
     /// Chain to index
     #[arg(short, long, value_enum)]
     pub chain: Option<Chain>,
-    /// Path to a custom chain TOML config (overrides --chain)
+    /// Path to an index specification TOML file (overrides --chain)
     #[arg(long)]
-    pub chain_config: Option<String>,
+    pub index_config: Option<String>,
+    /// Path to an options TOML file
+    #[arg(long)]
+    pub options_config: Option<String>,
     /// Database path
     #[arg(short, long)]
     pub db_path: Option<String>,
@@ -149,14 +152,14 @@ pub struct RunArgs {
 }
 
 #[derive(Parser, Debug)]
-#[command(group(ArgGroup::new("chain_source").required(true).args(["chain", "chain_config"])))]
+#[command(group(ArgGroup::new("chain_source").required(true).args(["chain", "index_config"])))]
 pub struct PurgeIndexArgs {
     /// Chain whose index should be deleted
     #[arg(short, long, value_enum)]
     pub chain: Option<Chain>,
-    /// Path to a custom chain TOML config (overrides --chain)
+    /// Path to an index specification TOML file (overrides --chain)
     #[arg(long)]
-    pub chain_config: Option<String>,
+    pub index_config: Option<String>,
     /// Database path
     #[arg(short, long)]
     pub db_path: Option<String>,
@@ -174,7 +177,9 @@ struct ResolvedArgs {
     url: Option<String>,
     queue_depth: u8,
     finalized: bool,
+    #[allow(dead_code)]
     index_variant: bool,
+    #[allow(dead_code)]
     store_events: bool,
     port: u16,
 }
@@ -190,7 +195,7 @@ fn parse_db_mode(s: &str) -> Result<DbMode, String> {
     }
 }
 
-fn resolve_args(cli: &RunArgs, options: Option<&OptionsConfig>) -> Result<ResolvedArgs, String> {
+fn resolve_args(cli: &RunArgs, spec: &IndexSpec, options: Option<&OptionsConfig>) -> Result<ResolvedArgs, String> {
     let opts = options.as_ref();
 
     let db_mode = if let Some(ref m) = cli.db_mode {
@@ -213,8 +218,8 @@ fn resolve_args(cli: &RunArgs, options: Option<&OptionsConfig>) -> Result<Resolv
         .unwrap_or(DEFAULT_QUEUE_DEPTH);
 
     let finalized = cli.finalized || opts.and_then(|o| o.finalized).unwrap_or(false);
-    let index_variant = cli.index_variant || opts.and_then(|o| o.index_variant).unwrap_or(false);
-    let store_events = cli.store_events || opts.and_then(|o| o.store_events).unwrap_or(false);
+    let index_variant = cli.index_variant || spec.index_variant;
+    let store_events = cli.store_events || spec.store_events;
 
     let port = cli.port.or(opts.and_then(|o| o.port)).unwrap_or(DEFAULT_PORT);
 
@@ -231,14 +236,14 @@ fn resolve_args(cli: &RunArgs, options: Option<&OptionsConfig>) -> Result<Resolv
     })
 }
 
-fn load_chain_config(chain: Option<Chain>, chain_config_path: Option<&str>) -> ChainConfig {
-    let config: ChainConfig = if let Some(path) = chain_config_path {
+fn load_index_spec(chain: Option<Chain>, index_config_path: Option<&str>) -> IndexSpec {
+    let spec: IndexSpec = if let Some(path) = index_config_path {
         let toml_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            error!("Cannot read chain config {path}: {e}");
+            error!("Cannot read index spec {path}: {e}");
             exit(1);
         });
         toml::from_str(&toml_str).unwrap_or_else(|e| {
-            error!("Invalid chain config: {e}");
+            error!("Invalid index spec: {e}");
             exit(1);
         })
     } else {
@@ -252,12 +257,23 @@ fn load_chain_config(chain: Option<Chain>, chain_config_path: Option<&str>) -> C
         toml::from_str(toml_str).expect("Built-in TOML is valid")
     };
 
-    config.validate().unwrap_or_else(|e| {
-        error!("Invalid chain config: {e}");
+    spec.validate().unwrap_or_else(|e| {
+        error!("Invalid index spec: {e}");
         exit(1);
     });
 
-    config
+    spec
+}
+
+fn load_options_config(path: &str) -> OptionsConfig {
+    let toml_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        error!("Cannot read options config {path}: {e}");
+        exit(1);
+    });
+    toml::from_str(&toml_str).unwrap_or_else(|e| {
+        error!("Invalid options config: {e}");
+        exit(1);
+    })
 }
 
 fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
@@ -279,8 +295,8 @@ fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
 }
 
 fn purge_index(args: &PurgeIndexArgs) {
-    let chain_config = load_chain_config(args.chain, args.chain_config.as_deref());
-    let db_path = resolve_db_path(&chain_config.name, args.db_path.as_deref());
+    let spec = load_index_spec(args.chain, args.index_config.as_deref());
+    let db_path = resolve_db_path(&spec.name, args.db_path.as_deref());
 
     match std::fs::remove_dir_all(&db_path) {
         Ok(()) => {
@@ -364,14 +380,14 @@ async fn run() -> Result<(), shared::IndexError> {
 
     match &args.command {
         Some(Command::PurgeIndex { args: purge_args }) => purge_index(purge_args),
-        Some(Command::GenerateChainConfig { url, output }) => {
-            match write_generated_chain_config(url, PathBuf::from(output).as_path()).await {
-                Ok(config) => {
-                    info!("Generated chain config for {} at {}", config.name, output);
+        Some(Command::GenerateIndexSpec { url, output }) => {
+            match write_generated_index_spec(url, PathBuf::from(output).as_path()).await {
+                Ok(spec) => {
+                    info!("Generated index spec for {} at {}", spec.name, output);
                     exit(0);
                 }
                 Err(err) => {
-                    error!("Failed to generate chain config: {err}");
+                    error!("Failed to generate index spec: {err}");
                     exit(1);
                 }
             }
@@ -380,19 +396,20 @@ async fn run() -> Result<(), shared::IndexError> {
     }
 
     let run_args = &args.run;
-    let chain_config = load_chain_config(run_args.chain, run_args.chain_config.as_deref());
-    let resolved = resolve_args(run_args, chain_config.options.as_ref()).unwrap_or_else(|e| {
+    let spec = load_index_spec(run_args.chain, run_args.index_config.as_deref());
+    let options = run_args.options_config.as_deref().map(|p| load_options_config(p));
+    let resolved = resolve_args(run_args, &spec, options.as_ref()).unwrap_or_else(|e| {
         error!("{e}");
         exit(1);
     });
 
-    info!("Indexing chain: {}", chain_config.name);
+    info!("Indexing chain: {}", spec.name);
 
-    let genesis_hash_config = chain_config.genesis_hash_bytes().map_err(|e| {
+    let genesis_hash_config = spec.genesis_hash_bytes().map_err(|e| {
         shared::internal_error(format!("invalid genesis hash in config: {e}"))
     })?;
 
-    let db_path = resolve_db_path(&chain_config.name, resolved.db_path.as_deref());
+    let db_path = resolve_db_path(&spec.name, resolved.db_path.as_deref());
     info!("Database path: {}", db_path.display());
 
     let db_cache_capacity = parse_db_cache_capacity(&resolved.db_cache_capacity)?;
@@ -416,7 +433,7 @@ async fn run() -> Result<(), shared::IndexError> {
     let url = resolved
         .url
         .clone()
-        .unwrap_or_else(|| chain_config.default_url.clone());
+        .unwrap_or_else(|| spec.default_url.clone());
 
     let term_now = Arc::new(AtomicBool::new(false));
     for sig in TERM_SIGNALS {
@@ -470,11 +487,9 @@ async fn run() -> Result<(), shared::IndexError> {
             trees.clone(),
             api,
             rpc.clone(),
-            chain_config.clone(),
+            spec.clone(),
             resolved.finalized,
             resolved.queue_depth.into(),
-            resolved.index_variant,
-            resolved.store_events,
             exit_rx.clone(),
             sub_rx,
         ));
@@ -550,6 +565,19 @@ async fn main() {
 mod main_tests {
     use super::*;
 
+    fn test_spec() -> IndexSpec {
+        IndexSpec {
+            name: "test".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            versions: vec![0],
+            index_variant: false,
+            store_events: false,
+            custom_keys: Default::default(),
+            pallets: vec![],
+        }
+    }
+
     #[test]
     fn db_mode_maps_to_sled_modes() {
         assert!(matches!(
@@ -594,7 +622,8 @@ mod main_tests {
             "polkadot",
         ])
         .unwrap();
-        let resolved = resolve_args(&args, None).unwrap();
+        let spec = test_spec();
+        let resolved = resolve_args(&args, &spec, None).unwrap();
         assert!(matches!(resolved.db_mode, DbMode::LowSpace));
         assert_eq!(resolved.db_cache_capacity, "1024.00 MiB");
         assert_eq!(resolved.queue_depth, 1);
@@ -612,6 +641,16 @@ mod main_tests {
             "polkadot",
         ])
         .unwrap();
+        let spec = IndexSpec {
+            name: "test".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            versions: vec![0],
+            index_variant: true,
+            store_events: true,
+            custom_keys: Default::default(),
+            pallets: vec![],
+        };
         let opts = OptionsConfig {
             url: Some("ws://custom:9944".into()),
             db_path: Some("/data/db".into()),
@@ -619,11 +658,9 @@ mod main_tests {
             db_cache_capacity: Some("2 GiB".into()),
             queue_depth: Some(4),
             finalized: Some(true),
-            index_variant: Some(true),
-            store_events: Some(true),
             port: Some(9999),
         };
-        let resolved = resolve_args(&args, Some(&opts)).unwrap();
+        let resolved = resolve_args(&args, &spec, Some(&opts)).unwrap();
         assert!(matches!(resolved.db_mode, DbMode::HighThroughput));
         assert_eq!(resolved.db_cache_capacity, "2 GiB");
         assert_eq!(resolved.queue_depth, 4);
@@ -648,8 +685,10 @@ mod main_tests {
             "--finalized",
             "--db-mode",
             "high-throughput",
+            "--store-events",
         ])
         .unwrap();
+        let spec = test_spec();
         let opts = OptionsConfig {
             url: Some("ws://config:9944".into()),
             db_path: None,
@@ -657,15 +696,13 @@ mod main_tests {
             db_cache_capacity: Some("512 MiB".into()),
             queue_depth: Some(2),
             finalized: Some(false),
-            index_variant: Some(true),
-            store_events: Some(true),
             port: Some(9999),
         };
-        let resolved = resolve_args(&args, Some(&opts)).unwrap();
+        let resolved = resolve_args(&args, &spec, Some(&opts)).unwrap();
         assert!(matches!(resolved.db_mode, DbMode::HighThroughput));
         assert_eq!(resolved.queue_depth, 8);
         assert!(resolved.finalized);
-        assert!(resolved.index_variant);
+        assert!(!resolved.index_variant);
         assert!(resolved.store_events);
         assert_eq!(resolved.port, 1234);
     }
@@ -678,11 +715,63 @@ mod main_tests {
             "polkadot",
         ])
         .unwrap();
+        let spec = test_spec();
         let opts = OptionsConfig {
             db_mode: Some("invalid".into()),
             ..Default::default()
         };
-        assert!(resolve_args(&args, Some(&opts)).is_err());
+        assert!(resolve_args(&args, &spec, Some(&opts)).is_err());
+    }
+
+    #[test]
+    fn resolve_args_spec_index_variant_or_with_cli() {
+        let args = RunArgs::try_parse_from([
+            "acuity-index",
+            "--chain",
+            "polkadot",
+        ])
+        .unwrap();
+        let mut spec = test_spec();
+        spec.index_variant = true;
+        spec.store_events = true;
+        let resolved = resolve_args(&args, &spec, None).unwrap();
+        assert!(resolved.index_variant);
+        assert!(resolved.store_events);
+    }
+
+    #[test]
+    fn resolve_args_spec_and_cli_both_true() {
+        let args = RunArgs::try_parse_from([
+            "acuity-index",
+            "--chain",
+            "polkadot",
+            "--index-variant",
+        ])
+        .unwrap();
+        let mut spec = test_spec();
+        spec.index_variant = true;
+        let resolved = resolve_args(&args, &spec, None).unwrap();
+        assert!(resolved.index_variant);
+        assert!(!resolved.store_events);
+    }
+
+    #[test]
+    fn load_options_config_parses_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("options.toml");
+        std::fs::write(&path, r#"
+url = "wss://rpc.example.com:443"
+db_mode = "high_throughput"
+queue_depth = 4
+finalized = true
+port = 9999
+"#).unwrap();
+        let opts = load_options_config(path.to_str().unwrap());
+        assert_eq!(opts.url.as_deref(), Some("wss://rpc.example.com:443"));
+        assert_eq!(opts.db_mode.as_deref(), Some("high_throughput"));
+        assert_eq!(opts.queue_depth, Some(4));
+        assert_eq!(opts.finalized, Some(true));
+        assert_eq!(opts.port, Some(9999));
     }
 
     #[test]

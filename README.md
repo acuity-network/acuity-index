@@ -31,7 +31,7 @@ service, see [SECURITY.md](./SECURITY.md).
 | Westend   | `westend`   |
 | Paseo     | `paseo`     |
 
-Any Substrate chain can be supported by providing a custom TOML config with `--chain-config`.
+Any Substrate chain can be supported by providing a custom index specification TOML with `--chain-config`.
 
 ## Requirements
 
@@ -59,8 +59,9 @@ acuity-index [OPTIONS]
 | Option | Default | Description |
 |---|---|---|
 | `-c, --chain <CHAIN>` | — | Chain to index (`polkadot`, `kusama`, `westend`, `paseo`) |
-| `--chain-config <PATH>` | — | Path to a custom chain TOML config (overrides `--chain`) |
-| `--generate-chain-config <PATH>` | — | Inspect live metadata and write a starter TOML config |
+| `--chain-config <PATH>` | — | Path to an index specification TOML file (overrides `--chain`) |
+| `--generate-index-spec <PATH>` | — | Inspect live metadata and write a starter index specification TOML file |
+| `--options-config <PATH>` | — | Path to a runtime options TOML file |
 | `-d, --db-path <PATH>` | `~/.local/share/acuity-index/<chain>/db` | Database directory |
 | `--db-mode <MODE>` | `low-space` | `low-space` or `high-throughput` |
 | `--db-cache-capacity <SIZE>` | `1024.00 MiB` | Maximum sled page-cache size |
@@ -72,9 +73,9 @@ acuity-index [OPTIONS]
 | `-p, --port <PORT>` | `8172` | WebSocket API port |
 | `-v / -q` | — | Increase / decrease log verbosity |
 
-Precedence: **CLI flags > config `[options]` section > built-in defaults**. For boolean flags
+Precedence: **CLI flags > `--options-config` file > built-in defaults**. For boolean flags
 (`--finalized`, `--index-variant`, `--store-events`), the effective value is `true` if either
-the CLI flag or the config setting is `true`.
+the CLI flag or the options config setting is `true`.
 
 ### Examples
 
@@ -90,19 +91,19 @@ Index Kusama with event storage and 8 concurrent requests:
 acuity-index --chain kusama --store-events --queue-depth 8
 ```
 
-Use a custom chain config:
+Use a custom index specification:
 
 ```bash
 acuity-index --chain-config ./chains/mychain.toml --url wss://mynode:443
 ```
 
-Generate a starter config from a live node:
+Generate a starter index specification from a live node:
 
 ```bash
-acuity-index --url wss://mynode:443 --generate-chain-config ./chains/mychain.toml
+acuity-index --url wss://mynode:443 --generate-index-spec ./chains/mychain.toml
 ```
 
-`--generate-chain-config` currently requires runtime metadata v14 or higher.
+`--generate-index-spec` currently requires runtime metadata v14 or higher.
 The generator uses `subxt` metadata decoding to inspect pallets and event fields,
 and the current implementation only converts modern FRAME metadata layouts. Nodes
 serving older metadata, such as v13 from early chain history before a runtime
@@ -139,10 +140,10 @@ In both cases the process logs the shutdown reason, stops the WebSocket server, 
 
 Startup failures such as invalid cache-size configuration, genesis-hash mismatches, database open errors, RPC initialization failures, and signal-registration failures are also reported as structured errors and logged before the process exits.
 
-## Chain Configuration
+## Index Specification
 
-Each chain is described by a TOML file. Built-in configs are embedded at
-compile time; custom configs can be passed via `--chain-config`.
+Each chain is described by an index specification TOML file. Built-in specs are embedded at
+compile time; custom specs can be passed via `--chain-config`.
 
 If a runtime includes multiple instances of the same Substrate pallet under
 different names, treat them as distinct pallets in the config. Each instance
@@ -158,17 +159,9 @@ are tracked independently for each instance.
 name = "mychain"
 genesis_hash = "abc123..."
 default_url = "wss://my-node:443"
+index_variant = false
+store_events = false
 versions = [0]
-
-# Optional runtime defaults (overridden by CLI flags)
-[options]
-url = "wss://my-node:443"
-db_path = "/data/acuity/db"
-db_mode = "high_throughput"
-db_cache_capacity = "2 GiB"
-queue_depth = 4
-finalized = true
-port = 9999
 
 # Built-in SDK pallet — indexing rules handled internally
 [[pallets]]
@@ -200,28 +193,25 @@ fields = ["item_id", "revision_id"]
 key = "item_revision" # binary composite query key
 ```
 
-### Options Section
+### Runtime Options Config
 
-The optional `[options]` section in a chain config TOML sets runtime defaults for CLI options.
-This is useful for custom chains where you want to embed deployment-specific settings
-(like a WebSocket URL, database path, or port) directly in the config file instead of
-passing them on every invocation.
+Runtime options can be loaded from a separate TOML file via `--options-config`.
+This is useful for deployment-specific settings (like a WebSocket URL, database path,
+or port) that vary across environments.
 
 All fields are optional — omit any field to keep its built-in default:
 
 | Field | Type | Default |
 |---|---|---|
-| `url` | string | chain config `default_url` |
+| `url` | string | index spec `default_url` |
 | `db_path` | string | `~/.local/share/acuity-index/<chain>/db` |
 | `db_mode` | string (`"low_space"` or `"high_throughput"`) | `low_space` |
 | `db_cache_capacity` | string | `1024.00 MiB` |
 | `queue_depth` | integer | `1` |
 | `finalized` | boolean | `false` |
-| `index_variant` | boolean | `false` |
-| `store_events` | boolean | `false` |
 | `port` | integer | `8172` |
 
-Merge precedence: **CLI flags > `[options]` section > built-in defaults**.
+Merge precedence: **CLI flags > `--options-config` file > built-in defaults**.
 For boolean flags, the effective value is `true` if either source is `true`.
 
 ### Built-in Key Types

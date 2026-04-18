@@ -208,7 +208,7 @@ pub struct PalletConfig {
     pub events: Vec<EventConfig>,
 }
 
-/// Runtime options that can be specified in the chain config TOML under `[options]`.
+/// Runtime options loaded from a separate options TOML file.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct OptionsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -224,29 +224,27 @@ pub struct OptionsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finalized: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_variant: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub store_events: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
 }
 
-/// Top-level chain configuration loaded from a TOML file.
+/// Index specification loaded from a TOML file.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ChainConfig {
+pub struct IndexSpec {
     pub name: String,
     pub genesis_hash: String,
     pub default_url: String,
     pub versions: Vec<u32>,
+    #[serde(default)]
+    pub index_variant: bool,
+    #[serde(default)]
+    pub store_events: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub custom_keys: HashMap<String, CustomKeyConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pallets: Vec<PalletConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub options: Option<OptionsConfig>,
 }
 
-impl ChainConfig {
+impl IndexSpec {
     /// Build a fast lookup: pallet_name → event_name → Vec<ParamConfig>.
     pub fn build_custom_index(&self) -> Result<CustomIndex, String> {
         let mut map: CustomIndex = HashMap::new();
@@ -322,11 +320,13 @@ mod tests {
 
     #[test]
     fn validate_returns_ok_for_valid_custom_config() {
-        let config = ChainConfig {
+        let spec = IndexSpec {
             name: "test".into(),
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
             versions: vec![0],
+            index_variant: false,
+            store_events: false,
             custom_keys: HashMap::from([(
                 "item_id".into(),
                 CustomKeyConfig::Scalar(ScalarKind::Bytes32),
@@ -344,10 +344,9 @@ mod tests {
                     }],
                 }],
             }],
-            options: None,
         };
 
-        assert!(config.validate().is_ok());
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

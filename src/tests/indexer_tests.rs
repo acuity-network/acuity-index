@@ -353,7 +353,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         indexer.index_event_key(key.clone(), 100, 3).unwrap();
         indexer.index_event_key(key.clone(), 200, 1).unwrap();
 
-        let events = key.get_events(&trees, None, 100);
+        let events = key.get_events(&trees, None, 100).unwrap();
         assert_eq!(events.len(), 2);
         // Results come in reverse order (newest first).
         assert_eq!(events[0].block_number, 200);
@@ -369,7 +369,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let key = custom_u32_key("para_id", 2000);
         indexer.index_event_key(key.clone(), 50, 0).unwrap();
 
-        let events = key.get_events(&trees, None, 100);
+        let events = key.get_events(&trees, None, 100).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].block_number, 50);
         assert_eq!(events[0].event_index, 0);
@@ -400,7 +400,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let key = custom_bytes32_key("item_id", [0x21; 32]);
         indexer.index_event_key(key.clone(), 75, 2).unwrap();
 
-        let events = key.get_events(&trees, None, 100);
+        let events = key.get_events(&trees, None, 100).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].block_number, 75);
         assert_eq!(events[0].event_index, 2);
@@ -418,7 +418,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         });
         indexer.index_event_key(key.clone(), 88, 1).unwrap();
 
-        let events = key.get_events(&trees, None, 100);
+        let events = key.get_events(&trees, None, 100).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].block_number, 88);
         assert_eq!(events[0].event_index, 1);
@@ -434,7 +434,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         indexer.index_event_key(key.clone(), 10, 2).unwrap();
         indexer.index_event_key(key.clone(), 20, 4).unwrap();
 
-        let events = key.get_events(&trees, None, 100);
+        let events = key.get_events(&trees, None, 100).unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].block_number, 20);
         assert_eq!(events[1].block_number, 10);
@@ -451,7 +451,7 @@ item_revision = { fields = ["bytes32", "u32"] }
             indexer.index_event_key(key.clone(), i, 0).unwrap();
         }
 
-        let events = key.get_events(&trees, None, 100);
+        let events = key.get_events(&trees, None, 100).unwrap();
         assert_eq!(events.len(), 100);
         // Should be the most recent 100.
         assert_eq!(events[0].block_number, 149);

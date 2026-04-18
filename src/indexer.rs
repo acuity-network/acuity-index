@@ -307,7 +307,7 @@ impl Indexer {
         key: Key,
         block_number: u32,
         event_index: u16,
-    ) -> Result<(), sled::Error> {
+    ) -> Result<(), IndexError> {
         key.write_db_key(&self.trees, block_number, event_index)?;
         self.notify_event_subscribers(
             key,

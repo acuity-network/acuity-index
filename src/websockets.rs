@@ -30,6 +30,9 @@ const MAX_WS_MESSAGE_SIZE_BYTES: usize = 256 * 1024;
 const MAX_WS_FRAME_SIZE_BYTES: usize = 64 * 1024;
 const MAX_CUSTOM_KEY_NAME_BYTES: usize = 128;
 const MAX_CUSTOM_STRING_VALUE_BYTES: usize = 1024;
+const MAX_COMPOSITE_ELEMENTS: usize = 64;
+const MAX_COMPOSITE_DEPTH: usize = 8;
+const MAX_CUSTOM_VALUE_BYTES: usize = 16384;
 const MAX_CONNECTIONS: usize = 1024;
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 128;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -114,7 +117,43 @@ fn validate_key(key: &Key) -> Result<(), IndexError> {
         }
     }
 
+    validate_custom_value(&custom.value, 0)?;
+
     Ok(())
+}
+
+fn validate_custom_value(value: &CustomValue, depth: usize) -> Result<(), IndexError> {
+    if depth > MAX_COMPOSITE_DEPTH {
+        return Err(disconnect_error(format!(
+            "composite key nesting exceeds max depth {MAX_COMPOSITE_DEPTH}"
+        )));
+    }
+
+    match value {
+        CustomValue::Composite(values) => {
+            if values.len() > MAX_COMPOSITE_ELEMENTS {
+                return Err(disconnect_error(format!(
+                    "composite key has {} elements, max is {MAX_COMPOSITE_ELEMENTS}",
+                    values.len()
+                )));
+            }
+            for v in values {
+                validate_custom_value(v, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+
+    match value.db_bytes() {
+        Ok(bytes) if bytes.len() > MAX_CUSTOM_VALUE_BYTES => {
+            Err(disconnect_error(format!(
+                "custom key encoded value exceeds {MAX_CUSTOM_VALUE_BYTES} bytes: {} bytes",
+                bytes.len()
+            )))
+        }
+        Err(err) => Err(err),
+        Ok(_) => Ok(()),
+    }
 }
 
 fn validate_subscription_request(
@@ -212,8 +251,8 @@ pub fn process_msg_get_events(
     key: Key,
     before: Option<EventRef>,
     limit: u16,
-) -> ResponseBody {
-    let event_refs = key.get_events(trees, before.as_ref(), clamp_events_limit(limit));
+) -> Result<ResponseBody, IndexError> {
+    let event_refs = key.get_events(trees, before.as_ref(), clamp_events_limit(limit))?;
 
     let mut decoded_events = Vec::new();
     for event_ref in &event_refs {
@@ -232,11 +271,11 @@ pub fn process_msg_get_events(
         }
     }
 
-    ResponseBody::Events {
+    Ok(ResponseBody::Events {
         key,
         events: event_refs,
         decoded_events,
-    }
+    })
 }
 
 fn size_on_disk_response(trees: &Trees) -> Result<ResponseBody, IndexError> {
@@ -290,7 +329,10 @@ fn process_local_msg(
             if let Err(err) = validate_key(&key) {
                 return Some(Err(err));
             }
-            request_id_response(msg.id, process_msg_get_events(trees, key, before, limit))
+            match process_msg_get_events(trees, key, before, limit) {
+                Ok(body) => request_id_response(msg.id, body),
+                Err(err) => return Some(Err(err)),
+            }
         }
         RequestBody::SubscribeEvents { key } => {
             if let Err(err) = validate_key(&key) {
@@ -752,8 +794,9 @@ mod tests {
             value: CustomValue::String("hello".into()),
         };
 
+        let custom_prefix_bytes = custom_key.db_prefix().unwrap();
         let mut short_custom_prefix = vec![2u8];
-        short_custom_prefix.extend_from_slice(&custom_key.db_prefix());
+        short_custom_prefix.extend_from_slice(&custom_prefix_bytes);
         trees.index.insert(short_custom_prefix, &[]).unwrap();
         for i in 0..150u32 {
             bytes_key.write_db_key(&trees, i, 0).unwrap();
@@ -763,18 +806,22 @@ mod tests {
                 .unwrap();
         }
 
+        let bytes_prefix = bytes_key.index_prefix().unwrap().unwrap();
+        let u32_prefix = u32_key.index_prefix().unwrap().unwrap();
+        let custom_prefix = Key::Custom(custom_key.clone()).index_prefix().unwrap().unwrap();
+
         assert_eq!(
-            get_events_index(&trees.index, &bytes_key.index_prefix().unwrap(), None, 100).len(),
+            get_events_index(&trees.index, &bytes_prefix, None, 100).len(),
             100
         );
         assert_eq!(
-            get_events_index(&trees.index, &u32_key.index_prefix().unwrap(), None, 100).len(),
+            get_events_index(&trees.index, &u32_prefix, None, 100).len(),
             100
         );
         assert_eq!(
             get_events_index(
                 &trees.index,
-                &Key::Custom(custom_key.clone()).index_prefix().unwrap(),
+                &custom_prefix,
                 None,
                 100
             )
@@ -786,7 +833,7 @@ mod tests {
         assert_eq!(
             get_events_index(
                 &trees.index,
-                &Key::Custom(custom_key).index_prefix().unwrap(),
+                &custom_prefix,
                 None,
                 100
             )
@@ -813,7 +860,7 @@ mod tests {
             .unwrap();
 
         let ResponseBody::Events { decoded_events, .. } =
-            process_msg_get_events(&trees, key, None, 100)
+            process_msg_get_events(&trees, key, None, 100).unwrap()
         else {
             panic!("expected events response");
         };
@@ -1003,6 +1050,68 @@ mod tests {
             RequestMessage {
                 id: 11,
                 body: RequestBody::SubscribeEvents { key },
+            },
+            &sub_tx,
+            &response_tx,
+        )
+        .unwrap();
+
+        assert!(
+            matches!(result, Err(IndexError::Io(err)) if err.kind() == std::io::ErrorKind::ConnectionAborted)
+        );
+    }
+
+    #[test]
+    fn process_local_msg_rejects_composite_with_too_many_elements() {
+        let trees = temp_trees();
+        let (sub_tx, _sub_rx) = mpsc::channel(1);
+        let (response_tx, _) = mpsc::channel(1);
+        let key = Key::Custom(CustomKey {
+            name: "too_many".into(),
+            value: CustomValue::Composite(
+                (0..=MAX_COMPOSITE_ELEMENTS)
+                    .map(|_| CustomValue::U32(1))
+                    .collect(),
+            ),
+        });
+
+        let result = process_local_msg(
+            &trees,
+            RequestMessage {
+                id: 12,
+                body: RequestBody::GetEvents { key, limit: 100, before: None },
+            },
+            &sub_tx,
+            &response_tx,
+        )
+        .unwrap();
+
+        assert!(
+            matches!(result, Err(IndexError::Io(err)) if err.kind() == std::io::ErrorKind::ConnectionAborted)
+        );
+    }
+
+    #[test]
+    fn process_local_msg_rejects_deeply_nested_composite() {
+        let trees = temp_trees();
+        let (sub_tx, _sub_rx) = mpsc::channel(1);
+        let (response_tx, _) = mpsc::channel(1);
+
+        let mut value = CustomValue::U32(1);
+        for _ in 0..=MAX_COMPOSITE_DEPTH {
+            value = CustomValue::Composite(vec![value]);
+        }
+
+        let key = Key::Custom(CustomKey {
+            name: "deep".into(),
+            value,
+        });
+
+        let result = process_local_msg(
+            &trees,
+            RequestMessage {
+                id: 13,
+                body: RequestBody::GetEvents { key, limit: 100, before: None },
             },
             &sub_tx,
             &response_tx,

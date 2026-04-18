@@ -89,8 +89,8 @@ mod shared_tests {
             value: CustomValue::U32(42),
         };
 
-        let bytes32_prefix = bytes32_key.db_prefix();
-        let u32_prefix = u32_key.db_prefix();
+        let bytes32_prefix = bytes32_key.db_prefix().unwrap();
+        let u32_prefix = u32_key.db_prefix().unwrap();
 
         assert_eq!(&bytes32_prefix[..2], &(7u16).to_be_bytes());
         assert_eq!(&bytes32_prefix[2..9], b"item_id");
@@ -323,7 +323,7 @@ mod shared_tests {
 
         for (i, key) in keys.into_iter().enumerate() {
             key.write_db_key(&trees, 1000 + i as u32, i as u16).unwrap();
-            let events = key.get_events(&trees, None, 100);
+            let events = key.get_events(&trees, None, 100).unwrap();
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].block_number, 1000 + i as u32);
             assert_eq!(events[0].event_index, i as u16);

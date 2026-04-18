@@ -52,7 +52,7 @@ mod websocket_tests {
             name: "account_id".into(),
             value: CustomValue::Bytes32(Bytes32([0; 32])),
         });
-        let msg = process_msg_get_events(&trees, key.clone(), None, 100);
+        let msg = process_msg_get_events(&trees, key.clone(), None, 100).unwrap();
         match msg {
             ResponseBody::Events {
                 key: k,
@@ -95,7 +95,7 @@ mod websocket_tests {
             .insert(event_key.as_bytes(), json.as_slice())
             .unwrap();
 
-        let msg = process_msg_get_events(&trees, key, None, 100);
+        let msg = process_msg_get_events(&trees, key, None, 100).unwrap();
         match msg {
             ResponseBody::Events {
                 events,
@@ -125,7 +125,7 @@ mod websocket_tests {
         });
         key.write_db_key(&trees, 50, 3).unwrap();
 
-        let msg = process_msg_get_events(&trees, key.clone(), None, 100);
+        let msg = process_msg_get_events(&trees, key.clone(), None, 100).unwrap();
         match msg {
             ResponseBody::Events {
                 key: returned_key,
@@ -149,7 +149,8 @@ mod websocket_tests {
             name: "para_id".into(),
             value: CustomValue::U32(999),
         });
-        let events = get_events_index(&trees.index, &key.index_prefix().unwrap(), None, 100);
+        let prefix = key.index_prefix().unwrap().unwrap();
+        let events = get_events_index(&trees.index, &prefix, None, 100);
         assert!(events.is_empty());
     }
 
@@ -160,7 +161,8 @@ mod websocket_tests {
             name: "account_id".into(),
             value: CustomValue::Bytes32(Bytes32([0; 32])),
         });
-        let events = get_events_index(&trees.index, &key.index_prefix().unwrap(), None, 100);
+        let prefix = key.index_prefix().unwrap().unwrap();
+        let events = get_events_index(&trees.index, &prefix, None, 100);
         assert!(events.is_empty());
     }
 
@@ -175,7 +177,8 @@ mod websocket_tests {
         key.write_db_key(&trees, 20, 1).unwrap();
         key.write_db_key(&trees, 30, 2).unwrap();
 
-        let events = get_events_index(&trees.index, &key.index_prefix().unwrap(), None, 100);
+        let prefix = key.index_prefix().unwrap().unwrap();
+        let events = get_events_index(&trees.index, &prefix, None, 100);
         assert_eq!(events.len(), 3);
         // Reverse order (newest first).
         assert_eq!(events[0].block_number, 30);
@@ -193,7 +196,8 @@ mod websocket_tests {
         key.write_db_key(&trees, 5, 0).unwrap();
         key.write_db_key(&trees, 15, 1).unwrap();
 
-        let events = get_events_index(&trees.index, &key.index_prefix().unwrap(), None, 100);
+        let prefix = key.index_prefix().unwrap().unwrap();
+        let events = get_events_index(&trees.index, &prefix, None, 100);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].block_number, 15);
         assert_eq!(events[1].block_number, 5);
@@ -212,7 +216,8 @@ mod websocket_tests {
         key.write_db_key(&trees, 5, 0).unwrap();
         key.write_db_key(&trees, 15, 1).unwrap();
 
-        let events = get_events_index(&trees.index, &key.index_prefix().unwrap(), None, 100);
+        let prefix = key.index_prefix().unwrap().unwrap();
+        let events = get_events_index(&trees.index, &prefix, None, 100);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].block_number, 15);
         assert_eq!(events[1].block_number, 5);
@@ -229,9 +234,10 @@ mod websocket_tests {
             key.write_db_key(&trees, block_number, event_index).unwrap();
         }
 
+        let prefix = key.index_prefix().unwrap().unwrap();
         let events = get_events_index(
             &trees.index,
-            &key.index_prefix().unwrap(),
+            &prefix,
             Some(&EventRef {
                 block_number: 20,
                 event_index: 2,
@@ -273,7 +279,8 @@ mod websocket_tests {
                 event_index: 3,
             }),
             0,
-        ) else {
+        )
+        .unwrap() else {
             panic!("expected events response");
         };
         assert_eq!(events.len(), 1);
@@ -286,7 +293,7 @@ mod websocket_tests {
         );
 
         let ResponseBody::Events { events, .. } =
-            process_msg_get_events(&trees, key, None, u16::MAX)
+            process_msg_get_events(&trees, key, None, u16::MAX).unwrap()
         else {
             panic!("expected events response");
         };

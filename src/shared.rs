@@ -314,27 +314,28 @@ impl CustomValue {
         }
     }
 
-    fn db_bytes(&self) -> Vec<u8> {
+    pub(crate) fn db_bytes(&self) -> Result<Vec<u8>, IndexError> {
         match self {
-            CustomValue::Bytes32(v) => v.0.to_vec(),
-            CustomValue::U32(v) => v.to_be_bytes().to_vec(),
-            CustomValue::U64(v) => v.0.to_be_bytes().to_vec(),
-            CustomValue::U128(v) => v.0.to_be_bytes().to_vec(),
-            CustomValue::String(v) => v.as_bytes().to_vec(),
-            CustomValue::Bool(v) => vec![u8::from(*v)],
+            CustomValue::Bytes32(v) => Ok(v.0.to_vec()),
+            CustomValue::U32(v) => Ok(v.to_be_bytes().to_vec()),
+            CustomValue::U64(v) => Ok(v.0.to_be_bytes().to_vec()),
+            CustomValue::U128(v) => Ok(v.0.to_be_bytes().to_vec()),
+            CustomValue::String(v) => Ok(v.as_bytes().to_vec()),
+            CustomValue::Bool(v) => Ok(vec![u8::from(*v)]),
             CustomValue::Composite(values) => {
-                let count = u16::try_from(values.len()).expect("composite value too large");
+                let count = u16::try_from(values.len())
+                    .map_err(|_| internal_error("composite value too large"))?;
                 let mut encoded = Vec::new();
                 encoded.extend_from_slice(&count.to_be_bytes());
                 for value in values {
                     encoded.push(value.tag());
-                    let value_bytes = value.db_bytes();
-                    let value_len =
-                        u32::try_from(value_bytes.len()).expect("composite component too large");
+                    let value_bytes = value.db_bytes()?;
+                    let value_len = u32::try_from(value_bytes.len())
+                        .map_err(|_| internal_error("composite component too large"))?;
                     encoded.extend_from_slice(&value_len.to_be_bytes());
                     encoded.extend_from_slice(&value_bytes);
                 }
-                encoded
+                Ok(encoded)
             }
         }
     }
@@ -348,11 +349,13 @@ pub struct CustomKey {
 }
 
 impl CustomKey {
-    pub(crate) fn db_prefix(&self) -> Vec<u8> {
+    pub(crate) fn db_prefix(&self) -> Result<Vec<u8>, IndexError> {
         let name_bytes = self.name.as_bytes();
-        let name_len = u16::try_from(name_bytes.len()).expect("custom key name too long");
-        let value_bytes = self.value.db_bytes();
-        let value_len = u32::try_from(value_bytes.len()).expect("custom key value too large");
+        let name_len = u16::try_from(name_bytes.len())
+            .map_err(|_| internal_error("custom key name too long"))?;
+        let value_bytes = self.value.db_bytes()?;
+        let value_len = u32::try_from(value_bytes.len())
+            .map_err(|_| internal_error("custom key value too large"))?;
 
         let mut prefix = Vec::with_capacity(2 + name_bytes.len() + 1 + 4 + value_bytes.len());
         prefix.extend_from_slice(&name_len.to_be_bytes());
@@ -360,7 +363,7 @@ impl CustomKey {
         prefix.push(self.value.tag());
         prefix.extend_from_slice(&value_len.to_be_bytes());
         prefix.extend_from_slice(&value_bytes);
-        prefix
+        Ok(prefix)
     }
 }
 
@@ -412,14 +415,15 @@ pub enum Key {
 }
 
 impl Key {
-    pub fn index_prefix(&self) -> Option<Vec<u8>> {
+    pub fn index_prefix(&self) -> Result<Option<Vec<u8>>, IndexError> {
         match self {
-            Key::Variant(_, _) => None,
+            Key::Variant(_, _) => Ok(None),
             Key::Custom(custom) => {
-                let mut prefix = Vec::with_capacity(1 + custom.db_prefix().len());
+                let db_prefix = custom.db_prefix()?;
+                let mut prefix = Vec::with_capacity(1 + db_prefix.len());
                 prefix.push(INDEX_NAMESPACE_CUSTOM);
-                prefix.extend_from_slice(&custom.db_prefix());
-                Some(prefix)
+                prefix.extend_from_slice(&db_prefix);
+                Ok(Some(prefix))
             }
         }
     }
@@ -429,7 +433,7 @@ impl Key {
         trees: &Trees,
         block_number: u32,
         event_index: u16,
-    ) -> Result<(), sled::Error> {
+    ) -> Result<(), IndexError> {
         let bn: U32<BigEndian> = block_number.into();
         let ei: U16<BigEndian> = event_index.into();
 
@@ -444,9 +448,10 @@ impl Key {
                 trees.variant.insert(key.as_bytes(), &[])?;
             }
             Key::Custom(_) => {
-                let mut key = self.index_prefix().ok_or_else(|| {
-                    sled::Error::Io(std::io::Error::other("custom key missing index prefix"))
-                })?;
+                let prefix = self
+                    .index_prefix()?
+                    .ok_or_else(|| internal_error("custom key missing index prefix"))?;
+                let mut key = prefix;
                 key.extend_from_slice(&block_number.to_be_bytes());
                 key.extend_from_slice(&event_index.to_be_bytes());
                 trees.index.insert(key, &[])?;
@@ -460,14 +465,16 @@ impl Key {
         trees: &Trees,
         before: Option<&EventRef>,
         limit: usize,
-    ) -> Vec<EventRef> {
+    ) -> Result<Vec<EventRef>, IndexError> {
         use crate::websockets::get_events_index;
         match self {
-            Key::Variant(pi, vi) => get_events_variant(&trees.variant, *pi, *vi, before, limit),
-            Key::Custom(_) => self
-                .index_prefix()
-                .map(|prefix| get_events_index(&trees.index, &prefix, before, limit))
-                .unwrap_or_default(),
+            Key::Variant(pi, vi) => Ok(get_events_variant(&trees.variant, *pi, *vi, before, limit)),
+            Key::Custom(_) => {
+                let prefix = self
+                    .index_prefix()?
+                    .ok_or_else(|| internal_error("custom key missing index prefix"))?;
+                Ok(get_events_index(&trees.index, &prefix, before, limit))
+            }
         }
     }
 }
@@ -755,7 +762,7 @@ mod tests {
                 name: "example".into(),
                 value,
             };
-            let prefix = key.db_prefix();
+            let prefix = key.db_prefix().unwrap();
             assert_eq!(u16::from_be_bytes(prefix[0..2].try_into().unwrap()), 7);
             assert_eq!(&prefix[2..9], b"example");
             assert_eq!(prefix[9], tag);
@@ -782,7 +789,7 @@ mod tests {
             name: "item_revision".into(),
             value: value.clone(),
         };
-        let prefix = key.db_prefix();
+        let prefix = key.db_prefix().unwrap();
         assert_eq!(prefix[15], 6);
 
         let json = serde_json::to_string(&value).unwrap();
@@ -808,6 +815,27 @@ mod tests {
     }
 
     #[test]
+    fn db_bytes_returns_error_for_oversized_composite() {
+        let values: Vec<CustomValue> = (0..=u16::MAX as usize)
+            .map(|_| CustomValue::U32(1))
+            .collect();
+        let value = CustomValue::Composite(values);
+        assert!(value.db_bytes().is_err());
+    }
+
+    #[test]
+    fn db_prefix_returns_error_for_oversized_composite_value() {
+        let values: Vec<CustomValue> = (0..=u16::MAX as usize)
+            .map(|_| CustomValue::U32(1))
+            .collect();
+        let key = CustomKey {
+            name: "big".into(),
+            value: CustomValue::Composite(values),
+        };
+        assert!(key.db_prefix().is_err());
+    }
+
+    #[test]
     fn variant_key_retrieval_limits_to_recent_100_events() {
         let trees = Trees::open(sled::Config::new().temporary(true)).unwrap();
         let key = Key::Variant(1, 2);
@@ -816,7 +844,7 @@ mod tests {
             key.write_db_key(&trees, i, 0).unwrap();
         }
 
-        let events = key.get_events(&trees, None, 100);
+        let events = key.get_events(&trees, None, 100).unwrap();
         assert_eq!(events.len(), 100);
         assert_eq!(events[0].block_number, 149);
         assert_eq!(events[99].block_number, 50);

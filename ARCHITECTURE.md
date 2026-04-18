@@ -13,9 +13,9 @@ This file is meant to help AI agents quickly find the right code and understand 
 ## Runtime Components
 
 - `src/main.rs`
-  Parses CLI args, loads chain config, opens sled, verifies genesis hash, connects to the chain, and starts the indexer task plus the WebSocket server.
+  Parses CLI args, loads chain config, opens sled, verifies genesis hash, and runs a reconnect loop that connects to the chain, spawns the indexer task plus the WebSocket server, and retries with exponential backoff on transient RPC failures.
 - `src/indexer.rs`
-  Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, decoded event storage, and subscription fanout.
+  Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, decoded event storage, and subscription fanout. Saves the current span before returning on any error so the reconnect loop can resume without data loss.
 - `src/config.rs`
   Defines the TOML schema and resolves configured event params into runtime key-mapping rules.
 - `src/pallets.rs`
@@ -36,14 +36,15 @@ The normal startup path lives in `src/main.rs`:
 3. Validate the config.
 4. Resolve the database path and open sled.
 5. Verify or initialize the stored `genesis_hash` in the root database.
-6. Connect to the target node with `subxt`.
-7. Verify the connected chain genesis hash matches the config.
-8. Spawn two long-running tasks:
-   - `run_indexer(...)`
-   - `websockets_listen(...)`
-9. Wait for either a termination signal or indexer completion, then notify the remaining task to stop and flush sled.
+6. Enter the reconnect loop (see [RPC Reconnection](#rpc-reconnection) below). On each iteration:
+   a. Connect to the target node with `subxt` (retry with exponential backoff on transient failures).
+   b. Verify the connected chain genesis hash matches the config.
+   c. Spawn two long-running tasks:
+      - `run_indexer(...)`
+      - `websockets_listen(...)`
+   d. Wait for either a termination signal or indexer completion, then act accordingly.
 
-Startup error handling is centralized in a fallible `run()` path in `src/main.rs`. Configuration, database, RPC, and signal-registration failures now return structured errors that are logged once before the process exits.
+Startup error handling is centralized in a fallible `run()` path in `src/main.rs`. Configuration, database, and signal-registration failures return structured errors that are logged once before the process exits.
 
 Important invariant:
 
@@ -196,10 +197,49 @@ When loading spans, the indexer may discard or trim them if they are stale relat
 - If decoded event storage is now enabled but was previously disabled, affected spans are removed for reindexing.
 - If `config.versions` indicates the chain config changed starting at some block, affected spans are removed or split so that only the stale portion is reindexed.
 
-Important invariant:
+Important invariants:
 
-- The active in-memory `current_span` is not always persisted immediately. On shutdown, `save_current_span(...)` persists the current progress back into the `span` tree.
-- If the upstream `subxt` block stream closes because the node disconnects or exits, the indexer treats that as a graceful shutdown condition: it saves the current span, returns `Ok(())`, and lets `main` shut down the WebSocket task and flush sled.
+- The active in-memory `current_span` is not always persisted immediately. On shutdown or recoverable error, `save_current_span(...)` persists the current progress back into the `span` tree before the indexer task returns.
+- If the upstream `subxt` block stream closes because the node disconnects or exits, the indexer saves the current span and returns `BlockStreamClosed` so the reconnect loop in `src/main.rs` can re-establish the connection and resume indexing.
+
+## RPC Reconnection
+
+The indexer is wrapped in a reconnect loop in `src/main.rs` that handles transient RPC failures without data loss.
+
+### Error classification
+
+`IndexError::is_recoverable()` (`src/shared.rs`) classifies each error variant:
+
+- **Recoverable**: `Subxt`, `RpcError`, `BlocksError`, `BlockStreamClosed`, `EventsError`, `OnlineClientAtBlockError`, `OnlineClientError`, `BlockNotFound` — these indicate transient network or node issues and trigger reconnection.
+- **Fatal**: `Sled`, `Tungstenite`, `Hex`, `StatePruningMisconfigured`, `CodecError`, `MetadataError`, `Json`, `Io`, `TomlSer`, `Internal` — these indicate configuration or data integrity problems and cause the process to exit.
+
+### Reconnect loop behavior
+
+On each iteration:
+
+1. Check if SIGTERM was received between loops (via `term_now` atomic flag).
+2. Attempt RPC connection via `connect_rpc()`. Transient failures log the error and sleep with exponential backoff before retrying. Fatal connection errors exit immediately.
+3. Verify genesis hash. A mismatch is fatal (exits with an error).
+4. Spawn the indexer and WebSocket server tasks.
+5. `select!` on the signal handler vs the indexer task handle.
+6. On SIGTERM: send the exit signal, await both tasks, flush sled, and return `Ok(())`.
+7. On indexer completion:
+   - `Ok(())` — clean shutdown (e.g. exit signal received), return `Ok(())`.
+   - Recoverable error — log the error, sleep with backoff, and `continue` the loop to reconnect.
+   - Fatal error — log and return `Err`.
+   - `JoinError` (panic) — log and return a fatal `Internal` error.
+
+### Backoff timing
+
+- Initial delay: 1 second (`INITIAL_BACKOFF_SECS`)
+- Maximum delay: 60 seconds (`MAX_BACKOFF_SECS`)
+- The delay doubles after each consecutive failure and resets to 1 second on a successful connection.
+
+During backoff sleeps, SIGTERM is checked via `signals.next()` so the process exits promptly rather than waiting for the full backoff duration.
+
+### Span state preservation
+
+Because `run_indexer` saves the current span before returning on any error path, the reconnect loop preserves all committed indexing progress. On reconnection, `load_spans` reconstructs the span state from sled, and any blocks not covered by a span are re-indexed. This makes the reconnection path idempotent.
 
 ## Chain Config Model
 
@@ -344,7 +384,7 @@ Agents should treat generated configs as a starting point that may need cleanup 
 
 ## Key Files For Common Changes
 
-- Add or change CLI/runtime startup behavior:
+- Add or change CLI/runtime startup behavior or reconnection logic:
   `src/main.rs`
 - Change how spans resume or reindex:
   `src/indexer.rs`
@@ -365,6 +405,7 @@ Agents should treat generated configs as a starting point that may need cleanup 
 - Do not bypass genesis-hash checks when reusing an existing database path.
 - Do not add chain-specific logic to the main loop if it can live in TOML or `src/pallets.rs` instead.
 - `Key::Custom` is the main path for queryable keys, including many built-in semantic keys.
+- Recoverable RPC errors trigger reconnection, not process exit. If you need the process to stop on a specific error, classify it as fatal in `IndexError::is_recoverable()`.
 
 ## Mental Model
 
@@ -373,7 +414,8 @@ The simplest correct mental model is:
 1. Chain config says which event fields matter.
 2. The indexer walks blocks and turns matching event fields into binary index entries.
 3. Spans record which block ranges are already trustworthy for the current indexing mode.
-4. The WebSocket server is a thin query/subscription layer on top of sled plus the indexer-owned subscriber lists.
+4. The reconnect loop in `src/main.rs` wraps the indexer and WebSocket server; transient RPC failures trigger reconnection with exponential backoff, preserving all span state through sled.
+5. The WebSocket server is a thin query/subscription layer on top of sled plus the indexer-owned subscriber lists.
 
 If you are changing behavior, first decide which layer owns it:
 
@@ -381,4 +423,5 @@ If you are changing behavior, first decide which layer owns it:
 - field extraction concern
 - per-event indexing concern
 - span/resume concern
+- reconnection concern
 - API/query concern

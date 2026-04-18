@@ -63,6 +63,31 @@ pub fn internal_error(message: impl Into<String>) -> IndexError {
     IndexError::Internal(message.into())
 }
 
+impl IndexError {
+    pub fn is_recoverable(&self) -> bool {
+        match self {
+            IndexError::Subxt(_)
+            | IndexError::RpcError(_)
+            | IndexError::BlocksError(_)
+            | IndexError::BlockStreamClosed
+            | IndexError::EventsError(_)
+            | IndexError::OnlineClientAtBlockError(_)
+            | IndexError::OnlineClientError(_)
+            | IndexError::BlockNotFound(_) => true,
+            IndexError::Sled(_)
+            | IndexError::Tungstenite(_)
+            | IndexError::Hex(_)
+            | IndexError::StatePruningMisconfigured { .. }
+            | IndexError::CodecError(_)
+            | IndexError::MetadataError(_)
+            | IndexError::Json(_)
+            | IndexError::Io(_)
+            | IndexError::TomlSer(_)
+            | IndexError::Internal(_) => false,
+        }
+    }
+}
+
 pub fn metadata_version(metadata_bytes: &[u8]) -> Option<u8> {
     if metadata_bytes.len() < 5 {
         return None;

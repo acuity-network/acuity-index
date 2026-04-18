@@ -1072,18 +1072,28 @@ pub async fn run_indexer(
             result = &mut head_sub_future => {
                 let block_number = match result {
                     Ok(block_number) => block_number,
-                    Err(IndexError::BlockStreamClosed) => {
-                        info!("Node block stream closed; shutting down cleanly.");
-                        save_current_span(
-                            &trees,
-                            &current_span,
-                            versions_len,
-                            index_variant,
-                            store_events,
-                        )?;
-                        return Ok(());
-                    }
-                    Err(err) => return Err(err),
+Err(IndexError::BlockStreamClosed) => {
+                    info!("Node block stream closed; will attempt reconnection.");
+                    save_current_span(
+                        &trees,
+                        &current_span,
+                        versions_len,
+                        index_variant,
+                        store_events,
+                    )?;
+                    return Err(IndexError::BlockStreamClosed);
+                }
+                Err(err) => {
+                    error!("Head subscription error: {err}");
+                    save_current_span(
+                        &trees,
+                        &current_span,
+                        versions_len,
+                        index_variant,
+                        store_events,
+                    )?;
+                    return Err(err);
+                }
                 };
                 latest_seen_head = latest_seen_head.max(block_number);
                 queue_head_blocks(
@@ -1098,7 +1108,7 @@ pub async fn run_indexer(
             }
 
             (result, idx, _) = async { future::select_all(&mut head_futures).await }, if !head_futures.is_empty() => {
-                process_queued_head_result(
+                if let Err(err) = process_queued_head_result(
                     &trees,
                     &mut current_span,
                     versions_len,
@@ -1107,7 +1117,10 @@ pub async fn run_indexer(
                     &indexer,
                     &mut head_orphans,
                     result,
-                )?;
+                ) {
+                    save_current_span(&trees, &current_span, versions_len, index_variant, store_events)?;
+                    return Err(err);
+                }
                 drop(head_futures.swap_remove(idx));
                 queue_head_blocks(
                     &mut head_futures,
@@ -1177,6 +1190,13 @@ pub async fn run_indexer(
                         continue;
                     }
                     Err(IndexError::StatePruningMisconfigured { block_number }) => {
+                        save_current_span(
+                            &trees,
+                            &current_span,
+                            versions_len,
+                            index_variant,
+                            store_events,
+                        )?;
                         return Err(IndexError::StatePruningMisconfigured { block_number });
                     }
                     Err(err) => {

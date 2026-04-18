@@ -8,18 +8,17 @@ use std::{
     io::ErrorKind,
     path::PathBuf,
     process::exit,
-    sync::{Arc, atomic::AtomicBool},
+    sync::atomic::{AtomicBool, Ordering},
+    sync::Arc,
+    time::Duration,
 };
 use subxt::{
     OnlineClient, PolkadotConfig,
     config::RpcConfigFor,
     rpcs::{RpcClient, methods::legacy::LegacyRpcMethods},
 };
-use tokio::{
-    join, select, spawn,
-    sync::{mpsc, watch},
-};
-use tracing::{error, info};
+use tokio::{select, spawn, sync::{mpsc, watch}, time::sleep};
+use tracing::{error, info, warn};
 use tracing_log::AsTrace;
 
 mod config;
@@ -237,6 +236,7 @@ where
     args.into_iter().collect()
 }
 
+#[cfg(test)]
 fn describe_indexer_shutdown_result(
     result: Result<Result<(), shared::IndexError>, tokio::task::JoinError>,
 ) -> &'static str {
@@ -271,6 +271,21 @@ fn init_db_genesis(trees: &Trees, genesis_hash_config: &[u8]) -> Result<Vec<u8>,
             Ok(genesis_hash_config.to_vec())
         }
     }
+}
+
+const INITIAL_BACKOFF_SECS: u64 = 1;
+const MAX_BACKOFF_SECS: u64 = 60;
+
+async fn connect_rpc(
+    url: &str,
+) -> Result<
+    (OnlineClient<PolkadotConfig>, LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>),
+    shared::IndexError,
+> {
+    let rpc_client = RpcClient::from_url(url).await?;
+    let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone()).await?;
+    let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client);
+    Ok((api, rpc))
 }
 
 async fn run() -> Result<(), shared::IndexError> {
@@ -329,20 +344,6 @@ async fn run() -> Result<(), shared::IndexError> {
         .url
         .clone()
         .unwrap_or_else(|| chain_config.default_url.clone());
-    info!("Connecting to {url}");
-
-    let rpc_client = RpcClient::from_url(&url).await?;
-    let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone()).await?;
-    let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client);
-
-    let chain_genesis = api.genesis_hash().as_ref().to_vec();
-    if chain_genesis != genesis_hash_config {
-        return Err(shared::internal_error(format!(
-            "chain genesis hash mismatch. expected 0x{}, chain 0x{}",
-            hex::encode(genesis_hash_config),
-            hex::encode(chain_genesis),
-        )));
-    }
 
     let term_now = Arc::new(AtomicBool::new(false));
     for sig in TERM_SIGNALS {
@@ -350,41 +351,115 @@ async fn run() -> Result<(), shared::IndexError> {
         flag::register(*sig, Arc::clone(&term_now))?;
     }
 
-    let (exit_tx, exit_rx) = watch::channel(false);
-    let (sub_tx, sub_rx) = mpsc::channel(SUBSCRIPTION_CONTROL_BUFFER_SIZE);
-
-    let indexer_task = spawn(run_indexer(
-        trees.clone(),
-        api,
-        rpc.clone(),
-        chain_config,
-        run_args.finalized,
-        run_args.queue_depth.into(),
-        run_args.index_variant,
-        run_args.store_events,
-        exit_rx.clone(),
-        sub_rx,
-    ));
-
-    let ws_task = spawn(websockets_listen(
-        trees.clone(),
-        rpc,
-        run_args.port,
-        exit_rx,
-        sub_tx,
-    ));
-
+    let mut backoff_secs = INITIAL_BACKOFF_SECS;
     let mut signals = Signals::new(TERM_SIGNALS)?;
-    let shutdown_reason = select! {
-        _ = signals.next() => "received termination signal",
-        result = indexer_task => describe_indexer_shutdown_result(result),
-    };
-    info!("Shutting down: {shutdown_reason}.");
-    let _ = exit_tx.send(true);
-    let _ = join!(ws_task);
-    let _ = trees.flush();
-    info!("Closed database.");
-    Ok(())
+
+    loop {
+        if term_now.load(Ordering::Relaxed) {
+            info!("Shutdown requested; exiting.");
+            return Ok(());
+        }
+
+        info!("Connecting to {url}");
+
+        let (api, rpc) = match connect_rpc(&url).await {
+            Ok(clients) => clients,
+            Err(err) if err.is_recoverable() => {
+                error!("RPC connection failed: {err}; retrying in {backoff_secs}s");
+                select! {
+                    _ = signals.next() => {
+                        info!("Shutdown requested during reconnection backoff.");
+                        return Ok(());
+                    }
+                    _ = sleep(Duration::from_secs(backoff_secs)) => {}
+                }
+                backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
+
+        let chain_genesis = api.genesis_hash().as_ref().to_vec();
+        if chain_genesis != genesis_hash_config {
+            return Err(shared::internal_error(format!(
+                "chain genesis hash mismatch. expected 0x{}, chain 0x{}",
+                hex::encode(genesis_hash_config),
+                hex::encode(chain_genesis),
+            )));
+        }
+
+        backoff_secs = INITIAL_BACKOFF_SECS;
+
+        let (exit_tx, exit_rx) = watch::channel(false);
+        let (sub_tx, sub_rx) = mpsc::channel(SUBSCRIPTION_CONTROL_BUFFER_SIZE);
+
+        let indexer_handle = spawn(run_indexer(
+            trees.clone(),
+            api,
+            rpc.clone(),
+            chain_config.clone(),
+            run_args.finalized,
+            run_args.queue_depth.into(),
+            run_args.index_variant,
+            run_args.store_events,
+            exit_rx.clone(),
+            sub_rx,
+        ));
+        tokio::pin!(indexer_handle);
+
+        let ws_task = spawn(websockets_listen(
+            trees.clone(),
+            rpc,
+            run_args.port,
+            exit_rx,
+            sub_tx,
+        ));
+
+        let indexer_result = select! {
+            _ = signals.next() => {
+                let _ = exit_tx.send(true);
+                let _ = indexer_handle.await;
+                let _ = ws_task.await;
+                let _ = trees.flush();
+                info!("Shutdown complete.");
+                return Ok(());
+            }
+            result = &mut indexer_handle => result,
+        };
+
+        let _ = exit_tx.send(true);
+        let _ = ws_task.await;
+        let _ = trees.flush();
+
+        match indexer_result {
+            Ok(Ok(())) => {
+                info!("Indexer stopped cleanly.");
+                return Ok(());
+            }
+            Ok(Err(err)) if err.is_recoverable() => {
+                warn!("Indexer error (recoverable): {err}; reconnecting in {backoff_secs}s");
+                select! {
+                    _ = signals.next() => {
+                        info!("Shutdown requested during reconnection backoff.");
+                        return Ok(());
+                    }
+                    _ = sleep(Duration::from_secs(backoff_secs)) => {}
+                }
+                backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                continue;
+            }
+            Ok(Err(err)) => {
+                error!("Indexer error (fatal): {err}");
+                return Err(err);
+            }
+            Err(join_err) => {
+                error!("Indexer task failed: {join_err}");
+                return Err(shared::internal_error(format!(
+                    "indexer task panicked: {join_err}"
+                )));
+            }
+        }
+    }
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────

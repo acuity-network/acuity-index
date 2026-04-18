@@ -56,6 +56,7 @@ The following protections are now implemented in the server:
 
 - The remotely reachable subscription control path no longer relies on unbounded buffering.
 - Subscription queue saturation and closure are handled as errors rather than panics.
+- Transient RPC failures (node restarts, network blips) no longer terminate the process. The indexer saves its span state to sled and reconnects with exponential backoff, preserving all committed data.
 
 ## Residual Risks
 

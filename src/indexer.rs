@@ -5,7 +5,7 @@ use futures::future;
 use num_format::{Locale, ToFormattedString};
 use scale_value::{Composite, Value, ValueDef};
 use serde_json::json;
-use sled::Tree;
+use sled::{Batch, Tree};
 use std::{collections::HashMap, sync::Mutex};
 use subxt::{
     OnlineClient, PolkadotConfig,
@@ -635,8 +635,10 @@ pub fn load_spans(
                 .try_into()
                 .map_err(|_| internal_error("version index exceeds u16"))?;
             if span_version < version_u16 && end >= *block_number {
-                span_db.remove(&key)?;
+                let mut batch = Batch::default();
+                batch.remove(&key);
                 if start >= *block_number {
+                    span_db.apply_batch(batch)?;
                     info!(
                         "📚 Re-indexing #{} to #{}.",
                         start.to_formatted_string(&Locale::en),
@@ -650,7 +652,8 @@ pub fn load_spans(
                     end.to_formatted_string(&Locale::en)
                 );
                 end = block_number - 1;
-                span_db.insert(end.to_be_bytes(), value)?;
+                batch.insert(&end.to_be_bytes(), value.as_bytes());
+                span_db.apply_batch(batch)?;
                 break;
             }
         }
@@ -778,15 +781,18 @@ fn advance_span_end(
     index_variant: bool,
     store_events: bool,
 ) -> Result<(), IndexError> {
-    trees.span.remove(current_span.end.to_be_bytes())?;
+    let old_key = current_span.end.to_be_bytes();
     current_span.end = next_block;
-    save_span(
-        &trees.span,
-        current_span,
-        versions_len,
-        index_variant,
-        store_events,
-    )?;
+    let value = SpanDbValue {
+        start: current_span.start.into(),
+        version: ((versions_len.saturating_sub(1)) as u16).into(),
+        index_variant: u8::from(index_variant),
+        store_events: u8::from(store_events),
+    };
+    let mut batch = Batch::default();
+    batch.remove(&old_key);
+    batch.insert(&current_span.end.to_be_bytes(), value.as_bytes());
+    trees.span.apply_batch(batch)?;
     Ok(())
 }
 

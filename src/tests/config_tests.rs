@@ -73,6 +73,7 @@ mod config_tests {
             versions: vec![0],
             custom_keys: Default::default(),
             pallets: vec![],
+            options: None,
         };
         assert!(cfg.genesis_hash_bytes().is_err());
     }
@@ -86,6 +87,7 @@ mod config_tests {
             versions: vec![0],
             custom_keys: Default::default(),
             pallets: vec![],
+            options: None,
         };
         assert!(cfg.genesis_hash_bytes().is_err());
     }
@@ -498,5 +500,74 @@ versions = [0]
             "77afd6190f1554ad45fd0d31aee62aacc33c6db0ea801129acb813f913e0764f"
         );
         assert_eq!(pas.default_url, "wss://paseo.ibp.network:443");
+    }
+
+    #[test]
+    fn options_section_parses_from_toml() {
+        let toml_str = r#"
+name = "test"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[options]
+url = "ws://custom:9999"
+db_path = "/data/acuity/db"
+db_mode = "high_throughput"
+db_cache_capacity = "2 GiB"
+queue_depth = 4
+finalized = true
+index_variant = true
+store_events = true
+port = 9999
+"#;
+        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let opts = cfg.options.expect("options should be present");
+        assert_eq!(opts.url.as_deref(), Some("ws://custom:9999"));
+        assert_eq!(opts.db_path.as_deref(), Some("/data/acuity/db"));
+        assert_eq!(opts.db_mode.as_deref(), Some("high_throughput"));
+        assert_eq!(opts.db_cache_capacity.as_deref(), Some("2 GiB"));
+        assert_eq!(opts.queue_depth, Some(4));
+        assert_eq!(opts.finalized, Some(true));
+        assert_eq!(opts.index_variant, Some(true));
+        assert_eq!(opts.store_events, Some(true));
+        assert_eq!(opts.port, Some(9999));
+    }
+
+    #[test]
+    fn options_section_defaults_to_none() {
+        let toml_str = r#"
+name = "test"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+"#;
+        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.options.is_none());
+    }
+
+    #[test]
+    fn options_section_partial_fields() {
+        let toml_str = r#"
+name = "test"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+versions = [0]
+
+[options]
+finalized = true
+port = 4000
+"#;
+        let cfg: ChainConfig = toml::from_str(toml_str).unwrap();
+        let opts = cfg.options.unwrap();
+        assert_eq!(opts.finalized, Some(true));
+        assert_eq!(opts.port, Some(4000));
+        assert!(opts.url.is_none());
+        assert!(opts.db_path.is_none());
+        assert!(opts.db_mode.is_none());
+        assert!(opts.db_cache_capacity.is_none());
+        assert!(opts.queue_depth.is_none());
+        assert!(opts.index_variant.is_none());
+        assert!(opts.store_events.is_none());
     }
 }

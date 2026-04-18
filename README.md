@@ -58,7 +58,7 @@ acuity-index [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `-c, --chain <CHAIN>` | `polkadot` | Chain to index (`polkadot`, `kusama`, `westend`, `paseo`) |
+| `-c, --chain <CHAIN>` | — | Chain to index (`polkadot`, `kusama`, `westend`, `paseo`) |
 | `--chain-config <PATH>` | — | Path to a custom chain TOML config (overrides `--chain`) |
 | `--generate-chain-config <PATH>` | — | Inspect live metadata and write a starter TOML config |
 | `-d, --db-path <PATH>` | `~/.local/share/acuity-index/<chain>/db` | Database directory |
@@ -71,6 +71,10 @@ acuity-index [OPTIONS]
 | `-s, --store-events` | `false` | Store decoded events per `(block_number, event_index)` for retrieval |
 | `-p, --port <PORT>` | `8172` | WebSocket API port |
 | `-v / -q` | — | Increase / decrease log verbosity |
+
+Precedence: **CLI flags > config `[options]` section > built-in defaults**. For boolean flags
+(`--finalized`, `--index-variant`, `--store-events`), the effective value is `true` if either
+the CLI flag or the config setting is `true`.
 
 ### Examples
 
@@ -156,6 +160,16 @@ genesis_hash = "abc123..."
 default_url = "wss://my-node:443"
 versions = [0]
 
+# Optional runtime defaults (overridden by CLI flags)
+[options]
+url = "wss://my-node:443"
+db_path = "/data/acuity/db"
+db_mode = "high_throughput"
+db_cache_capacity = "2 GiB"
+queue_depth = 4
+finalized = true
+port = 9999
+
 # Built-in SDK pallet — indexing rules handled internally
 [[pallets]]
 name = "Balances"
@@ -185,6 +199,30 @@ key = "item_id"     # custom query key name
 fields = ["item_id", "revision_id"]
 key = "item_revision" # binary composite query key
 ```
+
+### Options Section
+
+The optional `[options]` section in a chain config TOML sets runtime defaults for CLI options.
+This is useful for custom chains where you want to embed deployment-specific settings
+(like a WebSocket URL, database path, or port) directly in the config file instead of
+passing them on every invocation.
+
+All fields are optional — omit any field to keep its built-in default:
+
+| Field | Type | Default |
+|---|---|---|
+| `url` | string | chain config `default_url` |
+| `db_path` | string | `~/.local/share/acuity-index/<chain>/db` |
+| `db_mode` | string (`"low_space"` or `"high_throughput"`) | `low_space` |
+| `db_cache_capacity` | string | `1024.00 MiB` |
+| `queue_depth` | integer | `1` |
+| `finalized` | boolean | `false` |
+| `index_variant` | boolean | `false` |
+| `store_events` | boolean | `false` |
+| `port` | integer | `8172` |
+
+Merge precedence: **CLI flags > `[options]` section > built-in defaults**.
+For boolean flags, the effective value is `true` if either source is `true`.
 
 ### Built-in Key Types
 

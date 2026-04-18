@@ -208,6 +208,29 @@ pub struct PalletConfig {
     pub events: Vec<EventConfig>,
 }
 
+/// Runtime options that can be specified in the chain config TOML under `[options]`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct OptionsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_cache_capacity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_depth: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_variant: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_events: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+}
+
 /// Top-level chain configuration loaded from a TOML file.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChainConfig {
@@ -219,6 +242,8 @@ pub struct ChainConfig {
     pub custom_keys: HashMap<String, CustomKeyConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pallets: Vec<PalletConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<OptionsConfig>,
 }
 
 impl ChainConfig {
@@ -319,6 +344,7 @@ mod tests {
                     }],
                 }],
             }],
+            options: None,
         };
 
         assert!(config.validate().is_ok());

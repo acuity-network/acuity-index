@@ -339,6 +339,7 @@ pub(crate) fn build_chain_config(
         versions: vec![0],
         custom_keys,
         pallets,
+        options: None,
     }
 }
 
@@ -797,6 +798,7 @@ mod tests {
                     },
                 ],
             }],
+            options: None,
         };
 
         let toml = render_chain_config_toml(&config).unwrap();

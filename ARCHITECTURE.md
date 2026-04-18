@@ -33,7 +33,7 @@ The normal startup path lives in `src/main.rs`:
 
 1. Parse CLI args.
 2. Load a built-in chain TOML or a user-supplied `--chain-config`.
-3. Validate the config.
+3. Validate the config and resolve runtime options (CLI > config `[options]` > defaults).
 4. Resolve the database path and open sled.
 5. Verify or initialize the stored `genesis_hash` in the root database.
 6. Enter the reconnect loop (see [RPC Reconnection](#rpc-reconnection) below). On each iteration:
@@ -177,7 +177,7 @@ While the live-head queue is catching up, the backfill queue descends from the s
 
 ### Primary tuning lever
 
-`--queue-depth` (`src/main.rs:136-137`, default `1`) controls how many concurrent block-indexing RPC calls are issued for both queues. Increasing it is the main way to speed up catchup against a node that is moving quickly.
+`--queue-depth` (default `1`, overridable via CLI or config `[options].queue_depth`) controls how many concurrent block-indexing RPC calls are issued for both queues. Increasing it is the main way to speed up catchup against a node that is moving quickly.
 
 ## Span And Resume Semantics
 
@@ -253,6 +253,13 @@ Top-level fields:
 - `versions`
 - `custom_keys`
 - `pallets`
+- `options` (optional)
+
+The `options` field is an optional table that sets runtime defaults for CLI options
+like `url`, `db_path`, `db_mode`, `db_cache_capacity`, `queue_depth`, `finalized`,
+`index_variant`, `store_events`, and `port`. At startup, `resolve_args()` merges
+values with **CLI > config `[options]` > built-in defaults** precedence. Boolean
+flags use OR logic: `cli_flag || options_flag.unwrap_or(false)`.
 
 Pallet configuration supports two modes:
 
@@ -384,7 +391,7 @@ Agents should treat generated configs as a starting point that may need cleanup 
 
 ## Key Files For Common Changes
 
-- Add or change CLI/runtime startup behavior or reconnection logic:
+- Add or change CLI/runtime startup behavior or reconnection logic, or change how config options are resolved and merged:
   `src/main.rs`
 - Change how spans resume or reindex:
   `src/indexer.rs`

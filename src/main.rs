@@ -28,7 +28,7 @@ mod pallets;
 mod shared;
 mod websockets;
 
-use config::{ChainConfig, KUSAMA_TOML, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
+use config::{ChainConfig, OptionsConfig, KUSAMA_TOML, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
 use config_gen::write_generated_chain_config;
 use indexer::run_indexer;
 use shared::Trees;
@@ -122,18 +122,18 @@ pub struct RunArgs {
     /// Database path
     #[arg(short, long)]
     pub db_path: Option<String>,
-    /// Database mode
-    #[arg(long, value_enum, default_value_t = DbMode::LowSpace)]
-    pub db_mode: DbMode,
-    /// Maximum size in bytes for the system page cache
-    #[arg(long, default_value = "1024.00 MiB")]
-    pub db_cache_capacity: String,
+    /// Database mode [default: low-space]
+    #[arg(long, value_enum)]
+    pub db_mode: Option<DbMode>,
+    /// Maximum size for the system page cache [default: 1024.00 MiB]
+    #[arg(long)]
+    pub db_cache_capacity: Option<String>,
     /// URL of Substrate node to connect to
     #[arg(short, long)]
     pub url: Option<String>,
-    /// Maximum number of concurrent block requests for backfill and HEAD catch-up
-    #[arg(long, default_value_t = 1)]
-    pub queue_depth: u8,
+    /// Maximum number of concurrent block requests [default: 1]
+    #[arg(long)]
+    pub queue_depth: Option<u8>,
     /// Only index finalized blocks
     #[arg(short, long, default_value_t = false)]
     pub finalized: bool,
@@ -143,9 +143,9 @@ pub struct RunArgs {
     /// Store decoded events for immediate retrieval
     #[arg(short, long, default_value_t = false)]
     pub store_events: bool,
-    /// WebSocket port
-    #[arg(short, long, default_value_t = 8172)]
-    pub port: u16,
+    /// WebSocket port [default: 8172]
+    #[arg(short, long)]
+    pub port: Option<u16>,
 }
 
 #[derive(Parser, Debug)]
@@ -160,6 +160,75 @@ pub struct PurgeIndexArgs {
     /// Database path
     #[arg(short, long)]
     pub db_path: Option<String>,
+}
+
+const DEFAULT_DB_MODE: DbMode = DbMode::LowSpace;
+const DEFAULT_DB_CACHE_CAPACITY: &str = "1024.00 MiB";
+const DEFAULT_QUEUE_DEPTH: u8 = 1;
+const DEFAULT_PORT: u16 = 8172;
+
+struct ResolvedArgs {
+    db_path: Option<String>,
+    db_mode: DbMode,
+    db_cache_capacity: String,
+    url: Option<String>,
+    queue_depth: u8,
+    finalized: bool,
+    index_variant: bool,
+    store_events: bool,
+    port: u16,
+}
+
+fn parse_db_mode(s: &str) -> Result<DbMode, String> {
+    match s {
+        "low_space" | "low-space" => Ok(DbMode::LowSpace),
+        "high_throughput" | "high-throughput" => Ok(DbMode::HighThroughput),
+        _ => Err(format!(
+            "invalid db_mode '{}': expected 'low_space' or 'high_throughput'",
+            s
+        )),
+    }
+}
+
+fn resolve_args(cli: &RunArgs, options: Option<&OptionsConfig>) -> Result<ResolvedArgs, String> {
+    let opts = options.as_ref();
+
+    let db_mode = if let Some(ref m) = cli.db_mode {
+        m.clone()
+    } else if let Some(ref s) = opts.and_then(|o| o.db_mode.as_ref()) {
+        parse_db_mode(s)?
+    } else {
+        DEFAULT_DB_MODE.clone()
+    };
+
+    let db_cache_capacity = cli
+        .db_cache_capacity
+        .clone()
+        .or_else(|| opts.and_then(|o| o.db_cache_capacity.clone()))
+        .unwrap_or_else(|| DEFAULT_DB_CACHE_CAPACITY.to_string());
+
+    let queue_depth = cli
+        .queue_depth
+        .or(opts.and_then(|o| o.queue_depth))
+        .unwrap_or(DEFAULT_QUEUE_DEPTH);
+
+    let finalized = cli.finalized || opts.and_then(|o| o.finalized).unwrap_or(false);
+    let index_variant = cli.index_variant || opts.and_then(|o| o.index_variant).unwrap_or(false);
+    let store_events = cli.store_events || opts.and_then(|o| o.store_events).unwrap_or(false);
+
+    let port = cli.port.or(opts.and_then(|o| o.port)).unwrap_or(DEFAULT_PORT);
+
+    Ok(ResolvedArgs {
+        db_path: cli.db_path.clone().or_else(|| opts.and_then(|o| o.db_path.clone())),
+        db_mode,
+        db_cache_capacity,
+        url: cli.url.clone().or_else(|| opts.and_then(|o| o.url.clone())),
+        queue_depth,
+        finalized,
+        index_variant,
+        store_events,
+        port,
+    })
 }
 
 fn load_chain_config(chain: Option<Chain>, chain_config_path: Option<&str>) -> ChainConfig {
@@ -312,6 +381,10 @@ async fn run() -> Result<(), shared::IndexError> {
 
     let run_args = &args.run;
     let chain_config = load_chain_config(run_args.chain, run_args.chain_config.as_deref());
+    let resolved = resolve_args(run_args, chain_config.options.as_ref()).unwrap_or_else(|e| {
+        error!("{e}");
+        exit(1);
+    });
 
     info!("Indexing chain: {}", chain_config.name);
 
@@ -319,14 +392,14 @@ async fn run() -> Result<(), shared::IndexError> {
         shared::internal_error(format!("invalid genesis hash in config: {e}"))
     })?;
 
-    let db_path = resolve_db_path(&chain_config.name, run_args.db_path.as_deref());
+    let db_path = resolve_db_path(&chain_config.name, resolved.db_path.as_deref());
     info!("Database path: {}", db_path.display());
 
-    let db_cache_capacity = parse_db_cache_capacity(&run_args.db_cache_capacity)?;
+    let db_cache_capacity = parse_db_cache_capacity(&resolved.db_cache_capacity)?;
 
     let db_config = sled::Config::new()
         .path(db_path)
-        .mode(run_args.db_mode.clone().into())
+        .mode(resolved.db_mode.clone().into())
         .cache_capacity(db_cache_capacity);
 
     let trees = Trees::open(db_config)?;
@@ -340,7 +413,7 @@ async fn run() -> Result<(), shared::IndexError> {
         )));
     }
 
-    let url = run_args
+    let url = resolved
         .url
         .clone()
         .unwrap_or_else(|| chain_config.default_url.clone());
@@ -398,10 +471,10 @@ async fn run() -> Result<(), shared::IndexError> {
             api,
             rpc.clone(),
             chain_config.clone(),
-            run_args.finalized,
-            run_args.queue_depth.into(),
-            run_args.index_variant,
-            run_args.store_events,
+            resolved.finalized,
+            resolved.queue_depth.into(),
+            resolved.index_variant,
+            resolved.store_events,
             exit_rx.clone(),
             sub_rx,
         ));
@@ -410,7 +483,7 @@ async fn run() -> Result<(), shared::IndexError> {
         let ws_task = spawn(websockets_listen(
             trees.clone(),
             rpc,
-            run_args.port,
+            resolved.port,
             exit_rx,
             sub_tx,
         ));
@@ -504,13 +577,112 @@ mod main_tests {
         .unwrap();
         assert!(args.command.is_none());
         assert!(matches!(args.run.chain, Some(Chain::Polkadot)));
-        assert!(matches!(args.run.db_mode, DbMode::LowSpace));
-        assert_eq!(args.run.db_cache_capacity, "1024.00 MiB");
-        assert_eq!(args.run.queue_depth, 1);
+        assert!(args.run.db_mode.is_none());
+        assert!(args.run.db_cache_capacity.is_none());
+        assert!(args.run.queue_depth.is_none());
         assert!(!args.run.finalized);
         assert!(!args.run.index_variant);
         assert!(!args.run.store_events);
-        assert_eq!(args.run.port, 8172);
+        assert!(args.run.port.is_none());
+    }
+
+    #[test]
+    fn resolve_args_uses_defaults_when_no_config() {
+        let args = RunArgs::try_parse_from([
+            "acuity-index",
+            "--chain",
+            "polkadot",
+        ])
+        .unwrap();
+        let resolved = resolve_args(&args, None).unwrap();
+        assert!(matches!(resolved.db_mode, DbMode::LowSpace));
+        assert_eq!(resolved.db_cache_capacity, "1024.00 MiB");
+        assert_eq!(resolved.queue_depth, 1);
+        assert!(!resolved.finalized);
+        assert!(!resolved.index_variant);
+        assert!(!resolved.store_events);
+        assert_eq!(resolved.port, 8172);
+    }
+
+    #[test]
+    fn resolve_args_config_overrides_defaults() {
+        let args = RunArgs::try_parse_from([
+            "acuity-index",
+            "--chain",
+            "polkadot",
+        ])
+        .unwrap();
+        let opts = OptionsConfig {
+            url: Some("ws://custom:9944".into()),
+            db_path: Some("/data/db".into()),
+            db_mode: Some("high_throughput".into()),
+            db_cache_capacity: Some("2 GiB".into()),
+            queue_depth: Some(4),
+            finalized: Some(true),
+            index_variant: Some(true),
+            store_events: Some(true),
+            port: Some(9999),
+        };
+        let resolved = resolve_args(&args, Some(&opts)).unwrap();
+        assert!(matches!(resolved.db_mode, DbMode::HighThroughput));
+        assert_eq!(resolved.db_cache_capacity, "2 GiB");
+        assert_eq!(resolved.queue_depth, 4);
+        assert!(resolved.finalized);
+        assert!(resolved.index_variant);
+        assert!(resolved.store_events);
+        assert_eq!(resolved.port, 9999);
+        assert_eq!(resolved.url.as_deref(), Some("ws://custom:9944"));
+        assert_eq!(resolved.db_path.as_deref(), Some("/data/db"));
+    }
+
+    #[test]
+    fn resolve_args_cli_overrides_config() {
+        let args = RunArgs::try_parse_from([
+            "acuity-index",
+            "--chain",
+            "polkadot",
+            "--port",
+            "1234",
+            "--queue-depth",
+            "8",
+            "--finalized",
+            "--db-mode",
+            "high-throughput",
+        ])
+        .unwrap();
+        let opts = OptionsConfig {
+            url: Some("ws://config:9944".into()),
+            db_path: None,
+            db_mode: Some("low_space".into()),
+            db_cache_capacity: Some("512 MiB".into()),
+            queue_depth: Some(2),
+            finalized: Some(false),
+            index_variant: Some(true),
+            store_events: Some(true),
+            port: Some(9999),
+        };
+        let resolved = resolve_args(&args, Some(&opts)).unwrap();
+        assert!(matches!(resolved.db_mode, DbMode::HighThroughput));
+        assert_eq!(resolved.queue_depth, 8);
+        assert!(resolved.finalized);
+        assert!(resolved.index_variant);
+        assert!(resolved.store_events);
+        assert_eq!(resolved.port, 1234);
+    }
+
+    #[test]
+    fn resolve_args_invalid_db_mode() {
+        let args = RunArgs::try_parse_from([
+            "acuity-index",
+            "--chain",
+            "polkadot",
+        ])
+        .unwrap();
+        let opts = OptionsConfig {
+            db_mode: Some("invalid".into()),
+            ..Default::default()
+        };
+        assert!(resolve_args(&args, Some(&opts)).is_err());
     }
 
     #[test]

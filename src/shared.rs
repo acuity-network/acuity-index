@@ -705,6 +705,33 @@ pub enum NotificationBody {
     },
 }
 
+// ─── WebSocket configuration ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct WsConfig {
+    pub max_connections: usize,
+    pub max_total_subscriptions: usize,
+    pub max_subscriptions_per_connection: usize,
+    pub subscription_buffer_size: usize,
+    pub subscription_control_buffer_size: usize,
+    pub idle_timeout_secs: u64,
+    pub max_events_limit: usize,
+}
+
+impl Default for WsConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: 1024,
+            max_total_subscriptions: 65536,
+            max_subscriptions_per_connection: 128,
+            subscription_buffer_size: 256,
+            subscription_control_buffer_size: 1024,
+            idle_timeout_secs: 300,
+            max_events_limit: 1000,
+        }
+    }
+}
+
 /// Subscription messages from WebSocket threads to the indexer thread.
 #[derive(Debug)]
 pub enum SubscriptionMessage {

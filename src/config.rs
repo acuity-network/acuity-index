@@ -225,6 +225,20 @@ pub struct OptionsConfig {
     pub finalized: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_subscriptions: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_subscriptions_per_connection: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_buffer_size: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_control_buffer_size: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_events_limit: Option<usize>,
 }
 
 /// Index specification loaded from a TOML file.

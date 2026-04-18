@@ -31,8 +31,8 @@ mod websockets;
 use config::{IndexSpec, OptionsConfig, KUSAMA_TOML, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
 use config_gen::write_generated_index_spec;
 use indexer::run_indexer;
-use shared::Trees;
-use websockets::{SUBSCRIPTION_CONTROL_BUFFER_SIZE, websockets_listen};
+use shared::{Trees, WsConfig};
+use websockets::websockets_listen;
 
 #[cfg(test)]
 mod tests;
@@ -149,6 +149,27 @@ pub struct RunArgs {
     /// WebSocket port [default: 8172]
     #[arg(short, long)]
     pub port: Option<u16>,
+    /// Maximum concurrent WebSocket connections [default: 1024]
+    #[arg(long)]
+    pub max_connections: Option<usize>,
+    /// Maximum total subscriptions across all connections [default: 65536]
+    #[arg(long)]
+    pub max_total_subscriptions: Option<usize>,
+    /// Maximum subscriptions per connection [default: 128]
+    #[arg(long)]
+    pub max_subscriptions_per_connection: Option<usize>,
+    /// Per-connection subscription notification buffer size [default: 256]
+    #[arg(long)]
+    pub subscription_buffer_size: Option<usize>,
+    /// Subscription control channel buffer size [default: 1024]
+    #[arg(long)]
+    pub subscription_control_buffer_size: Option<usize>,
+    /// Idle connection timeout in seconds [default: 300]
+    #[arg(long)]
+    pub idle_timeout_secs: Option<u64>,
+    /// Maximum number of events returned per query [default: 1000]
+    #[arg(long)]
+    pub max_events_limit: Option<usize>,
 }
 
 #[derive(Parser, Debug)]
@@ -182,6 +203,7 @@ struct ResolvedArgs {
     #[allow(dead_code)]
     store_events: bool,
     port: u16,
+    ws_config: WsConfig,
 }
 
 fn parse_db_mode(s: &str) -> Result<DbMode, String> {
@@ -223,6 +245,17 @@ fn resolve_args(cli: &RunArgs, spec: &IndexSpec, options: Option<&OptionsConfig>
 
     let port = cli.port.or(opts.and_then(|o| o.port)).unwrap_or(DEFAULT_PORT);
 
+    let default_ws = WsConfig::default();
+    let ws_config = WsConfig {
+        max_connections: cli.max_connections.or(opts.and_then(|o| o.max_connections)).unwrap_or(default_ws.max_connections),
+        max_total_subscriptions: cli.max_total_subscriptions.or(opts.and_then(|o| o.max_total_subscriptions)).unwrap_or(default_ws.max_total_subscriptions),
+        max_subscriptions_per_connection: cli.max_subscriptions_per_connection.or(opts.and_then(|o| o.max_subscriptions_per_connection)).unwrap_or(default_ws.max_subscriptions_per_connection),
+        subscription_buffer_size: cli.subscription_buffer_size.or(opts.and_then(|o| o.subscription_buffer_size)).unwrap_or(default_ws.subscription_buffer_size),
+        subscription_control_buffer_size: cli.subscription_control_buffer_size.or(opts.and_then(|o| o.subscription_control_buffer_size)).unwrap_or(default_ws.subscription_control_buffer_size),
+        idle_timeout_secs: cli.idle_timeout_secs.or(opts.and_then(|o| o.idle_timeout_secs)).unwrap_or(default_ws.idle_timeout_secs),
+        max_events_limit: cli.max_events_limit.or(opts.and_then(|o| o.max_events_limit)).unwrap_or(default_ws.max_events_limit),
+    };
+
     Ok(ResolvedArgs {
         db_path: cli.db_path.clone().or_else(|| opts.and_then(|o| o.db_path.clone())),
         db_mode,
@@ -233,6 +266,7 @@ fn resolve_args(cli: &RunArgs, spec: &IndexSpec, options: Option<&OptionsConfig>
         index_variant,
         store_events,
         port,
+        ws_config,
     })
 }
 
@@ -481,7 +515,7 @@ async fn run() -> Result<(), shared::IndexError> {
         backoff_secs = INITIAL_BACKOFF_SECS;
 
         let (exit_tx, exit_rx) = watch::channel(false);
-        let (sub_tx, sub_rx) = mpsc::channel(SUBSCRIPTION_CONTROL_BUFFER_SIZE);
+        let (sub_tx, sub_rx) = mpsc::channel(resolved.ws_config.subscription_control_buffer_size);
 
         let indexer_handle = spawn(run_indexer(
             trees.clone(),
@@ -492,6 +526,7 @@ async fn run() -> Result<(), shared::IndexError> {
             resolved.queue_depth.into(),
             exit_rx.clone(),
             sub_rx,
+            resolved.ws_config.clone(),
         ));
         tokio::pin!(indexer_handle);
 
@@ -501,6 +536,7 @@ async fn run() -> Result<(), shared::IndexError> {
             resolved.port,
             exit_rx,
             sub_tx,
+            resolved.ws_config.clone(),
         ));
 
         let indexer_result = select! {
@@ -631,6 +667,15 @@ mod main_tests {
         assert!(!resolved.index_variant);
         assert!(!resolved.store_events);
         assert_eq!(resolved.port, 8172);
+
+        let default_ws = WsConfig::default();
+        assert_eq!(resolved.ws_config.max_connections, default_ws.max_connections);
+        assert_eq!(resolved.ws_config.max_total_subscriptions, default_ws.max_total_subscriptions);
+        assert_eq!(resolved.ws_config.max_subscriptions_per_connection, default_ws.max_subscriptions_per_connection);
+        assert_eq!(resolved.ws_config.subscription_buffer_size, default_ws.subscription_buffer_size);
+        assert_eq!(resolved.ws_config.subscription_control_buffer_size, default_ws.subscription_control_buffer_size);
+        assert_eq!(resolved.ws_config.idle_timeout_secs, default_ws.idle_timeout_secs);
+        assert_eq!(resolved.ws_config.max_events_limit, default_ws.max_events_limit);
     }
 
     #[test]
@@ -659,6 +704,13 @@ mod main_tests {
             queue_depth: Some(4),
             finalized: Some(true),
             port: Some(9999),
+            max_connections: None,
+            max_total_subscriptions: None,
+            max_subscriptions_per_connection: None,
+            subscription_buffer_size: None,
+            subscription_control_buffer_size: None,
+            idle_timeout_secs: None,
+            max_events_limit: None,
         };
         let resolved = resolve_args(&args, &spec, Some(&opts)).unwrap();
         assert!(matches!(resolved.db_mode, DbMode::HighThroughput));
@@ -697,6 +749,13 @@ mod main_tests {
             queue_depth: Some(2),
             finalized: Some(false),
             port: Some(9999),
+            max_connections: None,
+            max_total_subscriptions: None,
+            max_subscriptions_per_connection: None,
+            subscription_buffer_size: None,
+            subscription_control_buffer_size: None,
+            idle_timeout_secs: None,
+            max_events_limit: None,
         };
         let resolved = resolve_args(&args, &spec, Some(&opts)).unwrap();
         assert!(matches!(resolved.db_mode, DbMode::HighThroughput));
@@ -765,6 +824,13 @@ db_mode = "high_throughput"
 queue_depth = 4
 finalized = true
 port = 9999
+max_connections = 2048
+max_total_subscriptions = 100000
+max_subscriptions_per_connection = 64
+subscription_buffer_size = 512
+subscription_control_buffer_size = 2048
+idle_timeout_secs = 600
+max_events_limit = 500
 "#).unwrap();
         let opts = load_options_config(path.to_str().unwrap());
         assert_eq!(opts.url.as_deref(), Some("wss://rpc.example.com:443"));
@@ -772,6 +838,13 @@ port = 9999
         assert_eq!(opts.queue_depth, Some(4));
         assert_eq!(opts.finalized, Some(true));
         assert_eq!(opts.port, Some(9999));
+        assert_eq!(opts.max_connections, Some(2048));
+        assert_eq!(opts.max_total_subscriptions, Some(100000));
+        assert_eq!(opts.max_subscriptions_per_connection, Some(64));
+        assert_eq!(opts.subscription_buffer_size, Some(512));
+        assert_eq!(opts.subscription_control_buffer_size, Some(2048));
+        assert_eq!(opts.idle_timeout_secs, Some(600));
+        assert_eq!(opts.max_events_limit, Some(500));
     }
 
     #[test]

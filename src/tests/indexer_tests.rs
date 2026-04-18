@@ -854,11 +854,12 @@ item_revision = { fields = ["bytes32", "u32"] }
         process_sub_msg(
             &indexer,
             SubscriptionMessage::SubscribeStatus { tx: tx.clone() },
-        );
+        )
+        .unwrap();
         indexer.notify_status_subscribers();
         assert!(rx.recv().await.is_some());
 
-        process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeStatus { tx });
+        process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeStatus { tx }).unwrap();
         indexer.notify_status_subscribers();
         assert!(rx.try_recv().is_err());
     }
@@ -878,7 +879,8 @@ item_revision = { fields = ["bytes32", "u32"] }
                 key: key.clone(),
                 tx: tx.clone(),
             },
-        );
+        )
+        .unwrap();
 
         indexer.index_event_key(key.clone(), 7, 1).unwrap();
         assert!(matches!(
@@ -888,7 +890,7 @@ item_revision = { fields = ["bytes32", "u32"] }
             })
         ));
 
-        process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeEvents { key, tx });
+        process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeEvents { key, tx }).unwrap();
 
         indexer
             .index_event_key(builtin_u32_key("ref_index", 42), 8, 2)
@@ -903,7 +905,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let indexer = Indexer::new_test(trees, &config);
 
         let (tx, mut rx) = mpsc::channel(1);
-        process_sub_msg(&indexer, SubscriptionMessage::SubscribeStatus { tx });
+        process_sub_msg(&indexer, SubscriptionMessage::SubscribeStatus { tx }).unwrap();
 
         indexer.notify_status_subscribers();
         indexer.notify_status_subscribers();
@@ -930,7 +932,8 @@ item_revision = { fields = ["bytes32", "u32"] }
                 key: key.clone(),
                 tx,
             },
-        );
+        )
+        .unwrap();
 
         indexer.index_event_key(key.clone(), 7, 1).unwrap();
         indexer.index_event_key(key.clone(), 8, 2).unwrap();
@@ -967,6 +970,71 @@ item_revision = { fields = ["bytes32", "u32"] }
             .unwrap_err();
 
         assert!(matches!(err, IndexError::BlockStreamClosed));
+    }
+
+    #[test]
+    fn process_sub_msg_rejects_when_total_subscriptions_exceeded() {
+        let trees = temp_trees();
+        let config = test_config();
+        let indexer = Indexer::new_test_with_max_subs(trees, &config, 3);
+
+        let (tx1, _rx1) = mpsc::channel(1);
+        let (tx2, _rx2) = mpsc::channel(1);
+
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeStatus { tx: tx1 },
+        )
+        .unwrap();
+
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeStatus { tx: tx2 },
+        )
+        .unwrap();
+
+        let key = builtin_u32_key("ref_index", 1);
+        let (tx3, _rx3) = mpsc::channel(1);
+        process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeEvents {
+                key: key.clone(),
+                tx: tx3,
+            },
+        )
+        .unwrap();
+
+        let (tx4, mut rx4) = mpsc::channel(1);
+        let result = process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeStatus { tx: tx4.clone() },
+        );
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(IndexError::Io(err)) if err.kind() == std::io::ErrorKind::ConnectionAborted)
+        );
+
+        let notification = rx4.try_recv().unwrap();
+        assert!(matches!(
+            notification.body,
+            NotificationBody::SubscriptionTerminated { .. }
+        ));
+
+        let (tx5, mut rx5) = mpsc::channel(1);
+        let result = process_sub_msg(
+            &indexer,
+            SubscriptionMessage::SubscribeEvents {
+                key: builtin_u32_key("ref_index", 2),
+                tx: tx5.clone(),
+            },
+        );
+        assert!(result.is_err());
+
+        let notification = rx5.try_recv().unwrap();
+        assert!(matches!(
+            notification.body,
+            NotificationBody::SubscriptionTerminated { .. }
+        ));
     }
 }
 

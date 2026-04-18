@@ -487,7 +487,7 @@ Example when no request `id` could be recovered:
 
 Additional error codes currently returned by the WebSocket layer include:
 
-- `subscription_limit` when a connection exceeds the per-connection subscription cap
+- `subscription_limit` when a connection exceeds the per-connection subscription cap or the global total subscription cap
 
 Operational failure modes that may also appear as request-scoped `internal_error`
 responses or connection drops include:
@@ -502,7 +502,7 @@ responses or connection drops include:
 `GetEvents` returns matches in descending order by `(blockNumber, eventIndex)`.
 
 - default `limit` is `100`
-- `limit` is clamped to `1..=1000`
+- `limit` is clamped to `1..=max_events_limit` (default `1000`, configurable via `--max-events-limit`)
 - `before` is exclusive
 
 Example cursor:
@@ -571,17 +571,26 @@ Subscription delivery uses bounded internal queues.
 
 ## Connection Limits
 
-The server currently applies these connection-level limits:
+The server applies these connection-level limits (defaults; all configurable via CLI flags or `--options-config`):
 
-- max WebSocket message size: `256 KiB`
-- max WebSocket frame size: `64 KiB`
-- max subscriptions per connection: `128`
-- idle timeout: `300s`
+- max concurrent WebSocket connections: `1024` (`--max-connections`)
+- max total subscriptions across all connections: `65536` (`--max-total-subscriptions`)
+- max subscriptions per connection: `128` (`--max-subscriptions-per-connection`)
+- subscription notification buffer size: `256` (`--subscription-buffer-size`)
+- subscription control channel buffer: `1024` (`--subscription-control-buffer-size`)
+- idle timeout: `300s` (`--idle-timeout-secs`)
+- max events per query: `1000` (`--max-events-limit`)
 
 If the global connection cap is exhausted, new upgrade attempts are rejected with
 HTTP `503 Service Unavailable`.
 
-For request validation, the server also enforces:
+If the total subscription cap is reached, new subscription requests are rejected
+with a `subscription_limit` error response and a `subscriptionTerminated` notification
+is sent to the subscriber.
 
+Protocol-level limits (not configurable at runtime):
+
+- max WebSocket message size: `256 KiB`
+- max WebSocket frame size: `64 KiB`
 - max custom key name length: `128` bytes
 - max custom string key length: `1024` bytes

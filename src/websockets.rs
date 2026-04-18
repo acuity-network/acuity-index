@@ -23,9 +23,6 @@ use tokio_tungstenite::tungstenite::{
 use tracing::{error, info};
 use zerocopy::IntoBytes;
 
-const MAX_EVENTS_LIMIT: usize = 1000;
-const SUBSCRIPTION_BUFFER_SIZE: usize = 256;
-pub const SUBSCRIPTION_CONTROL_BUFFER_SIZE: usize = 1024;
 const MAX_WS_MESSAGE_SIZE_BYTES: usize = 256 * 1024;
 const MAX_WS_FRAME_SIZE_BYTES: usize = 64 * 1024;
 const MAX_CUSTOM_KEY_NAME_BYTES: usize = 128;
@@ -33,9 +30,6 @@ const MAX_CUSTOM_STRING_VALUE_BYTES: usize = 1024;
 const MAX_COMPOSITE_ELEMENTS: usize = 64;
 const MAX_COMPOSITE_DEPTH: usize = 8;
 const MAX_CUSTOM_VALUE_BYTES: usize = 16384;
-const MAX_CONNECTIONS: usize = 1024;
-const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 128;
-const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn websocket_config() -> WebSocketConfig {
     let mut config = WebSocketConfig::default();
@@ -88,8 +82,8 @@ fn event_is_before(event: &EventRef, cursor: &EventRef) -> bool {
     (event.block_number, event.event_index) < (cursor.block_number, cursor.event_index)
 }
 
-fn clamp_events_limit(limit: u16) -> usize {
-    usize::from(limit).clamp(1, MAX_EVENTS_LIMIT)
+fn clamp_events_limit(limit: u16, max_events_limit: usize) -> usize {
+    usize::from(limit).clamp(1, max_events_limit)
 }
 
 fn request_id_response(id: u64, body: ResponseBody) -> ResponseMessage {
@@ -160,6 +154,7 @@ fn validate_subscription_request(
     status_subscribed: bool,
     event_subscriptions: &HashSet<Key>,
     body: &RequestBody,
+    max_subscriptions_per_connection: usize,
 ) -> Result<(), IndexError> {
     let next_count = match body {
         RequestBody::SubscribeStatus if !status_subscribed => event_subscriptions.len() + 1,
@@ -169,9 +164,9 @@ fn validate_subscription_request(
         _ => return Ok(()),
     };
 
-    if next_count > MAX_SUBSCRIPTIONS_PER_CONNECTION {
+    if next_count > max_subscriptions_per_connection {
         return Err(disconnect_error(format!(
-            "subscription limit exceeded: max {MAX_SUBSCRIPTIONS_PER_CONNECTION} per connection"
+            "subscription limit exceeded: max {max_subscriptions_per_connection} per connection"
         )));
     }
 
@@ -251,8 +246,9 @@ pub fn process_msg_get_events(
     key: Key,
     before: Option<EventRef>,
     limit: u16,
+    max_events_limit: usize,
 ) -> Result<ResponseBody, IndexError> {
-    let event_refs = key.get_events(trees, before.as_ref(), clamp_events_limit(limit))?;
+    let event_refs = key.get_events(trees, before.as_ref(), clamp_events_limit(limit, max_events_limit))?;
 
     let mut decoded_events = Vec::new();
     for event_ref in &event_refs {
@@ -287,6 +283,7 @@ fn process_local_msg(
     msg: RequestMessage,
     sub_tx: &Sender<SubscriptionMessage>,
     sub_response_tx: &mpsc::Sender<NotificationMessage>,
+    max_events_limit: usize,
 ) -> Option<Result<ResponseMessage, IndexError>> {
     let response = match msg.body {
         RequestBody::Status => request_id_response(msg.id, process_msg_status(&trees.span)),
@@ -329,7 +326,7 @@ fn process_local_msg(
             if let Err(err) = validate_key(&key) {
                 return Some(Err(err));
             }
-            match process_msg_get_events(trees, key, before, limit) {
+            match process_msg_get_events(trees, key, before, limit, max_events_limit) {
                 Ok(body) => request_id_response(msg.id, body),
                 Err(err) => return Some(Err(err)),
             }
@@ -392,9 +389,10 @@ pub async fn process_msg(
     msg: RequestMessage,
     sub_tx: &Sender<SubscriptionMessage>,
     sub_response_tx: &mpsc::Sender<NotificationMessage>,
+    max_events_limit: usize,
 ) -> Result<ResponseMessage, IndexError> {
     let id = msg.id;
-    if let Some(response) = process_local_msg(trees, msg, sub_tx, sub_response_tx) {
+    if let Some(response) = process_local_msg(trees, msg, sub_tx, sub_response_tx, max_events_limit) {
         return response;
     }
 
@@ -440,6 +438,7 @@ async fn handle_connection(
     trees: Trees,
     sub_tx: Sender<SubscriptionMessage>,
     _connection_permit: OwnedSemaphorePermit,
+    ws_config: WsConfig,
 ) -> Result<(), IndexError> {
     info!("TCP connection from {addr}");
     let ws_stream =
@@ -447,10 +446,11 @@ async fn handle_connection(
     info!("WebSocket established: {addr}");
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-    let (sub_events_tx, mut sub_events_rx) = mpsc::channel(SUBSCRIPTION_BUFFER_SIZE);
+    let (sub_events_tx, mut sub_events_rx) = mpsc::channel(ws_config.subscription_buffer_size);
     let mut status_subscribed = false;
     let mut event_subscriptions = HashSet::new();
-    let idle_timer = time::sleep(IDLE_TIMEOUT);
+    let idle_timeout = Duration::from_secs(ws_config.idle_timeout_secs);
+    let idle_timer = time::sleep(idle_timeout);
     tokio::pin!(idle_timer);
 
     loop {
@@ -459,13 +459,14 @@ async fn handle_connection(
             incoming = ws_receiver.next() => {
                 match incoming {
                     Some(Ok(msg)) if msg.is_text() || msg.is_binary() => {
-                        idle_timer.as_mut().reset(time::Instant::now() + IDLE_TIMEOUT);
+                        idle_timer.as_mut().reset(time::Instant::now() + idle_timeout);
                         match serde_json::from_str::<RequestMessage>(msg.to_text()?) {
                             Ok(request) => {
                                 if let Err(err) = validate_subscription_request(
                                     status_subscribed,
                                     &event_subscriptions,
                                     &request.body,
+                                    ws_config.max_subscriptions_per_connection,
                                 ) {
                                     let response = error_response(request.id, "subscription_limit", err.to_string());
                                     send_json_message(&mut ws_sender, &response).await?;
@@ -488,6 +489,7 @@ async fn handle_connection(
                                     request.clone(),
                                     &sub_tx,
                                     &sub_events_tx,
+                                    ws_config.max_events_limit,
                                 ).await {
                                     Ok(response) => response,
                                     Err(err) => error_response(request.id, "internal_error", err.to_string()),
@@ -511,7 +513,7 @@ async fn handle_connection(
             notification = sub_events_rx.recv() => {
                 match notification {
                     Some(msg) => {
-                        idle_timer.as_mut().reset(time::Instant::now() + IDLE_TIMEOUT);
+                        idle_timer.as_mut().reset(time::Instant::now() + idle_timeout);
                         send_json_message(&mut ws_sender, &msg).await?
                     }
                     None => return Err(disconnect_error("subscription dispatcher closed")),
@@ -567,8 +569,9 @@ pub async fn websockets_listen(
     port: u16,
     mut exit_rx: Receiver<bool>,
     sub_tx: Sender<SubscriptionMessage>,
+    ws_config: WsConfig,
 ) {
-    let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let connection_limit = Arc::new(Semaphore::new(ws_config.max_connections));
     let addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&addr)
         .await
@@ -585,6 +588,7 @@ pub async fn websockets_listen(
                     tokio::spawn(reject_connection_limit_exceeded(stream));
                     continue;
                 };
+                let cfg = ws_config.clone();
                 tokio::spawn(handle_connection(
                     rpc.clone(),
                     stream,
@@ -592,6 +596,7 @@ pub async fn websockets_listen(
                     trees.clone(),
                     sub_tx.clone(),
                     connection_permit,
+                    cfg,
                 ));
             }
         }
@@ -601,6 +606,16 @@ pub async fn websockets_listen(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DEFAULT_WS_CONFIG: WsConfig = WsConfig {
+        max_connections: 1024,
+        max_total_subscriptions: 65536,
+        max_subscriptions_per_connection: 128,
+        subscription_buffer_size: 256,
+        subscription_control_buffer_size: 1024,
+        idle_timeout_secs: 300,
+        max_events_limit: 1000,
+    };
 
     fn temp_trees() -> Trees {
         let db_config = sled::Config::new().temporary(true);
@@ -617,7 +632,7 @@ mod tests {
 
     #[test]
     fn validate_subscription_request_enforces_connection_limit() {
-        let event_subscriptions = (0..MAX_SUBSCRIPTIONS_PER_CONNECTION)
+        let event_subscriptions = (0..DEFAULT_WS_CONFIG.max_subscriptions_per_connection)
             .map(|i| {
                 Key::Custom(CustomKey {
                     name: format!("key_{i}"),
@@ -630,6 +645,7 @@ mod tests {
             false,
             &event_subscriptions,
             &RequestBody::SubscribeStatus,
+            DEFAULT_WS_CONFIG.max_subscriptions_per_connection,
         );
 
         assert!(
@@ -649,7 +665,8 @@ mod tests {
             validate_subscription_request(
                 false,
                 &event_subscriptions,
-                &RequestBody::SubscribeEvents { key }
+                &RequestBody::SubscribeEvents { key },
+                DEFAULT_WS_CONFIG.max_subscriptions_per_connection,
             )
             .is_ok()
         );
@@ -681,6 +698,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap()
         .unwrap();
@@ -707,6 +725,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap()
         .unwrap();
@@ -740,6 +759,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap()
         .unwrap();
@@ -766,6 +786,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap()
         .unwrap();
@@ -860,7 +881,7 @@ mod tests {
             .unwrap();
 
         let ResponseBody::Events { decoded_events, .. } =
-            process_msg_get_events(&trees, key, None, 100).unwrap()
+            process_msg_get_events(&trees, key, None, 100, DEFAULT_WS_CONFIG.max_events_limit).unwrap()
         else {
             panic!("expected events response");
         };
@@ -886,6 +907,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap()
         .unwrap();
@@ -905,6 +927,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap()
         .unwrap();
@@ -935,6 +958,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap()
         .unwrap();
@@ -962,6 +986,7 @@ mod tests {
                 },
                 &sub_tx,
                 &response_tx,
+                DEFAULT_WS_CONFIG.max_events_limit,
             )
             .is_none()
         );
@@ -997,6 +1022,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap();
 
@@ -1027,6 +1053,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap();
 
@@ -1053,6 +1080,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap();
 
@@ -1083,6 +1111,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap();
 
@@ -1115,6 +1144,7 @@ mod tests {
             },
             &sub_tx,
             &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
         )
         .unwrap();
 

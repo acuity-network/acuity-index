@@ -39,6 +39,7 @@ pub struct Indexer {
     rpc: Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>,
     index_variant: bool,
     store_events: bool,
+    max_total_subscriptions: usize,
     status_subs: Mutex<Vec<mpsc::Sender<NotificationMessage>>>,
     events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<NotificationMessage>>>>,
     /// sdk_pallets: set of pallet names using built-in SDK rules.
@@ -53,6 +54,7 @@ impl Indexer {
         api: OnlineClient<PolkadotConfig>,
         rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
         config: &IndexSpec,
+        max_total_subscriptions: usize,
     ) -> Self {
         Indexer {
             trees,
@@ -60,6 +62,23 @@ impl Indexer {
             rpc: Some(rpc),
             index_variant: config.index_variant,
             store_events: config.store_events,
+            max_total_subscriptions,
+            status_subs: Mutex::new(Vec::new()),
+            events_subs: Mutex::new(HashMap::new()),
+            sdk_pallets: config.sdk_pallets(),
+            custom_index: config.build_custom_index().expect("validated index spec"),
+        }
+    }
+
+#[cfg(test)]
+    pub fn new_test_with_max_subs(trees: Trees, config: &IndexSpec, max_total_subscriptions: usize) -> Self {
+        Indexer {
+            trees,
+            api: None,
+            rpc: None,
+            index_variant: config.index_variant,
+            store_events: config.store_events,
+            max_total_subscriptions,
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
@@ -75,6 +94,7 @@ impl Indexer {
             rpc: None,
             index_variant: config.index_variant,
             store_events: config.store_events,
+            max_total_subscriptions: WsConfig::default().max_total_subscriptions,
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
@@ -569,16 +589,60 @@ pub fn composite_to_json(c: &Composite<()>) -> serde_json::Value {
 
 // ─── Subscription message handler ────────────────────────────────────────────
 
-pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) {
+pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) -> Result<(), IndexError> {
     match msg {
         SubscriptionMessage::SubscribeStatus { tx } => {
-            lock_or_recover(&indexer.status_subs, "status_subs").push(tx);
+            let mut status_subs = lock_or_recover(&indexer.status_subs, "status_subs");
+            let events_count: usize = lock_or_recover(&indexer.events_subs, "events_subs")
+                .values()
+                .map(Vec::len)
+                .sum();
+            if status_subs.len() + events_count >= indexer.max_total_subscriptions {
+                let _ = tx.try_send(NotificationMessage {
+                    body: NotificationBody::SubscriptionTerminated {
+                        reason: SubscriptionTerminationReason::Backpressure,
+                        message: format!(
+                            "total subscription limit exceeded: max {}",
+                            indexer.max_total_subscriptions
+                        ),
+                    },
+                });
+                return Err(IndexError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    format!(
+                        "total subscription limit exceeded: max {}",
+                        indexer.max_total_subscriptions
+                    ),
+                )));
+            }
+            status_subs.push(tx);
         }
         SubscriptionMessage::UnsubscribeStatus { tx } => {
-            lock_or_recover(&indexer.status_subs, "status_subs").retain(|t| !tx.same_channel(t));
+            lock_or_recover(&indexer.status_subs, "status_subs")
+                .retain(|t| !tx.same_channel(t));
         }
         SubscriptionMessage::SubscribeEvents { key, tx } => {
             let mut subs = lock_or_recover(&indexer.events_subs, "events_subs");
+            let status_count = lock_or_recover(&indexer.status_subs, "status_subs").len();
+            let current_events_count: usize = subs.values().map(Vec::len).sum();
+            if status_count + current_events_count >= indexer.max_total_subscriptions {
+                let _ = tx.try_send(NotificationMessage {
+                    body: NotificationBody::SubscriptionTerminated {
+                        reason: SubscriptionTerminationReason::Backpressure,
+                        message: format!(
+                            "total subscription limit exceeded: max {}",
+                            indexer.max_total_subscriptions
+                        ),
+                    },
+                });
+                return Err(IndexError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    format!(
+                        "total subscription limit exceeded: max {}",
+                        indexer.max_total_subscriptions
+                    ),
+                )));
+            }
             subs.entry(key).or_default().push(tx);
         }
         SubscriptionMessage::UnsubscribeEvents { key, tx } => {
@@ -588,6 +652,7 @@ pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) {
             }
         }
     }
+    Ok(())
 }
 
 // ─── Span helpers ─────────────────────────────────────────────────────────────
@@ -928,6 +993,7 @@ pub async fn run_indexer(
     queue_depth: u32,
     mut exit_rx: watch::Receiver<bool>,
     mut sub_rx: mpsc::Receiver<SubscriptionMessage>,
+    ws_config: WsConfig,
 ) -> Result<(), IndexError> {
     let index_variant = spec.index_variant;
     let store_events = spec.store_events;
@@ -977,6 +1043,7 @@ pub async fn run_indexer(
         api,
         rpc,
         &spec,
+        ws_config.max_total_subscriptions,
     );
 
     let mut current_span =
@@ -1063,7 +1130,9 @@ pub async fn run_indexer(
             }
 
             Some(msg) = sub_rx.recv() => {
-                process_sub_msg(&indexer, msg);
+                if let Err(err) = process_sub_msg(&indexer, msg) {
+                    error!("Subscription rejected: {err}");
+                }
             }
 
             result = &mut head_sub_future => {
@@ -1235,6 +1304,7 @@ mod tests {
             rpc: None,
             index_variant: config.index_variant,
             store_events,
+            max_total_subscriptions: WsConfig::default().max_total_subscriptions,
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             sdk_pallets: config.sdk_pallets(),
@@ -1743,7 +1813,8 @@ mod tests {
                 key: key.clone(),
                 tx,
             },
-        );
+        )
+        .unwrap();
 
         indexer.index_event_key(key.clone(), 7, 3).unwrap();
 
@@ -1777,7 +1848,8 @@ mod tests {
                 key: key.clone(),
                 tx,
             },
-        );
+        )
+        .unwrap();
 
         indexer.index_event_key(key.clone(), 7, 3).unwrap();
 
@@ -1881,6 +1953,7 @@ count = "u32"
                 }),
                 tx,
             },
-        );
+        )
+        .unwrap();
     }
 }

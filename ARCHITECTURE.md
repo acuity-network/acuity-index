@@ -257,7 +257,10 @@ Top-level fields:
 - `pallets`
 
 Runtime options (`url`, `db_path`, `db_mode`, `db_cache_capacity`, `queue_depth`,
-`finalized`, and `port`) are loaded from a separate `OptionsConfig` TOML file via the
+`finalized`, `port`, `max_connections`, `max_total_subscriptions`,
+`max_subscriptions_per_connection`, `subscription_buffer_size`,
+`subscription_control_buffer_size`, `idle_timeout_secs`, `max_events_limit`)
+are loaded from a separate `OptionsConfig` TOML file via the
 `--options-config` CLI flag. At startup, `resolve_args()` merges values with
 **CLI flags > `--options-config` file > built-in defaults** precedence. Boolean
 flags use OR logic: `cli_flag || options_flag.unwrap_or(false)`.
@@ -334,6 +337,7 @@ Important operational details:
 - The listener enforces WebSocket frame and message size limits during handshake/runtime.
 - If the global connection cap is exhausted, the upgrade is rejected with HTTP `503 Service Unavailable`.
 - Each accepted connection is subject to an idle timeout and a per-connection subscription cap.
+- There is also a global total subscription cap across all connections. When exceeded, new subscriptions are rejected with a `subscription_limit` error and a `subscriptionTerminated` notification is sent to the subscriber.
 
 ### Local reads
 
@@ -358,10 +362,31 @@ Subscription registration is split across tasks:
 Current WebSocket-side safeguards:
 
 - subscribe/unsubscribe forwarding uses bounded backpressure rather than unbounded buffering
-- per-connection subscriptions are capped
+- per-connection subscriptions are capped (configurable: `--max-subscriptions-per-connection`)
+- total subscriptions across all connections are capped (configurable: `--max-total-subscriptions`)
 - oversized custom key names and string values are rejected before subscription registration or sled scans
-- idle connections are disconnected automatically
+- idle connections are disconnected automatically (configurable: `--idle-timeout-secs`)
 - malformed persisted event/span index records are skipped during reads instead of crashing the server
+
+All WebSocket operational parameters are configurable via CLI flags or `--options-config` TOML:
+
+| Parameter | CLI flag | Default |
+|---|---|---|
+| max connections | `--max-connections` | 1024 |
+| max total subscriptions | `--max-total-subscriptions` | 65536 |
+| max subscriptions per connection | `--max-subscriptions-per-connection` | 128 |
+| subscription buffer size | `--subscription-buffer-size` | 256 |
+| subscription control buffer | `--subscription-control-buffer-size` | 1024 |
+| idle timeout | `--idle-timeout-secs` | 300 |
+| max events per query | `--max-events-limit` | 1000 |
+
+Protocol-safety constants that remain compile-time:
+
+- max WebSocket message size (`256 KiB`)
+- max WebSocket frame size (`64 KiB`)
+- max custom key name length (`128 bytes`)
+- max custom string value length (`1024 bytes`)
+- max composite depth (`8`) and elements (`64`)
 
 Important invariant:
 
@@ -400,7 +425,9 @@ Agents should treat generated configs as a starting point that may need cleanup 
   `src/config.rs`, `src/shared.rs`, `src/indexer.rs`
 - Add built-in support for another SDK pallet:
   `src/pallets.rs`
-- Change WebSocket request/response shapes:
+- Change how operational/WebSocket parameters are resolved and merged, or add new CLI flags:
+  `src/main.rs`, `src/config.rs`, `src/shared.rs` (for `WsConfig`)
+- Change WebSocket request/response shapes or connection limits:
   `src/shared.rs`, `src/websockets.rs`
 - Change index-spec generation heuristics:
   `src/config_gen.rs`

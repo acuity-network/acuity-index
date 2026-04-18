@@ -52,7 +52,7 @@ mod websocket_tests {
             name: "account_id".into(),
             value: CustomValue::Bytes32(Bytes32([0; 32])),
         });
-        let msg = process_msg_get_events(&trees, key.clone(), None, 100).unwrap();
+        let msg = process_msg_get_events(&trees, key.clone(), None, 100, 1000).unwrap();
         match msg {
             ResponseBody::Events {
                 key: k,
@@ -95,7 +95,7 @@ mod websocket_tests {
             .insert(event_key.as_bytes(), json.as_slice())
             .unwrap();
 
-        let msg = process_msg_get_events(&trees, key, None, 100).unwrap();
+        let msg = process_msg_get_events(&trees, key, None, 100, 1000).unwrap();
         match msg {
             ResponseBody::Events {
                 events,
@@ -125,7 +125,7 @@ mod websocket_tests {
         });
         key.write_db_key(&trees, 50, 3).unwrap();
 
-        let msg = process_msg_get_events(&trees, key.clone(), None, 100).unwrap();
+        let msg = process_msg_get_events(&trees, key.clone(), None, 100, 1000).unwrap();
         match msg {
             ResponseBody::Events {
                 key: returned_key,
@@ -279,6 +279,7 @@ mod websocket_tests {
                 event_index: 3,
             }),
             0,
+            1000,
         )
         .unwrap() else {
             panic!("expected events response");
@@ -293,7 +294,7 @@ mod websocket_tests {
         );
 
         let ResponseBody::Events { events, .. } =
-            process_msg_get_events(&trees, key, None, u16::MAX).unwrap()
+            process_msg_get_events(&trees, key, None, u16::MAX, 1000).unwrap()
         else {
             panic!("expected events response");
         };

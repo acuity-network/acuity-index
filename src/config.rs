@@ -69,14 +69,7 @@ pub enum CustomKeyConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct CompositeKeyConfig {
-    pub kind: CompositeKind,
     pub fields: Vec<ScalarKind>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompositeKind {
-    Composite,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,9 +158,6 @@ impl ParamConfig {
                             "composite key '{}' does not support multi=true",
                             self.key
                         ));
-                    }
-                    if config.kind != CompositeKind::Composite {
-                        return Err(format!("unsupported composite key kind for '{}'", self.key));
                     }
                     if fields.len() != config.fields.len() {
                         return Err(format!(

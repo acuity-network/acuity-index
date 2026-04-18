@@ -328,7 +328,7 @@ versions = [0]
 [custom_keys]
 item_id = "bytes32"
 revision_id = "u32"
-item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
+item_revision = { fields = ["bytes32", "u32"] }
 
         [[pallets]]
         name = "ContentReactions"
@@ -347,7 +347,6 @@ item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
         assert_eq!(
             cfg.custom_keys.get("item_revision"),
             Some(&CustomKeyConfig::Composite(CompositeKeyConfig {
-                kind: CompositeKind::Composite,
                 fields: vec![ScalarKind::Bytes32, ScalarKind::U32],
             }))
         );
@@ -373,7 +372,7 @@ default_url = "ws://127.0.0.1:9944"
 versions = [0]
 
 [custom_keys]
-item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
+item_revision = { fields = ["bytes32", "u32"] }
 
         [[pallets]]
         name = "ContentReactions"

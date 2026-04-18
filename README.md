@@ -164,7 +164,7 @@ sdk = true
 # Custom keys must be declared once at schema level
 [custom_keys]
 item_id = "bytes32"
-item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
+item_revision = { fields = ["bytes32", "u32"] }
 
 # Custom pallet — built-in and generic scalar mappings
 [[pallets]]
@@ -247,7 +247,7 @@ Example:
 [custom_keys]
 item_id = "bytes32"
 revision_id = "u32"
-item_revision = { kind = "composite", fields = ["bytes32", "u32"] }
+item_revision = { fields = ["bytes32", "u32"] }
 
 [[pallets]]
 name = "ContentReactions"

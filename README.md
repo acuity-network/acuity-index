@@ -31,7 +31,7 @@ service, see [SECURITY.md](./SECURITY.md).
 | Westend   | `westend`   |
 | Paseo     | `paseo`     |
 
-Any Substrate chain can be supported by providing a custom index specification TOML with `--chain-config`.
+Any Substrate chain can be supported by providing a custom index specification TOML with `--index-config`.
 
 ## Requirements
 
@@ -59,8 +59,7 @@ acuity-index [OPTIONS]
 | Option | Default | Description |
 |---|---|---|
 | `-c, --chain <CHAIN>` | — | Chain to index (`polkadot`, `kusama`, `westend`, `paseo`) |
-| `--chain-config <PATH>` | — | Path to an index specification TOML file (overrides `--chain`) |
-| `--generate-index-spec <PATH>` | — | Inspect live metadata and write a starter index specification TOML file |
+| `--index-config <PATH>` | — | Path to an index specification TOML file (overrides `--chain`) |
 | `--options-config <PATH>` | — | Path to a runtime options TOML file |
 | `-d, --db-path <PATH>` | `~/.local/share/acuity-index/<chain>/db` | Database directory |
 | `--db-mode <MODE>` | `low-space` | `low-space` or `high-throughput` |
@@ -73,9 +72,15 @@ acuity-index [OPTIONS]
 | `-p, --port <PORT>` | `8172` | WebSocket API port |
 | `-v / -q` | — | Increase / decrease log verbosity |
 
-Precedence: **CLI flags > `--options-config` file > built-in defaults**. For boolean flags
-(`--finalized`, `--index-variant`, `--store-events`), the effective value is `true` if either
-the CLI flag or the options config setting is `true`.
+Runtime option precedence: **CLI flags > `--options-config` file > built-in defaults**.
+`--index-variant` and `--store-events` are enabled if either the CLI flag or the index spec field is `true`.
+
+### Subcommands
+
+| Subcommand | Description |
+|---|---|
+| `generate-index-spec --url <URL> <OUTPUT>` | Inspect live metadata and write a starter index specification TOML file |
+| `purge-index [OPTIONS]` | Delete the index database for a built-in chain or custom index spec |
 
 ### Examples
 
@@ -94,16 +99,16 @@ acuity-index --chain kusama --store-events --queue-depth 8
 Use a custom index specification:
 
 ```bash
-acuity-index --chain-config ./chains/mychain.toml --url wss://mynode:443
+acuity-index --index-config ./chains/mychain.toml --url wss://mynode:443
 ```
 
 Generate a starter index specification from a live node:
 
 ```bash
-acuity-index --url wss://mynode:443 --generate-index-spec ./chains/mychain.toml
+acuity-index generate-index-spec --url wss://mynode:443 ./chains/mychain.toml
 ```
 
-`--generate-index-spec` currently requires runtime metadata v14 or higher.
+`generate-index-spec` currently requires runtime metadata v14 or higher.
 The generator uses `subxt` metadata decoding to inspect pallets and event fields,
 and the current implementation only converts modern FRAME metadata layouts. Nodes
 serving older metadata, such as v13 from early chain history before a runtime
@@ -145,7 +150,7 @@ Startup failures such as invalid cache-size configuration, genesis-hash mismatch
 ## Index Specification
 
 Each chain is described by an index specification TOML file. Built-in specs are embedded at
-compile time; custom specs can be passed via `--chain-config`.
+compile time; custom specs can be passed via `--index-config`.
 
 If a runtime includes multiple instances of the same Substrate pallet under
 different names, treat them as distinct pallets in the config. Each instance
@@ -200,6 +205,7 @@ key = "item_revision" # binary composite query key
 Runtime options can be loaded from a separate TOML file via `--options-config`.
 This is useful for deployment-specific settings (like a WebSocket URL, database path,
 or port) that vary across environments.
+`index_variant` and `store_events` live in the index spec, not in the runtime options file.
 
 All fields are optional — omit any field to keep its built-in default:
 
@@ -214,7 +220,7 @@ All fields are optional — omit any field to keep its built-in default:
 | `port` | integer | `8172` |
 
 Merge precedence: **CLI flags > `--options-config` file > built-in defaults**.
-For boolean flags, the effective value is `true` if either source is `true`.
+`finalized` is enabled if either the CLI flag or the options config field is `true`.
 
 ### Built-in Key Types
 

@@ -32,8 +32,8 @@ This file is meant to help AI agents quickly find the right code and understand 
 The normal startup path lives in `src/main.rs`:
 
 1. Parse CLI args.
-2. Load a built-in index spec TOML or a user-supplied `--chain-config` index specification.
-3. Validate the spec and resolve runtime options (CLI > `--options-config` > defaults).
+2. Load a built-in index spec TOML or a user-supplied `--index-config` index specification.
+3. Validate the spec and resolve runtime options (CLI > `--options-config` > defaults) plus indexing flags (CLI OR spec).
 4. Resolve the database path and open sled.
 5. Verify or initialize the stored `genesis_hash` in the root database.
 6. Create shared runtime state plus long-lived tasks:
@@ -264,9 +264,11 @@ Runtime options (`url`, `db_path`, `db_mode`, `db_cache_capacity`, `queue_depth`
 `max_subscriptions_per_connection`, `subscription_buffer_size`,
 `subscription_control_buffer_size`, `idle_timeout_secs`, `max_events_limit`)
 are loaded from a separate `OptionsConfig` TOML file via the
-`--options-config` CLI flag. At startup, `resolve_args()` merges values with
-**CLI flags > `--options-config` file > built-in defaults** precedence. Boolean
-flags use OR logic: `cli_flag || options_flag.unwrap_or(false)`.
+`--options-config` CLI flag. At startup, `resolve_args()` merges those values with
+**CLI flags > `--options-config` file > built-in defaults** precedence. `finalized`
+uses OR logic: `cli_flag || options_flag.unwrap_or(false)`. `index_variant` and
+`store_events` come from `IndexSpec` and are enabled when either the CLI flag or
+the spec field is `true`.
 
 Pallet configuration supports two modes:
 

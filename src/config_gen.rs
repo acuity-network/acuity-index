@@ -509,10 +509,16 @@ pub async fn write_generated_index_spec(
         .and_then(|value| value.as_str())
         .unwrap_or("custom-runtime");
     let spec_version = u64::from(runtime_version.spec_version);
-    if let Some(version) = metadata_version(&metadata_bytes) && version < 14 {
+    if let Some(version) = metadata_version(&metadata_bytes)
+        && version < 14
+    {
         return Err(unsupported_metadata_error(version, spec_name, spec_version));
     }
-    let metadata: Metadata = rpc.state_get_metadata(None).await?.to_frame_metadata()?.try_into()?;
+    let metadata: Metadata = rpc
+        .state_get_metadata(None)
+        .await?
+        .to_frame_metadata()?
+        .try_into()?;
     let genesis_hash = hex::encode(api.genesis_hash().as_ref());
     let chain_name = spec_name.to_owned();
 
@@ -752,7 +758,10 @@ mod tests {
             index_variant: false,
             store_events: false,
             custom_keys: HashMap::from([
-                ("item_id".into(), CustomKeyConfig::Scalar(ScalarKind::Bytes32)),
+                (
+                    "item_id".into(),
+                    CustomKeyConfig::Scalar(ScalarKind::Bytes32),
+                ),
                 (
                     "revision_id".into(),
                     CustomKeyConfig::Scalar(ScalarKind::U32),
@@ -829,6 +838,8 @@ mod tests {
         assert!(toml.contains("{ field = \"item_id\", key = \"item_id\" }"));
         assert!(toml.contains("{ field = \"owner\", key = \"account_id\" }"));
         assert!(toml.contains("{ name = \"PublishRevision\", params = ["));
-        assert!(toml.contains("{ fields = [\"item_id\", \"revision_id\"], key = \"item_revision\" }"));
+        assert!(
+            toml.contains("{ fields = [\"item_id\", \"revision_id\"], key = \"item_revision\" }")
+        );
     }
 }

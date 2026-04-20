@@ -202,9 +202,7 @@ struct ResolvedArgs {
     url: Option<String>,
     queue_depth: u8,
     finalized: bool,
-    #[allow(dead_code)]
     index_variant: bool,
-    #[allow(dead_code)]
     store_events: bool,
     port: u16,
     ws_config: WsConfig,
@@ -321,7 +319,7 @@ fn load_index_spec(chain: Option<Chain>, index_config_path: Option<&str>) -> Ind
             Some(Chain::Kusama) => KUSAMA_TOML,
             Some(Chain::Westend) => WESTEND_TOML,
             Some(Chain::Paseo) => PASEO_TOML,
-            None => unreachable!("clap requires --chain or --chain-config"),
+            None => unreachable!("clap requires --chain or --index-config"),
         };
         toml::from_str(toml_str).expect("Built-in TOML is valid")
     };
@@ -343,6 +341,12 @@ fn load_options_config(path: &str) -> OptionsConfig {
         error!("Invalid options config: {e}");
         exit(1);
     })
+}
+
+fn apply_resolved_indexing_flags(mut spec: IndexSpec, resolved: &ResolvedArgs) -> IndexSpec {
+    spec.index_variant = resolved.index_variant;
+    spec.store_events = resolved.store_events;
+    spec
 }
 
 fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
@@ -480,6 +484,7 @@ async fn run() -> Result<(), shared::IndexError> {
         error!("{e}");
         exit(1);
     });
+    let spec = apply_resolved_indexing_flags(spec, &resolved);
 
     info!("Indexing chain: {}", spec.name);
 
@@ -885,6 +890,24 @@ mod main_tests {
         let resolved = resolve_args(&args, &spec, None).unwrap();
         assert!(resolved.index_variant);
         assert!(!resolved.store_events);
+    }
+
+    #[test]
+    fn apply_resolved_indexing_flags_preserves_cli_overrides() {
+        let args = RunArgs::try_parse_from([
+            "acuity-index",
+            "--chain",
+            "polkadot",
+            "--index-variant",
+            "--store-events",
+        ])
+        .unwrap();
+        let spec = test_spec();
+        let resolved = resolve_args(&args, &spec, None).unwrap();
+        let spec = apply_resolved_indexing_flags(spec, &resolved);
+
+        assert!(spec.index_variant);
+        assert!(spec.store_events);
     }
 
     #[test]

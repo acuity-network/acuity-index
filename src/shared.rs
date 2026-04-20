@@ -7,13 +7,13 @@ use std::{
     fmt,
     sync::{Mutex, MutexGuard},
 };
-use subxt::{config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods, PolkadotConfig};
+use subxt::{PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
 use tracing::error;
 use zerocopy::{
-    byteorder::{U16, U32},
     BigEndian, FromBytes, IntoBytes,
+    byteorder::{U16, U32},
 };
 use zerocopy_derive::*;
 
@@ -783,10 +783,10 @@ impl RuntimeState {
 mod tests {
     use super::*;
     use crate::config::ScalarKind;
-    use serde::de::value::{
-        Error as ValueError, StrDeserializer, U128Deserializer, U64Deserializer,
-    };
     use serde::Deserialize;
+    use serde::de::value::{
+        Error as ValueError, StrDeserializer, U64Deserializer, U128Deserializer,
+    };
 
     #[test]
     fn u64_text_serializes_and_deserializes_from_multiple_input_shapes() {

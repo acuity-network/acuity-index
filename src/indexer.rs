@@ -592,63 +592,73 @@ pub fn composite_to_json(c: &Composite<()>) -> serde_json::Value {
 
 pub fn process_sub_msg(runtime: &RuntimeState, msg: SubscriptionMessage) -> Result<(), IndexError> {
     match msg {
-        SubscriptionMessage::SubscribeStatus { tx } => {
+        SubscriptionMessage::SubscribeStatus { tx, response_tx } => {
             let mut status_subs = lock_or_recover(&runtime.status_subs, "status_subs");
             let events_count: usize = lock_or_recover(&runtime.events_subs, "events_subs")
                 .values()
                 .map(Vec::len)
                 .sum();
             if status_subs.len() + events_count >= runtime.max_total_subscriptions {
-                let _ = tx.try_send(NotificationMessage {
-                    body: NotificationBody::SubscriptionTerminated {
-                        reason: SubscriptionTerminationReason::Backpressure,
-                        message: format!(
-                            "total subscription limit exceeded: max {}",
-                            runtime.max_total_subscriptions
-                        ),
-                    },
-                });
+                let message = format!(
+                    "total subscription limit exceeded: max {}",
+                    runtime.max_total_subscriptions
+                );
+                if let Some(response_tx) = response_tx {
+                    let _ = response_tx.send(Err(message.clone()));
+                }
                 return Err(IndexError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionAborted,
-                    format!(
-                        "total subscription limit exceeded: max {}",
-                        runtime.max_total_subscriptions
-                    ),
+                    message,
                 )));
+            }
+            if let Some(response_tx) = response_tx {
+                let _ = response_tx.send(Ok(()));
             }
             status_subs.push(tx);
         }
-        SubscriptionMessage::UnsubscribeStatus { tx } => {
+        SubscriptionMessage::UnsubscribeStatus { tx, response_tx } => {
             lock_or_recover(&runtime.status_subs, "status_subs").retain(|t| !tx.same_channel(t));
+            if let Some(response_tx) = response_tx {
+                let _ = response_tx.send(Ok(()));
+            }
         }
-        SubscriptionMessage::SubscribeEvents { key, tx } => {
+        SubscriptionMessage::SubscribeEvents {
+            key,
+            tx,
+            response_tx,
+        } => {
             let mut subs = lock_or_recover(&runtime.events_subs, "events_subs");
             let status_count = lock_or_recover(&runtime.status_subs, "status_subs").len();
             let current_events_count: usize = subs.values().map(Vec::len).sum();
             if status_count + current_events_count >= runtime.max_total_subscriptions {
-                let _ = tx.try_send(NotificationMessage {
-                    body: NotificationBody::SubscriptionTerminated {
-                        reason: SubscriptionTerminationReason::Backpressure,
-                        message: format!(
-                            "total subscription limit exceeded: max {}",
-                            runtime.max_total_subscriptions
-                        ),
-                    },
-                });
+                let message = format!(
+                    "total subscription limit exceeded: max {}",
+                    runtime.max_total_subscriptions
+                );
+                if let Some(response_tx) = response_tx {
+                    let _ = response_tx.send(Err(message.clone()));
+                }
                 return Err(IndexError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionAborted,
-                    format!(
-                        "total subscription limit exceeded: max {}",
-                        runtime.max_total_subscriptions
-                    ),
+                    message,
                 )));
+            }
+            if let Some(response_tx) = response_tx {
+                let _ = response_tx.send(Ok(()));
             }
             subs.entry(key).or_default().push(tx);
         }
-        SubscriptionMessage::UnsubscribeEvents { key, tx } => {
+        SubscriptionMessage::UnsubscribeEvents {
+            key,
+            tx,
+            response_tx,
+        } => {
             let mut subs = lock_or_recover(&runtime.events_subs, "events_subs");
             if let Some(txs) = subs.get_mut(&key) {
                 txs.retain(|t| !tx.same_channel(t));
+            }
+            if let Some(response_tx) = response_tx {
+                let _ = response_tx.send(Ok(()));
             }
         }
     }
@@ -1832,6 +1842,7 @@ mod tests {
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
+                response_tx: None,
             },
         )
         .unwrap();
@@ -1867,6 +1878,7 @@ mod tests {
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
+                response_tx: None,
             },
         )
         .unwrap();
@@ -1907,6 +1919,7 @@ mod tests {
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
+                response_tx: None,
             },
         )
         .unwrap();
@@ -2008,6 +2021,7 @@ count = "u32"
                     value: CustomValue::U32(999),
                 }),
                 tx,
+                response_tx: None,
             },
         )
         .unwrap();

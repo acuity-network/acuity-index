@@ -341,8 +341,8 @@ Important operational details:
 
 - The listener enforces WebSocket frame and message size limits during handshake/runtime.
 - If the global connection cap is exhausted, the upgrade is rejected with HTTP `503 Service Unavailable`.
-- Each accepted connection is subject to an idle timeout and a per-connection subscription cap.
-- There is also a global total subscription cap across all connections. When exceeded, new subscriptions are rejected with a `subscription_limit` error and a `subscriptionTerminated` notification is sent to the subscriber.
+- Each accepted connection is subject to an idle timeout and a per-connection subscription cap. Setting `idle_timeout_secs = 0` disables the timeout.
+- There is also a global total subscription cap across all connections. When exceeded, new subscriptions are rejected with a request-scoped `subscription_limit` error. Because the subscription was never established, no `subscriptionTerminated` notification is sent for that initial rejection.
 
 ### Local reads
 
@@ -364,7 +364,7 @@ Operational detail:
 
 Subscription registration is split across tasks:
 
-- WebSocket handlers send `SubscriptionMessage` values over an internal bounded channel.
+- WebSocket handlers send `SubscriptionMessage` values over an internal bounded channel and wait for the dispatcher to accept or reject the request before replying.
 - A long-lived subscription dispatcher task owns updates to the actual subscriber registries.
 - When a newly indexed event matches a subscribed key, the indexer pushes a `ResponseMessage::Events` update to those subscribers.
 - Status subscribers are notified when the live head advances the persisted span.

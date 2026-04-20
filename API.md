@@ -514,7 +514,7 @@ continue to work. `Variants` requires live RPC metadata and returns
 `GetEvents` returns matches in descending order by `(blockNumber, eventIndex)`.
 
 - default `limit` is `100`
-- `limit` is clamped to `1..=max_events_limit` (default `1000`, configurable via `--max-events-limit`)
+- `limit` is clamped to `1..=max_events_limit` (default `1000`, configurable via `--max-events-limit`; invalid zero-valued configs are rejected at startup)
 - `before` is exclusive
 
 Example cursor:
@@ -596,15 +596,16 @@ The server applies these connection-level limits (defaults; all configurable via
 - max subscriptions per connection: `128` (`--max-subscriptions-per-connection`)
 - subscription notification buffer size: `256` (`--subscription-buffer-size`)
 - subscription control channel buffer: `1024` (`--subscription-control-buffer-size`)
-- idle timeout: `300s` (`--idle-timeout-secs`)
+- idle timeout: `300s` (`--idle-timeout-secs`, `0` disables the timeout)
 - max events per query: `1000` (`--max-events-limit`)
 
 If the global connection cap is exhausted, new upgrade attempts are rejected with
 HTTP `503 Service Unavailable`.
 
 If the total subscription cap is reached, new subscription requests are rejected
-with a `subscription_limit` error response and a `subscriptionTerminated` notification
-is sent to the subscriber.
+with a request-scoped `subscription_limit` error response. Because the
+subscription was never established, no `subscriptionTerminated` notification is
+sent for that initial rejection.
 
 Protocol-level limits (not configurable at runtime):
 

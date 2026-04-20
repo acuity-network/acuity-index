@@ -219,6 +219,32 @@ fn parse_db_mode(s: &str) -> Result<DbMode, String> {
     }
 }
 
+fn validate_ws_config(ws_config: &WsConfig) -> Result<(), String> {
+    for (name, value) in [
+        ("max_connections", ws_config.max_connections),
+        ("max_total_subscriptions", ws_config.max_total_subscriptions),
+        (
+            "max_subscriptions_per_connection",
+            ws_config.max_subscriptions_per_connection,
+        ),
+        (
+            "subscription_buffer_size",
+            ws_config.subscription_buffer_size,
+        ),
+        (
+            "subscription_control_buffer_size",
+            ws_config.subscription_control_buffer_size,
+        ),
+        ("max_events_limit", ws_config.max_events_limit),
+    ] {
+        if value == 0 {
+            return Err(format!("{name} must be greater than 0"));
+        }
+    }
+
+    Ok(())
+}
+
 fn resolve_args(
     cli: &RunArgs,
     spec: &IndexSpec,
@@ -285,6 +311,8 @@ fn resolve_args(
             .or(opts.and_then(|o| o.max_events_limit))
             .unwrap_or(default_ws.max_events_limit),
     };
+
+    validate_ws_config(&ws_config)?;
 
     Ok(ResolvedArgs {
         db_path: cli
@@ -528,7 +556,8 @@ async fn run() -> Result<(), shared::IndexError> {
         resolved.ws_config.max_total_subscriptions,
     ));
     let (exit_tx, exit_rx) = watch::channel(false);
-    let (sub_tx, mut sub_rx) = mpsc::channel(resolved.ws_config.subscription_control_buffer_size);
+    let (sub_tx, mut sub_rx) =
+        mpsc::channel(resolved.ws_config.subscription_control_buffer_size.max(1));
 
     let subscriptions_runtime = runtime.clone();
     let _subscription_task = spawn(async move {
@@ -867,6 +896,74 @@ mod main_tests {
             ..Default::default()
         };
         assert!(resolve_args(&args, &spec, Some(&opts)).is_err());
+    }
+
+    #[test]
+    fn resolve_args_rejects_zero_websocket_limits() {
+        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
+        let spec = test_spec();
+
+        for (field, opts) in [
+            (
+                "max_connections",
+                OptionsConfig {
+                    max_connections: Some(0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_total_subscriptions",
+                OptionsConfig {
+                    max_total_subscriptions: Some(0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_subscriptions_per_connection",
+                OptionsConfig {
+                    max_subscriptions_per_connection: Some(0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "subscription_buffer_size",
+                OptionsConfig {
+                    subscription_buffer_size: Some(0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "subscription_control_buffer_size",
+                OptionsConfig {
+                    subscription_control_buffer_size: Some(0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_events_limit",
+                OptionsConfig {
+                    max_events_limit: Some(0),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let err = resolve_args(&args, &spec, Some(&opts)).err().unwrap();
+            assert!(err.contains(field), "unexpected error for {field}: {err}");
+        }
+    }
+
+    #[test]
+    fn resolve_args_allows_zero_idle_timeout_to_disable_it() {
+        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
+        let spec = test_spec();
+        let opts = OptionsConfig {
+            idle_timeout_secs: Some(0),
+            ..Default::default()
+        };
+
+        let resolved = resolve_args(&args, &spec, Some(&opts)).unwrap();
+
+        assert_eq!(resolved.ws_config.idle_timeout_secs, 0);
     }
 
     #[test]

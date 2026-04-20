@@ -9,6 +9,7 @@ use std::{
 };
 use subxt::{PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods};
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite;
 use tracing::error;
 use zerocopy::{
@@ -739,17 +740,21 @@ impl Default for WsConfig {
 pub enum SubscriptionMessage {
     SubscribeStatus {
         tx: mpsc::Sender<NotificationMessage>,
+        response_tx: Option<oneshot::Sender<Result<(), String>>>,
     },
     UnsubscribeStatus {
         tx: mpsc::Sender<NotificationMessage>,
+        response_tx: Option<oneshot::Sender<Result<(), String>>>,
     },
     SubscribeEvents {
         key: Key,
         tx: mpsc::Sender<NotificationMessage>,
+        response_tx: Option<oneshot::Sender<Result<(), String>>>,
     },
     UnsubscribeEvents {
         key: Key,
         tx: mpsc::Sender<NotificationMessage>,
+        response_tx: Option<oneshot::Sender<Result<(), String>>>,
     },
 }
 

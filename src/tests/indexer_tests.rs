@@ -853,7 +853,10 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime_state(),
-            SubscriptionMessage::SubscribeStatus { tx: tx.clone() },
+            SubscriptionMessage::SubscribeStatus {
+                tx: tx.clone(),
+                response_tx: None,
+            },
         )
         .unwrap();
         indexer.notify_status_subscribers();
@@ -861,7 +864,10 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         process_sub_msg(
             indexer.runtime_state(),
-            SubscriptionMessage::UnsubscribeStatus { tx },
+            SubscriptionMessage::UnsubscribeStatus {
+                tx,
+                response_tx: None,
+            },
         )
         .unwrap();
         indexer.notify_status_subscribers();
@@ -882,6 +888,7 @@ item_revision = { fields = ["bytes32", "u32"] }
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx: tx.clone(),
+                response_tx: None,
             },
         )
         .unwrap();
@@ -896,7 +903,11 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         process_sub_msg(
             indexer.runtime_state(),
-            SubscriptionMessage::UnsubscribeEvents { key, tx },
+            SubscriptionMessage::UnsubscribeEvents {
+                key,
+                tx,
+                response_tx: None,
+            },
         )
         .unwrap();
 
@@ -915,7 +926,10 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime_state(),
-            SubscriptionMessage::SubscribeStatus { tx },
+            SubscriptionMessage::SubscribeStatus {
+                tx,
+                response_tx: None,
+            },
         )
         .unwrap();
 
@@ -943,6 +957,7 @@ item_revision = { fields = ["bytes32", "u32"] }
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
+                response_tx: None,
             },
         )
         .unwrap();
@@ -995,13 +1010,19 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         process_sub_msg(
             indexer.runtime_state(),
-            SubscriptionMessage::SubscribeStatus { tx: tx1 },
+            SubscriptionMessage::SubscribeStatus {
+                tx: tx1,
+                response_tx: None,
+            },
         )
         .unwrap();
 
         process_sub_msg(
             indexer.runtime_state(),
-            SubscriptionMessage::SubscribeStatus { tx: tx2 },
+            SubscriptionMessage::SubscribeStatus {
+                tx: tx2,
+                response_tx: None,
+            },
         )
         .unwrap();
 
@@ -1012,6 +1033,7 @@ item_revision = { fields = ["bytes32", "u32"] }
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx: tx3,
+                response_tx: None,
             },
         )
         .unwrap();
@@ -1019,18 +1041,17 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx4, mut rx4) = mpsc::channel(1);
         let result = process_sub_msg(
             indexer.runtime_state(),
-            SubscriptionMessage::SubscribeStatus { tx: tx4.clone() },
+            SubscriptionMessage::SubscribeStatus {
+                tx: tx4.clone(),
+                response_tx: None,
+            },
         );
         assert!(result.is_err());
         assert!(
             matches!(result, Err(IndexError::Io(err)) if err.kind() == std::io::ErrorKind::ConnectionAborted)
         );
 
-        let notification = rx4.try_recv().unwrap();
-        assert!(matches!(
-            notification.body,
-            NotificationBody::SubscriptionTerminated { .. }
-        ));
+        assert!(rx4.try_recv().is_err());
 
         let (tx5, mut rx5) = mpsc::channel(1);
         let result = process_sub_msg(
@@ -1038,15 +1059,11 @@ item_revision = { fields = ["bytes32", "u32"] }
             SubscriptionMessage::SubscribeEvents {
                 key: builtin_u32_key("ref_index", 2),
                 tx: tx5.clone(),
+                response_tx: None,
             },
         );
         assert!(result.is_err());
-
-        let notification = rx5.try_recv().unwrap();
-        assert!(matches!(
-            notification.body,
-            NotificationBody::SubscriptionTerminated { .. }
-        ));
+        assert!(rx5.try_recv().is_err());
     }
 }
 

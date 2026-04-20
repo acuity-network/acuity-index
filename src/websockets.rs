@@ -11,6 +11,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{
     OwnedSemaphorePermit, Semaphore,
     mpsc::{self, Sender},
+    oneshot,
     watch::Receiver,
 };
 use tokio::time::{self, Duration};
@@ -83,7 +84,7 @@ fn event_is_before(event: &EventRef, cursor: &EventRef) -> bool {
 }
 
 fn clamp_events_limit(limit: u16, max_events_limit: usize) -> usize {
-    usize::from(limit).clamp(1, max_events_limit)
+    usize::from(limit).clamp(1, max_events_limit.max(1))
 }
 
 fn request_id_response(id: u64, body: ResponseBody) -> ResponseMessage {
@@ -92,6 +93,10 @@ fn request_id_response(id: u64, body: ResponseBody) -> ResponseMessage {
 
 fn invalid_request_response(id: u64, message: impl Into<String>) -> ResponseMessage {
     error_response(id, "invalid_request", message)
+}
+
+fn subscription_limit_response(id: u64, message: impl Into<String>) -> ResponseMessage {
+    error_response(id, "subscription_limit", message)
 }
 
 fn temporarily_unavailable_response(id: u64) -> ResponseMessage {
@@ -174,7 +179,7 @@ fn validate_subscription_request(
     let next_count = match body {
         RequestBody::SubscribeStatus if !status_subscribed => event_subscriptions.len() + 1,
         RequestBody::SubscribeEvents { key } if !event_subscriptions.contains(key) => {
-            event_subscriptions.len() + usize::from(!status_subscribed)
+            event_subscriptions.len() + 1 + usize::from(status_subscribed)
         }
         _ => return Ok(()),
     };
@@ -311,6 +316,7 @@ fn process_local_msg(
                 sub_tx,
                 SubscriptionMessage::SubscribeStatus {
                     tx: sub_response_tx.clone(),
+                    response_tx: None,
                 },
             ) {
                 return Some(Err(err));
@@ -328,6 +334,7 @@ fn process_local_msg(
                 sub_tx,
                 SubscriptionMessage::UnsubscribeStatus {
                     tx: sub_response_tx.clone(),
+                    response_tx: None,
                 },
             ) {
                 return Some(Err(err));
@@ -359,6 +366,7 @@ fn process_local_msg(
                 SubscriptionMessage::SubscribeEvents {
                     key: key.clone(),
                     tx: sub_response_tx.clone(),
+                    response_tx: None,
                 },
             ) {
                 return Some(Err(err));
@@ -380,6 +388,7 @@ fn process_local_msg(
                 SubscriptionMessage::UnsubscribeEvents {
                     key: key.clone(),
                     tx: sub_response_tx.clone(),
+                    response_tx: None,
                 },
             ) {
                 return Some(Err(err));
@@ -402,6 +411,130 @@ fn process_local_msg(
     Some(Ok(response))
 }
 
+async fn process_subscription_request(
+    msg: &RequestMessage,
+    sub_tx: &Sender<SubscriptionMessage>,
+    sub_response_tx: &mpsc::Sender<NotificationMessage>,
+) -> Option<Result<ResponseMessage, IndexError>> {
+    let response = match &msg.body {
+        RequestBody::SubscribeStatus => {
+            let (response_tx, response_rx) = oneshot::channel();
+            if let Err(err) = enqueue_subscription_message(
+                sub_tx,
+                SubscriptionMessage::SubscribeStatus {
+                    tx: sub_response_tx.clone(),
+                    response_tx: Some(response_tx),
+                },
+            ) {
+                return Some(Err(err));
+            }
+            match response_rx.await {
+                Ok(Ok(())) => request_id_response(
+                    msg.id,
+                    ResponseBody::SubscriptionStatus {
+                        action: SubscriptionAction::Subscribed,
+                        target: SubscriptionTarget::Status,
+                    },
+                ),
+                Ok(Err(message)) => subscription_limit_response(msg.id, message),
+                Err(_) => {
+                    return Some(Err(disconnect_error(
+                        "subscription dispatcher dropped response",
+                    )));
+                }
+            }
+        }
+        RequestBody::UnsubscribeStatus => {
+            let (response_tx, response_rx) = oneshot::channel();
+            if let Err(err) = enqueue_subscription_message(
+                sub_tx,
+                SubscriptionMessage::UnsubscribeStatus {
+                    tx: sub_response_tx.clone(),
+                    response_tx: Some(response_tx),
+                },
+            ) {
+                return Some(Err(err));
+            }
+            if response_rx.await.is_err() {
+                return Some(Err(disconnect_error(
+                    "subscription dispatcher dropped response",
+                )));
+            }
+            request_id_response(
+                msg.id,
+                ResponseBody::SubscriptionStatus {
+                    action: SubscriptionAction::Unsubscribed,
+                    target: SubscriptionTarget::Status,
+                },
+            )
+        }
+        RequestBody::SubscribeEvents { key } => {
+            if let Err(err) = validate_key(key) {
+                return Some(Ok(invalid_request_response(msg.id, err)));
+            }
+
+            let (response_tx, response_rx) = oneshot::channel();
+            if let Err(err) = enqueue_subscription_message(
+                sub_tx,
+                SubscriptionMessage::SubscribeEvents {
+                    key: key.clone(),
+                    tx: sub_response_tx.clone(),
+                    response_tx: Some(response_tx),
+                },
+            ) {
+                return Some(Err(err));
+            }
+            match response_rx.await {
+                Ok(Ok(())) => request_id_response(
+                    msg.id,
+                    ResponseBody::SubscriptionStatus {
+                        action: SubscriptionAction::Subscribed,
+                        target: SubscriptionTarget::Events { key: key.clone() },
+                    },
+                ),
+                Ok(Err(message)) => subscription_limit_response(msg.id, message),
+                Err(_) => {
+                    return Some(Err(disconnect_error(
+                        "subscription dispatcher dropped response",
+                    )));
+                }
+            }
+        }
+        RequestBody::UnsubscribeEvents { key } => {
+            if let Err(err) = validate_key(key) {
+                return Some(Ok(invalid_request_response(msg.id, err)));
+            }
+
+            let (response_tx, response_rx) = oneshot::channel();
+            if let Err(err) = enqueue_subscription_message(
+                sub_tx,
+                SubscriptionMessage::UnsubscribeEvents {
+                    key: key.clone(),
+                    tx: sub_response_tx.clone(),
+                    response_tx: Some(response_tx),
+                },
+            ) {
+                return Some(Err(err));
+            }
+            if response_rx.await.is_err() {
+                return Some(Err(disconnect_error(
+                    "subscription dispatcher dropped response",
+                )));
+            }
+            request_id_response(
+                msg.id,
+                ResponseBody::SubscriptionStatus {
+                    action: SubscriptionAction::Unsubscribed,
+                    target: SubscriptionTarget::Events { key: key.clone() },
+                },
+            )
+        }
+        _ => return None,
+    };
+
+    Some(Ok(response))
+}
+
 pub async fn process_msg(
     runtime: &RuntimeState,
     trees: &Trees,
@@ -411,6 +544,10 @@ pub async fn process_msg(
     max_events_limit: usize,
 ) -> Result<ResponseMessage, IndexError> {
     let id = msg.id;
+    if let Some(response) = process_subscription_request(&msg, sub_tx, sub_response_tx).await {
+        return response;
+    }
+
     if let Some(response) = process_local_msg(trees, msg, sub_tx, sub_response_tx, max_events_limit)
     {
         return response;
@@ -457,6 +594,31 @@ fn service_unavailable_response(message: &str) -> HttpResponse<Option<String>> {
         .expect("service unavailable response should be valid")
 }
 
+fn apply_subscription_response(
+    status_subscribed: &mut bool,
+    event_subscriptions: &mut HashSet<Key>,
+    response: &ResponseMessage,
+) {
+    let ResponseBody::SubscriptionStatus { action, target } = &response.body else {
+        return;
+    };
+
+    match (action, target) {
+        (SubscriptionAction::Subscribed, SubscriptionTarget::Status) => {
+            *status_subscribed = true;
+        }
+        (SubscriptionAction::Unsubscribed, SubscriptionTarget::Status) => {
+            *status_subscribed = false;
+        }
+        (SubscriptionAction::Subscribed, SubscriptionTarget::Events { key }) => {
+            event_subscriptions.insert(key.clone());
+        }
+        (SubscriptionAction::Unsubscribed, SubscriptionTarget::Events { key }) => {
+            event_subscriptions.remove(key);
+        }
+    }
+}
+
 // ─── Connection handler ───────────────────────────────────────────────────────
 
 async fn handle_connection(
@@ -474,20 +636,29 @@ async fn handle_connection(
     info!("WebSocket established: {addr}");
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-    let (sub_events_tx, mut sub_events_rx) = mpsc::channel(ws_config.subscription_buffer_size);
+    let (sub_events_tx, mut sub_events_rx) =
+        mpsc::channel(ws_config.subscription_buffer_size.max(1));
     let mut status_subscribed = false;
     let mut event_subscriptions = HashSet::new();
-    let idle_timeout = Duration::from_secs(ws_config.idle_timeout_secs);
-    let idle_timer = time::sleep(idle_timeout);
-    tokio::pin!(idle_timer);
+    let idle_timeout = (ws_config.idle_timeout_secs != 0)
+        .then(|| Duration::from_secs(ws_config.idle_timeout_secs));
+    let mut idle_deadline = idle_timeout.map(|timeout| time::Instant::now() + timeout);
 
     loop {
         tokio::select! {
-            _ = &mut idle_timer => return Err(disconnect_error("connection idle timeout exceeded")),
+            _ = async {
+                if let Some(deadline) = idle_deadline {
+                    time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => return Err(disconnect_error("connection idle timeout exceeded")),
             incoming = ws_receiver.next() => {
                 match incoming {
                     Some(Ok(msg)) if msg.is_text() || msg.is_binary() => {
-                        idle_timer.as_mut().reset(time::Instant::now() + idle_timeout);
+                        if let Some(timeout) = idle_timeout {
+                            idle_deadline = Some(time::Instant::now() + timeout);
+                        }
                         match serde_json::from_str::<RequestMessage>(msg.to_text()?) {
                             Ok(request) => {
                                 if let Err(err) = validate_subscription_request(
@@ -496,20 +667,9 @@ async fn handle_connection(
                                     &request.body,
                                     ws_config.max_subscriptions_per_connection,
                                 ) {
-                                    let response = error_response(request.id, "subscription_limit", err.to_string());
+                                    let response = subscription_limit_response(request.id, err.to_string());
                                     send_json_message(&mut ws_sender, &response).await?;
                                     continue;
-                                }
-                                match &request.body {
-                                    RequestBody::SubscribeStatus => status_subscribed = true,
-                                    RequestBody::UnsubscribeStatus => status_subscribed = false,
-                                    RequestBody::SubscribeEvents { key } => {
-                                        event_subscriptions.insert(key.clone());
-                                    }
-                                    RequestBody::UnsubscribeEvents { key } => {
-                                        event_subscriptions.remove(key);
-                                    }
-                                    _ => {}
                                 }
                                 let response = match process_msg(
                                     runtime.as_ref(),
@@ -522,6 +682,11 @@ async fn handle_connection(
                                     Ok(response) => response,
                                     Err(err) => error_response(request.id, "internal_error", err.to_string()),
                                 };
+                                apply_subscription_response(
+                                    &mut status_subscribed,
+                                    &mut event_subscriptions,
+                                    &response,
+                                );
                                 send_json_message(&mut ws_sender, &response).await?;
                             }
                             Err(err) => {
@@ -541,7 +706,9 @@ async fn handle_connection(
             notification = sub_events_rx.recv() => {
                 match notification {
                     Some(msg) => {
-                        idle_timer.as_mut().reset(time::Instant::now() + idle_timeout);
+                        if let Some(timeout) = idle_timeout {
+                            idle_deadline = Some(time::Instant::now() + timeout);
+                        }
                         send_json_message(&mut ws_sender, &msg).await?
                     }
                     None => return Err(disconnect_error("subscription dispatcher closed")),
@@ -555,6 +722,7 @@ async fn handle_connection(
             &sub_tx,
             SubscriptionMessage::UnsubscribeStatus {
                 tx: sub_events_tx.clone(),
+                response_tx: None,
             },
         );
     }
@@ -564,6 +732,7 @@ async fn handle_connection(
             SubscriptionMessage::UnsubscribeEvents {
                 key,
                 tx: sub_events_tx.clone(),
+                response_tx: None,
             },
         );
     }
@@ -634,10 +803,14 @@ pub async fn websockets_listen(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::indexer::process_sub_msg;
     use futures::{SinkExt, StreamExt};
     use std::sync::Arc;
     use subxt::rpcs::client::{RawRpcFuture, RawRpcSubscription, RawValue, RpcClient, RpcClientT};
-    use tokio::sync::Semaphore;
+    use tokio::{
+        sync::Semaphore,
+        time::{Duration, sleep, timeout},
+    };
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     const DEFAULT_WS_CONFIG: WsConfig = WsConfig {
@@ -690,6 +863,17 @@ mod tests {
         Arc::new(RuntimeState::new(DEFAULT_WS_CONFIG.max_total_subscriptions))
     }
 
+    fn spawn_subscription_dispatcher(
+        runtime: Arc<RuntimeState>,
+        mut sub_rx: mpsc::Receiver<SubscriptionMessage>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(msg) = sub_rx.recv().await {
+                let _ = process_sub_msg(runtime.as_ref(), msg);
+            }
+        })
+    }
+
     #[test]
     fn websocket_config_sets_explicit_message_and_frame_limits() {
         let config = websocket_config();
@@ -738,6 +922,31 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn validate_subscription_request_counts_status_and_event_subscriptions_together() {
+        let key = Key::Custom(CustomKey {
+            name: "pool_id".into(),
+            value: CustomValue::U32(8),
+        });
+
+        let result = validate_subscription_request(
+            true,
+            &HashSet::new(),
+            &RequestBody::SubscribeEvents { key },
+            1,
+        );
+
+        assert!(
+            matches!(result, Err(IndexError::Io(err)) if err.kind() == std::io::ErrorKind::ConnectionAborted)
+        );
+    }
+
+    #[test]
+    fn clamp_events_limit_handles_zero_max_without_panicking() {
+        assert_eq!(clamp_events_limit(0, 0), 1);
+        assert_eq!(clamp_events_limit(500, 0), 1);
     }
 
     #[test]
@@ -1085,6 +1294,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn process_msg_returns_request_error_only_when_global_cap_is_reached() {
+        let trees = temp_trees();
+        let runtime = Arc::new(RuntimeState::new(1));
+        let (existing_tx, _existing_rx) = mpsc::channel(1);
+        process_sub_msg(
+            runtime.as_ref(),
+            SubscriptionMessage::SubscribeStatus {
+                tx: existing_tx,
+                response_tx: None,
+            },
+        )
+        .unwrap();
+
+        let (sub_tx, sub_rx) = mpsc::channel(4);
+        let dispatcher = spawn_subscription_dispatcher(runtime.clone(), sub_rx);
+        let (response_tx, mut response_rx) = mpsc::channel(1);
+
+        let response = process_msg(
+            runtime.as_ref(),
+            &trees,
+            RequestMessage {
+                id: 17,
+                body: RequestBody::SubscribeStatus,
+            },
+            &sub_tx,
+            &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response,
+            ResponseMessage {
+                id: Some(17),
+                body: ResponseBody::Error(ApiError {
+                    code: "subscription_limit",
+                    message: "total subscription limit exceeded: max 1".into(),
+                }),
+            }
+        );
+        assert!(response_rx.try_recv().is_err());
+
+        drop(sub_tx);
+        dispatcher.await.unwrap();
+    }
+
     #[test]
     fn uncorrelated_error_response_omits_id() {
         let response = uncorrelated_error_response("invalid_request", "missing field `id`");
@@ -1104,6 +1361,7 @@ mod tests {
         sub_tx
             .try_send(SubscriptionMessage::SubscribeStatus {
                 tx: response_tx.clone(),
+                response_tx: None,
             })
             .unwrap();
 
@@ -1385,6 +1643,139 @@ mod tests {
                 MAX_COMPOSITE_ELEMENTS + 1
             )
         );
+
+        client.close(None).await.unwrap();
+        assert!(server.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn rejected_subscribe_does_not_consume_connection_slot() {
+        let trees = temp_trees();
+        let runtime = Arc::new(RuntimeState::new(1));
+        let (existing_tx, _existing_rx) = mpsc::channel(1);
+        process_sub_msg(
+            runtime.as_ref(),
+            SubscriptionMessage::SubscribeStatus {
+                tx: existing_tx.clone(),
+                response_tx: None,
+            },
+        )
+        .unwrap();
+
+        let (sub_tx, sub_rx) = mpsc::channel(4);
+        let dispatcher = spawn_subscription_dispatcher(runtime.clone(), sub_rx);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+        let ws_config = WsConfig {
+            max_subscriptions_per_connection: 1,
+            idle_timeout_secs: 0,
+            ..DEFAULT_WS_CONFIG
+        };
+        let server = tokio::spawn({
+            let runtime = runtime.clone();
+            let trees = trees.clone();
+            let sub_tx = sub_tx.clone();
+            async move {
+                let (stream, peer_addr) = listener.accept().await.unwrap();
+                handle_connection(runtime, stream, peer_addr, trees, sub_tx, permit, ws_config)
+                    .await
+            }
+        });
+
+        let (mut client, _) = connect_async(format!("ws://{addr}")).await.unwrap();
+        let first_request = serde_json::json!({
+            "id": 18,
+            "type": "SubscribeEvents",
+            "key": {"type": "Custom", "value": {"name": "pool_id", "kind": "u32", "value": 1}}
+        });
+        client
+            .send(Message::Text(first_request.to_string().into()))
+            .await
+            .unwrap();
+
+        let response = client.next().await.unwrap().unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
+        assert_eq!(response["id"], 18);
+        assert_eq!(response["type"], "error");
+        assert_eq!(response["data"]["code"], "subscription_limit");
+        assert!(
+            timeout(Duration::from_millis(50), client.next())
+                .await
+                .is_err()
+        );
+
+        process_sub_msg(
+            runtime.as_ref(),
+            SubscriptionMessage::UnsubscribeStatus {
+                tx: existing_tx,
+                response_tx: None,
+            },
+        )
+        .unwrap();
+
+        let second_request = serde_json::json!({
+            "id": 19,
+            "type": "SubscribeEvents",
+            "key": {"type": "Custom", "value": {"name": "pool_id", "kind": "u32", "value": 2}}
+        });
+        client
+            .send(Message::Text(second_request.to_string().into()))
+            .await
+            .unwrap();
+
+        let response = client.next().await.unwrap().unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
+        assert_eq!(response["id"], 19);
+        assert_eq!(response["type"], "subscriptionStatus");
+        assert_eq!(response["data"]["action"], "subscribed");
+
+        client.close(None).await.unwrap();
+        assert!(server.await.unwrap().is_ok());
+        drop(sub_tx);
+        dispatcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_zero_disables_connection_timeout() {
+        let trees = temp_trees();
+        let (sub_tx, _sub_rx) = mpsc::channel(4);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+        let runtime = disconnected_runtime();
+        let ws_config = WsConfig {
+            idle_timeout_secs: 0,
+            ..DEFAULT_WS_CONFIG
+        };
+        let server = tokio::spawn(async move {
+            let (stream, peer_addr) = listener.accept().await.unwrap();
+            handle_connection(runtime, stream, peer_addr, trees, sub_tx, permit, ws_config).await
+        });
+
+        let (mut client, _) = connect_async(format!("ws://{addr}")).await.unwrap();
+
+        sleep(Duration::from_millis(25)).await;
+        client
+            .send(Message::Text(
+                serde_json::json!({"id": 20, "type": "Status"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+
+        let response = timeout(Duration::from_millis(100), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
+        assert_eq!(response["id"], 20);
+        assert_eq!(response["type"], "status");
 
         client.close(None).await.unwrap();
         assert!(server.await.unwrap().is_ok());

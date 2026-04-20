@@ -1587,6 +1587,25 @@ mod tests {
     }
 
     #[test]
+    fn advance_span_end_replaces_old_span_key() {
+        let trees = temp_trees();
+        let mut current = Span { start: 10, end: 25 };
+
+        save_span(&trees.span, &current, 2, true, true).unwrap();
+        advance_span_end(&trees, &mut current, 26, 2, true, true).unwrap();
+
+        assert_eq!(current.end, 26);
+        assert!(trees.span.get(25u32.to_be_bytes()).unwrap().is_none());
+
+        let bytes = trees.span.get(26u32.to_be_bytes()).unwrap().unwrap();
+        let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
+        assert_eq!(u32::from(saved.start), 10);
+        assert_eq!(u16::from(saved.version), 1);
+        assert_eq!(saved.index_variant, 1);
+        assert_eq!(saved.store_events, 1);
+    }
+
+    #[test]
     fn next_live_head_to_queue_starts_after_current_end() {
         let current = Span {
             start: 100,

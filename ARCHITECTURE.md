@@ -26,6 +26,126 @@ This file is meant to help AI agents quickly find the right code and understand 
   Holds shared wire types, on-disk key formats, database tree handles, shared runtime state, and common enums like `Key`, `RequestMessage`, and `ResponseMessage`.
 - `src/config_gen.rs`
   Builds starter index spec TOML files from live runtime metadata.
+- `src/synthetic_devnet.rs`
+  Shared support code for the in-repo synthetic devnet. It renders a synthetic index spec from a template, polls node/indexer readiness, provides small WebSocket API probe helpers, and defines the manifest/report types shared by the seeder, benchmark harness, and integration tests.
+- `src/bin/seed_synthetic_runtime.rs`
+  Deterministic chain seeder for the synthetic runtime. It submits known transactions in `smoke` or `bulk` mode and emits a `SeedManifest` describing the expected indexed queries that tests and benchmarks later validate through the public API.
+- `src/bin/benchmark_synthetic_indexing.rs`
+  End-to-end benchmark harness for the synthetic runtime. It starts `acuity-index` against a rendered synthetic config, waits until the manifest queries are observable through `GetEvents`, and emits a `BenchmarkReport` with throughput and on-disk size metrics.
+- `runtime/`
+  Separate in-repo Polkadot SDK runtime workspace used for local devnet testing. It builds a WASM runtime consumed by `polkadot-omni-node` and includes the custom `Synthetic` pallet used to exercise indexed key shapes.
+- `tests/common/mod.rs`
+  Process orchestration helpers for the synthetic integration test. It builds the runtime, generates a chain spec, starts the local node and indexer, runs the seeder, and manages child-process cleanup.
+- `tests/synthetic_integration.rs`
+  Ignored external integration test that validates the full synthetic stack end to end: runtime build, local node, indexer startup, deterministic seeding, and WebSocket API query verification.
+
+## Synthetic Devnet Architecture
+
+A self-contained local devnet stack lets the repository test and benchmark the real indexer against a deterministic Substrate chain without depending on external networks.
+
+The stack has five layers:
+
+1. `runtime/` builds a small Polkadot SDK runtime WASM with standard system pallets plus a custom `Synthetic` pallet.
+2. `polkadot-omni-node` runs that WASM runtime locally from a generated chain spec.
+3. `chains/synthetic.toml` defines the matching index specification template for the synthetic pallet events and built-in SDK pallets.
+4. `src/bin/seed_synthetic_runtime.rs` writes deterministic on-chain data that should become queryable through the indexer.
+5. `acuity-index` indexes that chain normally, and tests/benchmarks validate the result through the public WebSocket API.
+
+This is intentionally close to production architecture. The synthetic setup does not bypass the normal indexer path; it exercises the same RPC, metadata decoding, indexing, sled persistence, and WebSocket query surfaces as a real deployment.
+
+### Synthetic runtime
+
+The in-repo runtime exists to make local validation deterministic and self-contained.
+
+- It is built as a separate Cargo workspace under `runtime/`.
+- `runtime/pallets/synthetic` defines a small custom pallet that emits predictable events covering the key shapes the indexer needs to exercise locally: `u32`, `bytes32`, `account_id`, and repeated multi-value fields.
+- `chains/synthetic.toml` mirrors those event shapes as index rules so the indexer can query the seeded data through normal custom-key and built-in-key lookups.
+
+The runtime keeps a small pallet set on purpose. It includes enough standard SDK pallets to validate built-in indexing paths such as `Balances` and `TransactionPayment`, while the custom `Synthetic` pallet provides deterministic event-heavy workloads for integration tests and benchmarks.
+
+### Synthetic config generation
+
+The synthetic index spec checked into `chains/synthetic.toml` is a template, not a directly usable chain config.
+
+- The template contains a placeholder genesis hash and default local RPC URL.
+- `src/synthetic_devnet.rs` loads that template and rewrites `genesis_hash` plus `default_url` for the currently running local node.
+- Tests and benchmark tooling write that rendered config into a temporary working directory before launching `acuity-index`.
+
+This keeps the checked-in config stable while still making the synthetic workflow safe for disposable local chains whose genesis hash is only known after the chain spec/runtime is materialized.
+
+### Why `polkadot-omni-node --instant-seal`
+
+The synthetic workflow uses `polkadot-omni-node` in dev mode with `--instant-seal`.
+
+- Each submitted extrinsic is included promptly and deterministically.
+- Seeder-generated manifests can refer to stable expected block ranges and query results.
+- Benchmark runs can seed a known amount of work first, then measure how long `acuity-index` takes to index that fixed workload from an empty database.
+
+The node is still required to run with archival pruning settings because the indexer's normal historical-state requirement remains in force even for the synthetic chain.
+
+## Synthetic Seeding And Benchmark Flow
+
+The synthetic benchmark path is organized around durable artifacts rather than ad hoc shell scripting.
+
+### Seed manifest
+
+`src/bin/seed_synthetic_runtime.rs` is the source of truth for the seeded workload.
+
+- In `smoke` mode it submits a small set of hand-picked transactions that exercise several query shapes.
+- In `bulk` mode it submits many `Synthetic::emit_burst` transactions to generate an event-dense benchmark workload.
+- After submission it emits a `SeedManifest` JSON document containing:
+  - chain identity (`genesis_hash`)
+  - seeded block range
+  - transaction and synthetic event counts
+  - a list of `QueryExpectation` values describing which WebSocket `GetEvents` lookups must succeed
+
+That manifest is the contract between the seeder and downstream validation code. Tests and benchmarks do not hardcode their own expectations independently; they consume the manifest produced by the actual seeding pass.
+
+### Benchmark harness
+
+`src/bin/benchmark_synthetic_indexing.rs` consumes a `SeedManifest` and measures the real indexer.
+
+Its flow is:
+
+1. Read the seeder manifest JSON.
+2. Render a temporary synthetic index config whose `genesis_hash` and node URL match the seeded local chain.
+3. Start `acuity-index` as a child process against an empty database.
+4. Poll `GetEvents` over the indexer's public WebSocket API until every manifest query passes.
+5. Query `SizeOnDisk` and compute elapsed-time throughput metrics.
+6. Emit a `BenchmarkReport` JSON document.
+
+This means benchmark success is defined by observable API behavior, not only by internal logs or process completion. The benchmark verifies that the indexer has actually made the seeded data queryable.
+
+## Synthetic Integration Testing
+
+The repository now has an external node-backed integration test in `tests/synthetic_integration.rs`.
+
+This test is marked `#[ignore]` because it requires heavyweight local tooling (`polkadot-omni-node` and a release runtime build), but its role is architectural rather than incidental: it is the full end-to-end validation path for the synthetic stack.
+
+The integration test uses helpers from `tests/common/mod.rs` to orchestrate this pipeline:
+
+1. Build the synthetic runtime in release mode.
+2. Generate a local chain spec from the runtime WASM.
+3. Start `polkadot-omni-node` on random local ports.
+4. Render a matching synthetic index config for that node's genesis hash.
+5. Start `acuity-index` against a temporary database.
+6. Run the smoke seeder and capture its `SeedManifest`.
+7. Wait until the indexer reports spans covering the seeded tip.
+8. Execute the manifest's `GetEvents` expectations against the public WebSocket API.
+
+Because this path validates the actual WebSocket interface, it catches integration breakage across runtime metadata, config rendering, indexing, persistence, and query handling in one place.
+
+## Developer Orchestration
+
+The `justfile` is now part of the architecture for the synthetic workflow, not only a convenience wrapper.
+
+- `runtime-build` and `runtime-chain-spec` materialize the local runtime artifacts.
+- `synthetic-node` starts the local omni-node instance with the required archival settings.
+- `seed-smoke` and `seed-bulk` produce deterministic seeded workloads.
+- `test-integration` runs the ignored end-to-end synthetic integration test.
+- `benchmark-indexing` orchestrates runtime build, node startup, bulk seeding, and benchmark execution in one reproducible command.
+
+These recipes are the supported developer entrypoints for the synthetic stack. The binaries and helper module are structured so that the same underlying flow can be used interactively from `just`, from tests, or from future CI automation without duplicating the workflow logic.
 
 ## Startup Sequence
 

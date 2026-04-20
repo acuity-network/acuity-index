@@ -3,9 +3,11 @@
 use serde::{Deserialize, Serialize};
 use sled::Tree;
 use std::{
+    collections::HashMap,
     fmt,
     sync::{Mutex, MutexGuard},
 };
+use subxt::{config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods, PolkadotConfig};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
 use tracing::error;
@@ -732,7 +734,7 @@ impl Default for WsConfig {
     }
 }
 
-/// Subscription messages from WebSocket threads to the indexer thread.
+/// Subscription messages from WebSocket connections to the shared subscription dispatcher.
 #[derive(Debug)]
 pub enum SubscriptionMessage {
     SubscribeStatus {
@@ -749,6 +751,32 @@ pub enum SubscriptionMessage {
         key: Key,
         tx: mpsc::Sender<NotificationMessage>,
     },
+}
+
+pub struct RuntimeState {
+    pub(crate) max_total_subscriptions: usize,
+    pub(crate) status_subs: Mutex<Vec<mpsc::Sender<NotificationMessage>>>,
+    pub(crate) events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<NotificationMessage>>>>,
+    rpc: Mutex<Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>>,
+}
+
+impl RuntimeState {
+    pub fn new(max_total_subscriptions: usize) -> Self {
+        Self {
+            max_total_subscriptions,
+            status_subs: Mutex::new(Vec::new()),
+            events_subs: Mutex::new(HashMap::new()),
+            rpc: Mutex::new(None),
+        }
+    }
+
+    pub fn set_rpc(&self, rpc: Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>) {
+        *lock_or_recover(&self.rpc, "runtime_rpc") = rpc;
+    }
+
+    pub fn rpc(&self) -> Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>> {
+        lock_or_recover(&self.rpc, "runtime_rpc").clone()
+    }
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ The following protections are now implemented in the server:
 ### Resource exhaustion controls
 
 - Bounded subscription control queue
-  - The connection-to-indexer subscription control path uses a bounded Tokio channel.
+  - The connection-to-subscription-dispatcher control path uses a bounded Tokio channel.
   - Saturation no longer causes unbounded memory growth.
 
 - WebSocket message and frame size limits
@@ -56,7 +56,7 @@ The following protections are now implemented in the server:
 
 - The remotely reachable subscription control path no longer relies on unbounded buffering.
 - Subscription queue saturation and closure are handled as errors rather than panics.
-- Transient RPC failures (node restarts, network blips) no longer terminate the process. The indexer saves its span state to sled and reconnects with exponential backoff, preserving all committed data.
+- Transient RPC failures (node restarts, network blips) no longer terminate the process. The indexer saves its span state to sled, reconnects with exponential backoff, and keeps existing WebSocket clients connected for sled-backed reads while RPC-backed requests return temporary unavailability.
 
 ## Residual Risks
 

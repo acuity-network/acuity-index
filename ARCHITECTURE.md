@@ -13,9 +13,9 @@ This file is meant to help AI agents quickly find the right code and understand 
 ## Runtime Components
 
 - `src/main.rs`
-  Parses CLI args, loads index spec and options config, opens sled, verifies genesis hash, and runs a reconnect loop that connects to the chain, spawns the indexer task plus the WebSocket server, and retries with exponential backoff on transient RPC failures.
+  Parses CLI args, loads index spec and options config, opens sled, verifies genesis hash, starts long-lived subscription/WebSocket tasks, and runs a reconnect loop that only recreates the RPC clients plus indexer task with exponential backoff on transient failures.
 - `src/indexer.rs`
-  Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, decoded event storage, and subscription fanout. Saves the current span before returning on any error so the reconnect loop can resume without data loss.
+  Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, decoded event storage, and notification fanout into shared subscriber state. Saves the current span before returning on any error so the reconnect loop can resume without data loss.
 - `src/config.rs`
   Defines the TOML schema and resolves configured event params into runtime key-mapping rules.
 - `src/pallets.rs`
@@ -23,7 +23,7 @@ This file is meant to help AI agents quickly find the right code and understand 
 - `src/websockets.rs`
   Implements the public WebSocket API, request/response handling, and connection lifecycle.
 - `src/shared.rs`
-  Holds shared wire types, on-disk key formats, database tree handles, and common enums like `Key`, `RequestMessage`, and `ResponseMessage`.
+  Holds shared wire types, on-disk key formats, database tree handles, shared runtime state, and common enums like `Key`, `RequestMessage`, and `ResponseMessage`.
 - `src/config_gen.rs`
   Builds starter index spec TOML files from live runtime metadata.
 
@@ -36,13 +36,15 @@ The normal startup path lives in `src/main.rs`:
 3. Validate the spec and resolve runtime options (CLI > `--options-config` > defaults).
 4. Resolve the database path and open sled.
 5. Verify or initialize the stored `genesis_hash` in the root database.
-6. Enter the reconnect loop (see [RPC Reconnection](#rpc-reconnection) below). On each iteration:
+6. Create shared runtime state plus long-lived tasks:
+   a. Spawn a bounded subscription dispatcher task that applies subscribe/unsubscribe messages to shared in-memory registries.
+   b. Spawn `websockets_listen(...)` once for the process lifetime.
+7. Enter the reconnect loop (see [RPC Reconnection](#rpc-reconnection) below). On each iteration:
    a. Connect to the target node with `subxt` (retry with exponential backoff on transient failures).
    b. Verify the connected chain genesis hash matches the config.
-   c. Spawn two long-running tasks:
-      - `run_indexer(...)`
-      - `websockets_listen(...)`
-   d. Wait for either a termination signal or indexer completion, then act accordingly.
+   c. Publish the current RPC handle into shared runtime state.
+   d. Spawn `run_indexer(...)`.
+   e. Wait for either a termination signal or indexer completion, then act accordingly.
 
 Startup error handling is centralized in a fallible `run()` path in `src/main.rs`. Configuration, database, and signal-registration failures return structured errors that are logged once before the process exits.
 
@@ -125,11 +127,12 @@ Operational detail:
 The indexer has one async loop that multiplexes several inputs with `tokio::select!`:
 
 - exit notifications
-- subscription control messages from WebSocket handlers
 - new chain head notifications from `subxt`
 - queued live-head indexing futures
 - queued backfill indexing futures
 - periodic stats logging
+
+Subscription control messages are handled by a separate long-lived dispatcher task in `src/main.rs`, which updates shared subscriber registries that outlive individual indexer reconnects.
 
 Two separate queues exist inside the loop:
 
@@ -220,12 +223,12 @@ On each iteration:
 1. Check if SIGTERM was received between loops (via `term_now` atomic flag).
 2. Attempt RPC connection via `connect_rpc()`. Transient failures log the error and sleep with exponential backoff before retrying. Fatal connection errors exit immediately.
 3. Verify genesis hash. A mismatch is fatal (exits with an error).
-4. Spawn the indexer and WebSocket server tasks.
+4. Publish the fresh RPC handle into shared runtime state and spawn the indexer task.
 5. `select!` on the signal handler vs the indexer task handle.
-6. On SIGTERM: send the exit signal, await both tasks, flush sled, and return `Ok(())`.
+6. On SIGTERM: clear the shared RPC handle, send the exit signal, await the indexer and WebSocket listener tasks, flush sled, and return `Ok(())`.
 7. On indexer completion:
    - `Ok(())` — clean shutdown (e.g. exit signal received), return `Ok(())`.
-   - Recoverable error — log the error, sleep with backoff, and `continue` the loop to reconnect.
+   - Recoverable error — clear the shared RPC handle, log the error, sleep with backoff, and `continue` the loop to reconnect.
    - Fatal error — log and return `Err`.
    - `JoinError` (panic) — log and return a fatal `Internal` error.
 
@@ -330,7 +333,7 @@ For each client connection:
 1. Accept a TCP connection.
 2. Attempt to upgrade it to WebSocket.
 3. Read JSON requests into `RequestMessage`.
-4. Either handle the request locally or forward subscription intent to the indexer loop.
+4. Either handle the request locally or forward subscription intent to the shared subscription dispatcher.
 
 Important operational details:
 
@@ -350,12 +353,17 @@ These are answered directly from sled or RPC in `process_msg(...)`:
 
 `GetEvents` reads at most the most recent 100 matching event refs. If matching decoded event JSON exists in the `events` tree, it is attached as `decodedEvents`.
 
+Operational detail:
+
+- `Status`, `GetEvents`, and `SizeOnDisk` are sled-backed and continue working while the node RPC is unavailable.
+- `Variants` requires a live RPC handle. During reconnect backoff it returns a request-scoped `temporarily_unavailable` error instead of disconnecting the client.
+
 ### Subscriptions
 
 Subscription registration is split across tasks:
 
 - WebSocket handlers send `SubscriptionMessage` values over an internal bounded channel.
-- The indexer loop owns the actual subscriber registries.
+- A long-lived subscription dispatcher task owns updates to the actual subscriber registries.
 - When a newly indexed event matches a subscribed key, the indexer pushes a `ResponseMessage::Events` update to those subscribers.
 - Status subscribers are notified when the live head advances the persisted span.
 
@@ -392,7 +400,7 @@ Protocol-safety constants that remain compile-time:
 
 Important invariant:
 
-- The WebSocket server does not own indexing state. It only performs read queries and forwards subscribe/unsubscribe requests to the indexer task.
+- The WebSocket server does not own indexing state. It performs read queries and forwards subscribe/unsubscribe requests to shared runtime state that survives indexer reconnects.
 
 ## Generated Chain Configs
 
@@ -451,8 +459,8 @@ The simplest correct mental model is:
 1. Chain config says which event fields matter.
 2. The indexer walks blocks and turns matching event fields into binary index entries.
 3. Spans record which block ranges are already trustworthy for the current indexing mode.
-4. The reconnect loop in `src/main.rs` wraps the indexer and WebSocket server; transient RPC failures trigger reconnection with exponential backoff, preserving all span state through sled.
-5. The WebSocket server is a thin query/subscription layer on top of sled plus the indexer-owned subscriber lists.
+4. The reconnect loop in `src/main.rs` recreates RPC clients and the indexer task; transient RPC failures trigger reconnection with exponential backoff, preserving all span state through sled.
+5. The WebSocket server is a thin query/subscription layer on top of sled plus shared subscriber lists that survive reconnects.
 
 If you are changing behavior, first decide which layer owns it:
 

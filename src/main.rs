@@ -8,8 +8,8 @@ use std::{
     io::ErrorKind,
     path::PathBuf,
     process::exit,
-    sync::atomic::{AtomicBool, Ordering},
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 use subxt::{
@@ -17,7 +17,11 @@ use subxt::{
     config::RpcConfigFor,
     rpcs::{RpcClient, methods::legacy::LegacyRpcMethods},
 };
-use tokio::{select, spawn, sync::{mpsc, watch}, time::sleep};
+use tokio::{
+    select, spawn,
+    sync::{mpsc, watch},
+    time::sleep,
+};
 use tracing::{error, info, warn};
 use tracing_log::AsTrace;
 
@@ -28,10 +32,10 @@ mod pallets;
 mod shared;
 mod websockets;
 
-use config::{IndexSpec, OptionsConfig, KUSAMA_TOML, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
+use config::{IndexSpec, KUSAMA_TOML, OptionsConfig, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
 use config_gen::write_generated_index_spec;
-use indexer::run_indexer;
-use shared::{Trees, WsConfig};
+use indexer::{process_sub_msg, run_indexer};
+use shared::{RuntimeState, Trees, WsConfig};
 use websockets::websockets_listen;
 
 #[cfg(test)]
@@ -217,7 +221,11 @@ fn parse_db_mode(s: &str) -> Result<DbMode, String> {
     }
 }
 
-fn resolve_args(cli: &RunArgs, spec: &IndexSpec, options: Option<&OptionsConfig>) -> Result<ResolvedArgs, String> {
+fn resolve_args(
+    cli: &RunArgs,
+    spec: &IndexSpec,
+    options: Option<&OptionsConfig>,
+) -> Result<ResolvedArgs, String> {
     let opts = options.as_ref();
 
     let db_mode = if let Some(ref m) = cli.db_mode {
@@ -243,21 +251,48 @@ fn resolve_args(cli: &RunArgs, spec: &IndexSpec, options: Option<&OptionsConfig>
     let index_variant = cli.index_variant || spec.index_variant;
     let store_events = cli.store_events || spec.store_events;
 
-    let port = cli.port.or(opts.and_then(|o| o.port)).unwrap_or(DEFAULT_PORT);
+    let port = cli
+        .port
+        .or(opts.and_then(|o| o.port))
+        .unwrap_or(DEFAULT_PORT);
 
     let default_ws = WsConfig::default();
     let ws_config = WsConfig {
-        max_connections: cli.max_connections.or(opts.and_then(|o| o.max_connections)).unwrap_or(default_ws.max_connections),
-        max_total_subscriptions: cli.max_total_subscriptions.or(opts.and_then(|o| o.max_total_subscriptions)).unwrap_or(default_ws.max_total_subscriptions),
-        max_subscriptions_per_connection: cli.max_subscriptions_per_connection.or(opts.and_then(|o| o.max_subscriptions_per_connection)).unwrap_or(default_ws.max_subscriptions_per_connection),
-        subscription_buffer_size: cli.subscription_buffer_size.or(opts.and_then(|o| o.subscription_buffer_size)).unwrap_or(default_ws.subscription_buffer_size),
-        subscription_control_buffer_size: cli.subscription_control_buffer_size.or(opts.and_then(|o| o.subscription_control_buffer_size)).unwrap_or(default_ws.subscription_control_buffer_size),
-        idle_timeout_secs: cli.idle_timeout_secs.or(opts.and_then(|o| o.idle_timeout_secs)).unwrap_or(default_ws.idle_timeout_secs),
-        max_events_limit: cli.max_events_limit.or(opts.and_then(|o| o.max_events_limit)).unwrap_or(default_ws.max_events_limit),
+        max_connections: cli
+            .max_connections
+            .or(opts.and_then(|o| o.max_connections))
+            .unwrap_or(default_ws.max_connections),
+        max_total_subscriptions: cli
+            .max_total_subscriptions
+            .or(opts.and_then(|o| o.max_total_subscriptions))
+            .unwrap_or(default_ws.max_total_subscriptions),
+        max_subscriptions_per_connection: cli
+            .max_subscriptions_per_connection
+            .or(opts.and_then(|o| o.max_subscriptions_per_connection))
+            .unwrap_or(default_ws.max_subscriptions_per_connection),
+        subscription_buffer_size: cli
+            .subscription_buffer_size
+            .or(opts.and_then(|o| o.subscription_buffer_size))
+            .unwrap_or(default_ws.subscription_buffer_size),
+        subscription_control_buffer_size: cli
+            .subscription_control_buffer_size
+            .or(opts.and_then(|o| o.subscription_control_buffer_size))
+            .unwrap_or(default_ws.subscription_control_buffer_size),
+        idle_timeout_secs: cli
+            .idle_timeout_secs
+            .or(opts.and_then(|o| o.idle_timeout_secs))
+            .unwrap_or(default_ws.idle_timeout_secs),
+        max_events_limit: cli
+            .max_events_limit
+            .or(opts.and_then(|o| o.max_events_limit))
+            .unwrap_or(default_ws.max_events_limit),
     };
 
     Ok(ResolvedArgs {
-        db_path: cli.db_path.clone().or_else(|| opts.and_then(|o| o.db_path.clone())),
+        db_path: cli
+            .db_path
+            .clone()
+            .or_else(|| opts.and_then(|o| o.db_path.clone())),
         db_mode,
         db_cache_capacity,
         url: cli.url.clone().or_else(|| opts.and_then(|o| o.url.clone())),
@@ -382,7 +417,10 @@ fn parse_db_cache_capacity(value: &str) -> Result<u64, shared::IndexError> {
     })
 }
 
-fn init_db_genesis(trees: &Trees, genesis_hash_config: &[u8]) -> Result<Vec<u8>, shared::IndexError> {
+fn init_db_genesis(
+    trees: &Trees,
+    genesis_hash_config: &[u8],
+) -> Result<Vec<u8>, shared::IndexError> {
     match trees.root.get("genesis_hash")? {
         Some(v) => Ok(v.to_vec()),
         None => {
@@ -398,7 +436,10 @@ const MAX_BACKOFF_SECS: u64 = 60;
 async fn connect_rpc(
     url: &str,
 ) -> Result<
-    (OnlineClient<PolkadotConfig>, LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>),
+    (
+        OnlineClient<PolkadotConfig>,
+        LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    ),
     shared::IndexError,
 > {
     let rpc_client = RpcClient::from_url(url).await?;
@@ -431,7 +472,10 @@ async fn run() -> Result<(), shared::IndexError> {
 
     let run_args = &args.run;
     let spec = load_index_spec(run_args.chain, run_args.index_config.as_deref());
-    let options = run_args.options_config.as_deref().map(|p| load_options_config(p));
+    let options = run_args
+        .options_config
+        .as_deref()
+        .map(|p| load_options_config(p));
     let resolved = resolve_args(run_args, &spec, options.as_ref()).unwrap_or_else(|e| {
         error!("{e}");
         exit(1);
@@ -439,9 +483,9 @@ async fn run() -> Result<(), shared::IndexError> {
 
     info!("Indexing chain: {}", spec.name);
 
-    let genesis_hash_config = spec.genesis_hash_bytes().map_err(|e| {
-        shared::internal_error(format!("invalid genesis hash in config: {e}"))
-    })?;
+    let genesis_hash_config = spec
+        .genesis_hash_bytes()
+        .map_err(|e| shared::internal_error(format!("invalid genesis hash in config: {e}")))?;
 
     let db_path = resolve_db_path(&spec.name, resolved.db_path.as_deref());
     info!("Database path: {}", db_path.display());
@@ -475,11 +519,39 @@ async fn run() -> Result<(), shared::IndexError> {
         flag::register(*sig, Arc::clone(&term_now))?;
     }
 
+    let runtime = Arc::new(RuntimeState::new(
+        resolved.ws_config.max_total_subscriptions,
+    ));
+    let (exit_tx, exit_rx) = watch::channel(false);
+    let (sub_tx, mut sub_rx) = mpsc::channel(resolved.ws_config.subscription_control_buffer_size);
+
+    let subscriptions_runtime = runtime.clone();
+    let _subscription_task = spawn(async move {
+        while let Some(msg) = sub_rx.recv().await {
+            if let Err(err) = process_sub_msg(subscriptions_runtime.as_ref(), msg) {
+                error!("Subscription rejected: {err}");
+            }
+        }
+    });
+
+    let ws_task = spawn(websockets_listen(
+        trees.clone(),
+        runtime.clone(),
+        resolved.port,
+        exit_rx.clone(),
+        sub_tx,
+        resolved.ws_config.clone(),
+    ));
+
     let mut backoff_secs = INITIAL_BACKOFF_SECS;
     let mut signals = Signals::new(TERM_SIGNALS)?;
 
     loop {
         if term_now.load(Ordering::Relaxed) {
+            runtime.set_rpc(None);
+            let _ = exit_tx.send(true);
+            let _ = ws_task.await;
+            let _ = trees.flush();
             info!("Shutdown requested; exiting.");
             return Ok(());
         }
@@ -489,9 +561,13 @@ async fn run() -> Result<(), shared::IndexError> {
         let (api, rpc) = match connect_rpc(&url).await {
             Ok(clients) => clients,
             Err(err) if err.is_recoverable() => {
+                runtime.set_rpc(None);
                 error!("RPC connection failed: {err}; retrying in {backoff_secs}s");
                 select! {
                     _ = signals.next() => {
+                        let _ = exit_tx.send(true);
+                        let _ = ws_task.await;
+                        let _ = trees.flush();
                         info!("Shutdown requested during reconnection backoff.");
                         return Ok(());
                     }
@@ -513,34 +589,23 @@ async fn run() -> Result<(), shared::IndexError> {
         }
 
         backoff_secs = INITIAL_BACKOFF_SECS;
-
-        let (exit_tx, exit_rx) = watch::channel(false);
-        let (sub_tx, sub_rx) = mpsc::channel(resolved.ws_config.subscription_control_buffer_size);
+        runtime.set_rpc(Some(rpc.clone()));
 
         let indexer_handle = spawn(run_indexer(
             trees.clone(),
             api,
-            rpc.clone(),
+            rpc,
             spec.clone(),
             resolved.finalized,
             resolved.queue_depth.into(),
             exit_rx.clone(),
-            sub_rx,
-            resolved.ws_config.clone(),
+            runtime.clone(),
         ));
         tokio::pin!(indexer_handle);
 
-        let ws_task = spawn(websockets_listen(
-            trees.clone(),
-            rpc,
-            resolved.port,
-            exit_rx,
-            sub_tx,
-            resolved.ws_config.clone(),
-        ));
-
         let indexer_result = select! {
             _ = signals.next() => {
+                runtime.set_rpc(None);
                 let _ = exit_tx.send(true);
                 let _ = indexer_handle.await;
                 let _ = ws_task.await;
@@ -551,19 +616,24 @@ async fn run() -> Result<(), shared::IndexError> {
             result = &mut indexer_handle => result,
         };
 
-        let _ = exit_tx.send(true);
-        let _ = ws_task.await;
         let _ = trees.flush();
 
         match indexer_result {
             Ok(Ok(())) => {
+                runtime.set_rpc(None);
+                let _ = exit_tx.send(true);
+                let _ = ws_task.await;
                 info!("Indexer stopped cleanly.");
                 return Ok(());
             }
             Ok(Err(err)) if err.is_recoverable() => {
+                runtime.set_rpc(None);
                 warn!("Indexer error (recoverable): {err}; reconnecting in {backoff_secs}s");
                 select! {
                     _ = signals.next() => {
+                        let _ = exit_tx.send(true);
+                        let _ = ws_task.await;
+                        let _ = trees.flush();
                         info!("Shutdown requested during reconnection backoff.");
                         return Ok(());
                     }
@@ -573,10 +643,16 @@ async fn run() -> Result<(), shared::IndexError> {
                 continue;
             }
             Ok(Err(err)) => {
+                runtime.set_rpc(None);
+                let _ = exit_tx.send(true);
+                let _ = ws_task.await;
                 error!("Indexer error (fatal): {err}");
                 return Err(err);
             }
             Err(join_err) => {
+                runtime.set_rpc(None);
+                let _ = exit_tx.send(true);
+                let _ = ws_task.await;
                 error!("Indexer task failed: {join_err}");
                 return Err(shared::internal_error(format!(
                     "indexer task panicked: {join_err}"
@@ -652,12 +728,7 @@ mod main_tests {
 
     #[test]
     fn resolve_args_uses_defaults_when_no_config() {
-        let args = RunArgs::try_parse_from([
-            "acuity-index",
-            "--chain",
-            "polkadot",
-        ])
-        .unwrap();
+        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
         let spec = test_spec();
         let resolved = resolve_args(&args, &spec, None).unwrap();
         assert!(matches!(resolved.db_mode, DbMode::LowSpace));
@@ -669,23 +740,39 @@ mod main_tests {
         assert_eq!(resolved.port, 8172);
 
         let default_ws = WsConfig::default();
-        assert_eq!(resolved.ws_config.max_connections, default_ws.max_connections);
-        assert_eq!(resolved.ws_config.max_total_subscriptions, default_ws.max_total_subscriptions);
-        assert_eq!(resolved.ws_config.max_subscriptions_per_connection, default_ws.max_subscriptions_per_connection);
-        assert_eq!(resolved.ws_config.subscription_buffer_size, default_ws.subscription_buffer_size);
-        assert_eq!(resolved.ws_config.subscription_control_buffer_size, default_ws.subscription_control_buffer_size);
-        assert_eq!(resolved.ws_config.idle_timeout_secs, default_ws.idle_timeout_secs);
-        assert_eq!(resolved.ws_config.max_events_limit, default_ws.max_events_limit);
+        assert_eq!(
+            resolved.ws_config.max_connections,
+            default_ws.max_connections
+        );
+        assert_eq!(
+            resolved.ws_config.max_total_subscriptions,
+            default_ws.max_total_subscriptions
+        );
+        assert_eq!(
+            resolved.ws_config.max_subscriptions_per_connection,
+            default_ws.max_subscriptions_per_connection
+        );
+        assert_eq!(
+            resolved.ws_config.subscription_buffer_size,
+            default_ws.subscription_buffer_size
+        );
+        assert_eq!(
+            resolved.ws_config.subscription_control_buffer_size,
+            default_ws.subscription_control_buffer_size
+        );
+        assert_eq!(
+            resolved.ws_config.idle_timeout_secs,
+            default_ws.idle_timeout_secs
+        );
+        assert_eq!(
+            resolved.ws_config.max_events_limit,
+            default_ws.max_events_limit
+        );
     }
 
     #[test]
     fn resolve_args_config_overrides_defaults() {
-        let args = RunArgs::try_parse_from([
-            "acuity-index",
-            "--chain",
-            "polkadot",
-        ])
-        .unwrap();
+        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
         let spec = IndexSpec {
             name: "test".into(),
             genesis_hash: "00".repeat(32),
@@ -768,12 +855,7 @@ mod main_tests {
 
     #[test]
     fn resolve_args_invalid_db_mode() {
-        let args = RunArgs::try_parse_from([
-            "acuity-index",
-            "--chain",
-            "polkadot",
-        ])
-        .unwrap();
+        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
         let spec = test_spec();
         let opts = OptionsConfig {
             db_mode: Some("invalid".into()),
@@ -784,12 +866,7 @@ mod main_tests {
 
     #[test]
     fn resolve_args_spec_index_variant_or_with_cli() {
-        let args = RunArgs::try_parse_from([
-            "acuity-index",
-            "--chain",
-            "polkadot",
-        ])
-        .unwrap();
+        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
         let mut spec = test_spec();
         spec.index_variant = true;
         spec.store_events = true;
@@ -800,13 +877,9 @@ mod main_tests {
 
     #[test]
     fn resolve_args_spec_and_cli_both_true() {
-        let args = RunArgs::try_parse_from([
-            "acuity-index",
-            "--chain",
-            "polkadot",
-            "--index-variant",
-        ])
-        .unwrap();
+        let args =
+            RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot", "--index-variant"])
+                .unwrap();
         let mut spec = test_spec();
         spec.index_variant = true;
         let resolved = resolve_args(&args, &spec, None).unwrap();
@@ -818,7 +891,9 @@ mod main_tests {
     fn load_options_config_parses_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("options.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 url = "wss://rpc.example.com:443"
 db_mode = "high_throughput"
 queue_depth = 4
@@ -831,7 +906,9 @@ subscription_buffer_size = 512
 subscription_control_buffer_size = 2048
 idle_timeout_secs = 600
 max_events_limit = 500
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let opts = load_options_config(path.to_str().unwrap());
         assert_eq!(opts.url.as_deref(), Some("wss://rpc.example.com:443"));
         assert_eq!(opts.db_mode.as_deref(), Some("high_throughput"));

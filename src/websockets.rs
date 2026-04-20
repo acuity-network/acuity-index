@@ -94,6 +94,14 @@ fn invalid_request_response(id: u64, message: impl Into<String>) -> ResponseMess
     error_response(id, "invalid_request", message)
 }
 
+fn temporarily_unavailable_response(id: u64) -> ResponseMessage {
+    error_response(
+        id,
+        "temporarily_unavailable",
+        "node temporarily unavailable",
+    )
+}
+
 fn validate_key(key: &Key) -> Result<(), String> {
     let Key::Custom(custom) = key else {
         return Ok(());
@@ -255,7 +263,11 @@ pub fn process_msg_get_events(
     limit: u16,
     max_events_limit: usize,
 ) -> Result<ResponseBody, IndexError> {
-    let event_refs = key.get_events(trees, before.as_ref(), clamp_events_limit(limit, max_events_limit))?;
+    let event_refs = key.get_events(
+        trees,
+        before.as_ref(),
+        clamp_events_limit(limit, max_events_limit),
+    )?;
 
     let mut decoded_events = Vec::new();
     for event_ref in &event_refs {
@@ -391,7 +403,7 @@ fn process_local_msg(
 }
 
 pub async fn process_msg(
-    rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    runtime: &RuntimeState,
     trees: &Trees,
     msg: RequestMessage,
     sub_tx: &Sender<SubscriptionMessage>,
@@ -399,11 +411,20 @@ pub async fn process_msg(
     max_events_limit: usize,
 ) -> Result<ResponseMessage, IndexError> {
     let id = msg.id;
-    if let Some(response) = process_local_msg(trees, msg, sub_tx, sub_response_tx, max_events_limit) {
+    if let Some(response) = process_local_msg(trees, msg, sub_tx, sub_response_tx, max_events_limit)
+    {
         return response;
     }
 
-    let body = process_msg_variants(rpc).await?;
+    let Some(rpc) = runtime.rpc() else {
+        return Ok(temporarily_unavailable_response(id));
+    };
+
+    let body = match process_msg_variants(&rpc).await {
+        Ok(body) => body,
+        Err(err) if err.is_recoverable() => return Ok(temporarily_unavailable_response(id)),
+        Err(err) => return Err(err),
+    };
     Ok(request_id_response(id, body))
 }
 
@@ -439,7 +460,7 @@ fn service_unavailable_response(message: &str) -> HttpResponse<Option<String>> {
 // ─── Connection handler ───────────────────────────────────────────────────────
 
 async fn handle_connection(
-    rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    runtime: Arc<RuntimeState>,
     raw_stream: TcpStream,
     addr: SocketAddr,
     trees: Trees,
@@ -491,7 +512,7 @@ async fn handle_connection(
                                     _ => {}
                                 }
                                 let response = match process_msg(
-                                    &rpc,
+                                    runtime.as_ref(),
                                     &trees,
                                     request.clone(),
                                     &sub_tx,
@@ -572,7 +593,7 @@ async fn reject_connection_limit_exceeded(raw_stream: TcpStream) {
 
 pub async fn websockets_listen(
     trees: Trees,
-    rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    runtime: Arc<RuntimeState>,
     port: u16,
     mut exit_rx: Receiver<bool>,
     sub_tx: Sender<SubscriptionMessage>,
@@ -597,7 +618,7 @@ pub async fn websockets_listen(
                 };
                 let cfg = ws_config.clone();
                 tokio::spawn(handle_connection(
-                    rpc.clone(),
+                    runtime.clone(),
                     stream,
                     addr,
                     trees.clone(),
@@ -651,14 +672,22 @@ mod tests {
             _params: Option<Box<RawValue>>,
             _unsub: &'a str,
         ) -> RawRpcFuture<'a, RawRpcSubscription> {
-            Box::pin(async move {
-                panic!("unexpected RPC subscription in websocket test: {sub}")
-            })
+            Box::pin(async move { panic!("unexpected RPC subscription in websocket test: {sub}") })
         }
     }
 
     fn mock_rpc_methods() -> LegacyRpcMethods<RpcConfigFor<PolkadotConfig>> {
         LegacyRpcMethods::new(RpcClient::new(UnusedRpcClient))
+    }
+
+    fn runtime_with_rpc() -> Arc<RuntimeState> {
+        let runtime = Arc::new(RuntimeState::new(DEFAULT_WS_CONFIG.max_total_subscriptions));
+        runtime.set_rpc(Some(mock_rpc_methods()));
+        runtime
+    }
+
+    fn disconnected_runtime() -> Arc<RuntimeState> {
+        Arc::new(RuntimeState::new(DEFAULT_WS_CONFIG.max_total_subscriptions))
     }
 
     #[test]
@@ -868,7 +897,10 @@ mod tests {
 
         let bytes_prefix = bytes_key.index_prefix().unwrap().unwrap();
         let u32_prefix = u32_key.index_prefix().unwrap().unwrap();
-        let custom_prefix = Key::Custom(custom_key.clone()).index_prefix().unwrap().unwrap();
+        let custom_prefix = Key::Custom(custom_key.clone())
+            .index_prefix()
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             get_events_index(&trees.index, &bytes_prefix, None, 100).len(),
@@ -879,25 +911,13 @@ mod tests {
             100
         );
         assert_eq!(
-            get_events_index(
-                &trees.index,
-                &custom_prefix,
-                None,
-                100
-            )
-            .len(),
+            get_events_index(&trees.index, &custom_prefix, None, 100).len(),
             100
         );
 
         trees.index.insert(b"x", &[]).unwrap();
         assert_eq!(
-            get_events_index(
-                &trees.index,
-                &custom_prefix,
-                None,
-                100
-            )
-            .len(),
+            get_events_index(&trees.index, &custom_prefix, None, 100).len(),
             100
         );
     }
@@ -920,7 +940,8 @@ mod tests {
             .unwrap();
 
         let ResponseBody::Events { decoded_events, .. } =
-            process_msg_get_events(&trees, key, None, 100, DEFAULT_WS_CONFIG.max_events_limit).unwrap()
+            process_msg_get_events(&trees, key, None, 100, DEFAULT_WS_CONFIG.max_events_limit)
+                .unwrap()
         else {
             panic!("expected events response");
         };
@@ -1028,6 +1049,39 @@ mod tests {
                 DEFAULT_WS_CONFIG.max_events_limit,
             )
             .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn process_msg_returns_temporarily_unavailable_when_rpc_is_missing() {
+        let trees = temp_trees();
+        let runtime = disconnected_runtime();
+        let (sub_tx, _sub_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = mpsc::channel(1);
+
+        let response = process_msg(
+            runtime.as_ref(),
+            &trees,
+            RequestMessage {
+                id: 16,
+                body: RequestBody::Variants,
+            },
+            &sub_tx,
+            &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response,
+            ResponseMessage {
+                id: Some(16),
+                body: ResponseBody::Error(ApiError {
+                    code: "temporarily_unavailable",
+                    message: "node temporarily unavailable".into(),
+                }),
+            }
         );
     }
 
@@ -1166,7 +1220,11 @@ mod tests {
             &trees,
             RequestMessage {
                 id: 12,
-                body: RequestBody::GetEvents { key, limit: 100, before: None },
+                body: RequestBody::GetEvents {
+                    key,
+                    limit: 100,
+                    before: None,
+                },
             },
             &sub_tx,
             &response_tx,
@@ -1209,7 +1267,11 @@ mod tests {
             &trees,
             RequestMessage {
                 id: 13,
-                body: RequestBody::GetEvents { key, limit: 100, before: None },
+                body: RequestBody::GetEvents {
+                    key,
+                    limit: 100,
+                    before: None,
+                },
             },
             &sub_tx,
             &response_tx,
@@ -1284,10 +1346,11 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+        let runtime = runtime_with_rpc();
         let server = tokio::spawn(async move {
             let (stream, peer_addr) = listener.accept().await.unwrap();
             handle_connection(
-                mock_rpc_methods(),
+                runtime,
                 stream,
                 peer_addr,
                 trees,
@@ -1306,13 +1369,11 @@ mod tests {
                 .join(",")
         );
 
-        client
-            .send(Message::Text(request.into()))
-            .await
-            .unwrap();
+        client.send(Message::Text(request.into())).await.unwrap();
 
         let response = client.next().await.unwrap().unwrap();
-        let response: serde_json::Value = serde_json::from_str(response.to_text().unwrap()).unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
 
         assert_eq!(response["id"], 15);
         assert_eq!(response["type"], "error");

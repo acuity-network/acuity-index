@@ -488,6 +488,7 @@ Example when no request `id` could be recovered:
 Additional error codes currently returned by the WebSocket layer include:
 
 - `subscription_limit` when a connection exceeds the per-connection subscription cap or the global total subscription cap
+- `temporarily_unavailable` when an RPC-backed request (currently `Variants`) is made while the node connection is down and the server is reconnecting
 
 Invalid custom key payloads are returned as `invalid_request` responses, including:
 
@@ -503,6 +504,10 @@ responses or connection drops include:
 - oversized WebSocket frame or message rejected during protocol handling
 - subscription control queue saturation
 - connection idle timeout
+
+During node outages, sled-backed requests such as `Status`, `GetEvents`, and `SizeOnDisk`
+continue to work. `Variants` requires live RPC metadata and returns
+`temporarily_unavailable` until the node connection is re-established.
 
 ## Pagination Semantics
 

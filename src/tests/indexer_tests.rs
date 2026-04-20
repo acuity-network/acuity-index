@@ -852,14 +852,18 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
-            &indexer,
+            indexer.runtime_state(),
             SubscriptionMessage::SubscribeStatus { tx: tx.clone() },
         )
         .unwrap();
         indexer.notify_status_subscribers();
         assert!(rx.recv().await.is_some());
 
-        process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeStatus { tx }).unwrap();
+        process_sub_msg(
+            indexer.runtime_state(),
+            SubscriptionMessage::UnsubscribeStatus { tx },
+        )
+        .unwrap();
         indexer.notify_status_subscribers();
         assert!(rx.try_recv().is_err());
     }
@@ -874,7 +878,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx, mut rx) = mpsc::channel(1);
 
         process_sub_msg(
-            &indexer,
+            indexer.runtime_state(),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx: tx.clone(),
@@ -890,7 +894,11 @@ item_revision = { fields = ["bytes32", "u32"] }
             })
         ));
 
-        process_sub_msg(&indexer, SubscriptionMessage::UnsubscribeEvents { key, tx }).unwrap();
+        process_sub_msg(
+            indexer.runtime_state(),
+            SubscriptionMessage::UnsubscribeEvents { key, tx },
+        )
+        .unwrap();
 
         indexer
             .index_event_key(builtin_u32_key("ref_index", 42), 8, 2)
@@ -905,7 +913,11 @@ item_revision = { fields = ["bytes32", "u32"] }
         let indexer = Indexer::new_test(trees, &config);
 
         let (tx, mut rx) = mpsc::channel(1);
-        process_sub_msg(&indexer, SubscriptionMessage::SubscribeStatus { tx }).unwrap();
+        process_sub_msg(
+            indexer.runtime_state(),
+            SubscriptionMessage::SubscribeStatus { tx },
+        )
+        .unwrap();
 
         indexer.notify_status_subscribers();
         indexer.notify_status_subscribers();
@@ -927,7 +939,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let key = builtin_u32_key("ref_index", 42);
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
-            &indexer,
+            indexer.runtime_state(),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
@@ -982,13 +994,13 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx2, _rx2) = mpsc::channel(1);
 
         process_sub_msg(
-            &indexer,
+            indexer.runtime_state(),
             SubscriptionMessage::SubscribeStatus { tx: tx1 },
         )
         .unwrap();
 
         process_sub_msg(
-            &indexer,
+            indexer.runtime_state(),
             SubscriptionMessage::SubscribeStatus { tx: tx2 },
         )
         .unwrap();
@@ -996,7 +1008,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let key = builtin_u32_key("ref_index", 1);
         let (tx3, _rx3) = mpsc::channel(1);
         process_sub_msg(
-            &indexer,
+            indexer.runtime_state(),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx: tx3,
@@ -1006,7 +1018,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         let (tx4, mut rx4) = mpsc::channel(1);
         let result = process_sub_msg(
-            &indexer,
+            indexer.runtime_state(),
             SubscriptionMessage::SubscribeStatus { tx: tx4.clone() },
         );
         assert!(result.is_err());
@@ -1022,7 +1034,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         let (tx5, mut rx5) = mpsc::channel(1);
         let result = process_sub_msg(
-            &indexer,
+            indexer.runtime_state(),
             SubscriptionMessage::SubscribeEvents {
                 key: builtin_u32_key("ref_index", 2),
                 tx: tx5.clone(),

@@ -6,7 +6,7 @@ use num_format::{Locale, ToFormattedString};
 use scale_value::{Composite, Value, ValueDef};
 use serde_json::json;
 use sled::{Batch, Tree};
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, sync::Arc};
 use subxt::{
     OnlineClient, PolkadotConfig,
     client::Block,
@@ -39,9 +39,7 @@ pub struct Indexer {
     rpc: Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>,
     index_variant: bool,
     store_events: bool,
-    max_total_subscriptions: usize,
-    status_subs: Mutex<Vec<mpsc::Sender<NotificationMessage>>>,
-    events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<NotificationMessage>>>>,
+    runtime: Arc<RuntimeState>,
     /// sdk_pallets: set of pallet names using built-in SDK rules.
     sdk_pallets: std::collections::HashSet<String>,
     /// custom_index: pallet → event → params mapping from TOML.
@@ -54,7 +52,7 @@ impl Indexer {
         api: OnlineClient<PolkadotConfig>,
         rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
         config: &IndexSpec,
-        max_total_subscriptions: usize,
+        runtime: Arc<RuntimeState>,
     ) -> Self {
         Indexer {
             trees,
@@ -62,25 +60,25 @@ impl Indexer {
             rpc: Some(rpc),
             index_variant: config.index_variant,
             store_events: config.store_events,
-            max_total_subscriptions,
-            status_subs: Mutex::new(Vec::new()),
-            events_subs: Mutex::new(HashMap::new()),
+            runtime,
             sdk_pallets: config.sdk_pallets(),
             custom_index: config.build_custom_index().expect("validated index spec"),
         }
     }
 
-#[cfg(test)]
-    pub fn new_test_with_max_subs(trees: Trees, config: &IndexSpec, max_total_subscriptions: usize) -> Self {
+    #[cfg(test)]
+    pub fn new_test_with_max_subs(
+        trees: Trees,
+        config: &IndexSpec,
+        max_total_subscriptions: usize,
+    ) -> Self {
         Indexer {
             trees,
             api: None,
             rpc: None,
             index_variant: config.index_variant,
             store_events: config.store_events,
-            max_total_subscriptions,
-            status_subs: Mutex::new(Vec::new()),
-            events_subs: Mutex::new(HashMap::new()),
+            runtime: Arc::new(RuntimeState::new(max_total_subscriptions)),
             sdk_pallets: config.sdk_pallets(),
             custom_index: config.build_custom_index().expect("validated index spec"),
         }
@@ -94,12 +92,17 @@ impl Indexer {
             rpc: None,
             index_variant: config.index_variant,
             store_events: config.store_events,
-            max_total_subscriptions: WsConfig::default().max_total_subscriptions,
-            status_subs: Mutex::new(Vec::new()),
-            events_subs: Mutex::new(HashMap::new()),
+            runtime: Arc::new(RuntimeState::new(
+                WsConfig::default().max_total_subscriptions,
+            )),
             sdk_pallets: config.sdk_pallets(),
             custom_index: config.build_custom_index().expect("validated index spec"),
         }
+    }
+
+    #[cfg(test)]
+    pub fn runtime_state(&self) -> &RuntimeState {
+        self.runtime.as_ref()
     }
 
     // ─── Block indexing ───────────────────────────────────────────────────────
@@ -344,12 +347,12 @@ impl Indexer {
                 _ => unreachable!(),
             }),
         };
-        let mut subs = lock_or_recover(&self.status_subs, "status_subs");
+        let mut subs = lock_or_recover(&self.runtime.status_subs, "status_subs");
         subs.retain(|tx| keep_subscriber(tx, &msg));
     }
 
     fn notify_event_subscribers(&self, key: Key, event_ref: EventRef) {
-        let mut subs = lock_or_recover(&self.events_subs, "events_subs");
+        let mut subs = lock_or_recover(&self.runtime.events_subs, "events_subs");
         if let Some(txs) = subs.get_mut(&key) {
             let event_key = EventKey {
                 block_number: event_ref.block_number.into(),
@@ -391,9 +394,7 @@ fn is_state_pruned_error(err: &OnlineClientAtBlockError) -> bool {
         OnlineClientAtBlockError::CannotGetSpecVersion {
             reason: BackendError::Rpc(RpcError::ClientError(subxt::rpcs::Error::User(user_err))),
             ..
-        } => {
-            user_err.code == 4003 && user_err.message.contains("State already discarded")
-        }
+        } => user_err.code == 4003 && user_err.message.contains("State already discarded"),
         _ => false,
     }
 }
@@ -589,21 +590,21 @@ pub fn composite_to_json(c: &Composite<()>) -> serde_json::Value {
 
 // ─── Subscription message handler ────────────────────────────────────────────
 
-pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) -> Result<(), IndexError> {
+pub fn process_sub_msg(runtime: &RuntimeState, msg: SubscriptionMessage) -> Result<(), IndexError> {
     match msg {
         SubscriptionMessage::SubscribeStatus { tx } => {
-            let mut status_subs = lock_or_recover(&indexer.status_subs, "status_subs");
-            let events_count: usize = lock_or_recover(&indexer.events_subs, "events_subs")
+            let mut status_subs = lock_or_recover(&runtime.status_subs, "status_subs");
+            let events_count: usize = lock_or_recover(&runtime.events_subs, "events_subs")
                 .values()
                 .map(Vec::len)
                 .sum();
-            if status_subs.len() + events_count >= indexer.max_total_subscriptions {
+            if status_subs.len() + events_count >= runtime.max_total_subscriptions {
                 let _ = tx.try_send(NotificationMessage {
                     body: NotificationBody::SubscriptionTerminated {
                         reason: SubscriptionTerminationReason::Backpressure,
                         message: format!(
                             "total subscription limit exceeded: max {}",
-                            indexer.max_total_subscriptions
+                            runtime.max_total_subscriptions
                         ),
                     },
                 });
@@ -611,27 +612,26 @@ pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) -> Result<()
                     std::io::ErrorKind::ConnectionAborted,
                     format!(
                         "total subscription limit exceeded: max {}",
-                        indexer.max_total_subscriptions
+                        runtime.max_total_subscriptions
                     ),
                 )));
             }
             status_subs.push(tx);
         }
         SubscriptionMessage::UnsubscribeStatus { tx } => {
-            lock_or_recover(&indexer.status_subs, "status_subs")
-                .retain(|t| !tx.same_channel(t));
+            lock_or_recover(&runtime.status_subs, "status_subs").retain(|t| !tx.same_channel(t));
         }
         SubscriptionMessage::SubscribeEvents { key, tx } => {
-            let mut subs = lock_or_recover(&indexer.events_subs, "events_subs");
-            let status_count = lock_or_recover(&indexer.status_subs, "status_subs").len();
+            let mut subs = lock_or_recover(&runtime.events_subs, "events_subs");
+            let status_count = lock_or_recover(&runtime.status_subs, "status_subs").len();
             let current_events_count: usize = subs.values().map(Vec::len).sum();
-            if status_count + current_events_count >= indexer.max_total_subscriptions {
+            if status_count + current_events_count >= runtime.max_total_subscriptions {
                 let _ = tx.try_send(NotificationMessage {
                     body: NotificationBody::SubscriptionTerminated {
                         reason: SubscriptionTerminationReason::Backpressure,
                         message: format!(
                             "total subscription limit exceeded: max {}",
-                            indexer.max_total_subscriptions
+                            runtime.max_total_subscriptions
                         ),
                     },
                 });
@@ -639,14 +639,14 @@ pub fn process_sub_msg(indexer: &Indexer, msg: SubscriptionMessage) -> Result<()
                     std::io::ErrorKind::ConnectionAborted,
                     format!(
                         "total subscription limit exceeded: max {}",
-                        indexer.max_total_subscriptions
+                        runtime.max_total_subscriptions
                     ),
                 )));
             }
             subs.entry(key).or_default().push(tx);
         }
         SubscriptionMessage::UnsubscribeEvents { key, tx } => {
-            let mut subs = lock_or_recover(&indexer.events_subs, "events_subs");
+            let mut subs = lock_or_recover(&runtime.events_subs, "events_subs");
             if let Some(txs) = subs.get_mut(&key) {
                 txs.retain(|t| !tx.same_channel(t));
             }
@@ -992,8 +992,7 @@ pub async fn run_indexer(
     finalized: bool,
     queue_depth: u32,
     mut exit_rx: watch::Receiver<bool>,
-    mut sub_rx: mpsc::Receiver<SubscriptionMessage>,
-    ws_config: WsConfig,
+    runtime: Arc<RuntimeState>,
 ) -> Result<(), IndexError> {
     let index_variant = spec.index_variant;
     let store_events = spec.store_events;
@@ -1038,13 +1037,7 @@ pub async fn run_indexer(
 
     let mut spans = load_spans(&trees.span, &spec.versions, index_variant, store_events)?;
 
-    let indexer = Indexer::new(
-        trees.clone(),
-        api,
-        rpc,
-        &spec,
-        ws_config.max_total_subscriptions,
-    );
+    let indexer = Indexer::new(trees.clone(), api, rpc, &spec, runtime);
 
     let mut current_span =
         if let Some(span) = spans.last().filter(|s| Some(s.end) == next_batch_block) {
@@ -1116,146 +1109,9 @@ pub async fn run_indexer(
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         tokio::select! {
-            biased;
+                    biased;
 
-            _ = exit_rx.changed() => {
-                save_current_span(
-                    &trees,
-                    &current_span,
-                    versions_len,
-                    index_variant,
-                    store_events,
-                )?;
-                return Ok(());
-            }
-
-            Some(msg) = sub_rx.recv() => {
-                if let Err(err) = process_sub_msg(&indexer, msg) {
-                    error!("Subscription rejected: {err}");
-                }
-            }
-
-            result = &mut head_sub_future => {
-                let block_number = match result {
-                    Ok(block_number) => block_number,
-Err(IndexError::BlockStreamClosed) => {
-                    info!("Node block stream closed; will attempt reconnection.");
-                    save_current_span(
-                        &trees,
-                        &current_span,
-                        versions_len,
-                        index_variant,
-                        store_events,
-                    )?;
-                    return Err(IndexError::BlockStreamClosed);
-                }
-                Err(err) => {
-                    error!("Head subscription error: {err}");
-                    save_current_span(
-                        &trees,
-                        &current_span,
-                        versions_len,
-                        index_variant,
-                        store_events,
-                    )?;
-                    return Err(err);
-                }
-                };
-                latest_seen_head = latest_seen_head.max(block_number);
-                queue_head_blocks(
-                    &mut head_futures,
-                    queue_depth,
-                    &mut next_head_to_queue,
-                    latest_seen_head,
-                    &indexer,
-                );
-                drop(head_sub_future);
-                head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
-            }
-
-            (result, idx, _) = async { future::select_all(&mut head_futures).await }, if !head_futures.is_empty() => {
-                if let Err(err) = process_queued_head_result(
-                    &trees,
-                    &mut current_span,
-                    versions_len,
-                    index_variant,
-                    store_events,
-                    &indexer,
-                    &mut head_orphans,
-                    result,
-                ) {
-                    save_current_span(&trees, &current_span, versions_len, index_variant, store_events)?;
-                    return Err(err);
-                }
-                drop(head_futures.swap_remove(idx));
-                queue_head_blocks(
-                    &mut head_futures,
-                    queue_depth,
-                    &mut next_head_to_queue,
-                    latest_seen_head,
-                    &indexer,
-                );
-            }
-
-            _ = interval.tick() => {
-                let now = Instant::now();
-                let micros = now.duration_since(stats_start).as_micros();
-                if micros != 0 && next_batch_block.is_some() {
-                    let rate = |n: u32| -> u128 {
-                        u128::from(n) * 1_000_000 / micros
-                    };
-                    info!(
-                        "📚 Backfilled to #{}: {} blocks/s, {} events/s, {} keys/s",
-                        current_span.start.to_formatted_string(&Locale::en),
-                        rate(stats_blocks).to_formatted_string(&Locale::en),
-                        rate(stats_events).to_formatted_string(&Locale::en),
-                        rate(stats_keys).to_formatted_string(&Locale::en),
-                    );
-                }
-                stats_blocks = 0;
-                stats_events = 0;
-                stats_keys = 0;
-                stats_start = now;
-            }
-
-            (result, idx, _) = async { future::select_all(&mut futures).await }, if !futures.is_empty() => {
-                match result {
-                    Ok((block_number, event_count, key_count)) => {
-                        if block_number == 0 {
-                            next_batch_block = None;
-                            continue;
-                        }
-                        let reached_genesis = advance_backfill_start(
-                            &mut current_span,
-                            &mut spans,
-                            &trees.span,
-                            &mut orphans,
-                            block_number,
-                        )?;
-                        if reached_genesis {
-                            next_batch_block = None;
-                            info!(
-                                "📚 Genesis reached: indexed span #{} to #{}",
-                                current_span.start.to_formatted_string(&Locale::en),
-                                current_span.end.to_formatted_string(&Locale::en),
-                            );
-                        }
-                        debug!(
-                            "📚 Backfill #{}: {} events, {} keys",
-                            block_number.to_formatted_string(&Locale::en),
-                            event_count.to_formatted_string(&Locale::en),
-                            key_count.to_formatted_string(&Locale::en)
-                        );
-                        stats_blocks += 1;
-                        stats_events += event_count;
-                        stats_keys += key_count;
-                    }
-                    Err(IndexError::BlockNotFound(n)) => {
-                        error!("📚 Block not found #{n}");
-                        futures.clear();
-                        continue;
-                    }
-                    Err(IndexError::StatePruningMisconfigured { block_number }) => {
+                    _ = exit_rx.changed() => {
                         save_current_span(
                             &trees,
                             &current_span,
@@ -1263,18 +1119,149 @@ Err(IndexError::BlockStreamClosed) => {
                             index_variant,
                             store_events,
                         )?;
-                        return Err(IndexError::StatePruningMisconfigured { block_number });
+                        return Ok(());
                     }
-                    Err(err) => {
-                        error!("📚 Batch error: {err:?}");
-                        futures.clear();
-                        continue;
+
+                    result = &mut head_sub_future => {
+                        let block_number = match result {
+                            Ok(block_number) => block_number,
+        Err(IndexError::BlockStreamClosed) => {
+                            info!("Node block stream closed; will attempt reconnection.");
+                            save_current_span(
+                                &trees,
+                                &current_span,
+                                versions_len,
+                                index_variant,
+                                store_events,
+                            )?;
+                            return Err(IndexError::BlockStreamClosed);
+                        }
+                        Err(err) => {
+                            error!("Head subscription error: {err}");
+                            save_current_span(
+                                &trees,
+                                &current_span,
+                                versions_len,
+                                index_variant,
+                                store_events,
+                            )?;
+                            return Err(err);
+                        }
+                        };
+                        latest_seen_head = latest_seen_head.max(block_number);
+                        queue_head_blocks(
+                            &mut head_futures,
+                            queue_depth,
+                            &mut next_head_to_queue,
+                            latest_seen_head,
+                            &indexer,
+                        );
+                        drop(head_sub_future);
+                        head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
+                    }
+
+                    (result, idx, _) = async { future::select_all(&mut head_futures).await }, if !head_futures.is_empty() => {
+                        if let Err(err) = process_queued_head_result(
+                            &trees,
+                            &mut current_span,
+                            versions_len,
+                            index_variant,
+                            store_events,
+                            &indexer,
+                            &mut head_orphans,
+                            result,
+                        ) {
+                            save_current_span(&trees, &current_span, versions_len, index_variant, store_events)?;
+                            return Err(err);
+                        }
+                        drop(head_futures.swap_remove(idx));
+                        queue_head_blocks(
+                            &mut head_futures,
+                            queue_depth,
+                            &mut next_head_to_queue,
+                            latest_seen_head,
+                            &indexer,
+                        );
+                    }
+
+                    _ = interval.tick() => {
+                        let now = Instant::now();
+                        let micros = now.duration_since(stats_start).as_micros();
+                        if micros != 0 && next_batch_block.is_some() {
+                            let rate = |n: u32| -> u128 {
+                                u128::from(n) * 1_000_000 / micros
+                            };
+                            info!(
+                                "📚 Backfilled to #{}: {} blocks/s, {} events/s, {} keys/s",
+                                current_span.start.to_formatted_string(&Locale::en),
+                                rate(stats_blocks).to_formatted_string(&Locale::en),
+                                rate(stats_events).to_formatted_string(&Locale::en),
+                                rate(stats_keys).to_formatted_string(&Locale::en),
+                            );
+                        }
+                        stats_blocks = 0;
+                        stats_events = 0;
+                        stats_keys = 0;
+                        stats_start = now;
+                    }
+
+                    (result, idx, _) = async { future::select_all(&mut futures).await }, if !futures.is_empty() => {
+                        match result {
+                            Ok((block_number, event_count, key_count)) => {
+                                if block_number == 0 {
+                                    next_batch_block = None;
+                                    continue;
+                                }
+                                let reached_genesis = advance_backfill_start(
+                                    &mut current_span,
+                                    &mut spans,
+                                    &trees.span,
+                                    &mut orphans,
+                                    block_number,
+                                )?;
+                                if reached_genesis {
+                                    next_batch_block = None;
+                                    info!(
+                                        "📚 Genesis reached: indexed span #{} to #{}",
+                                        current_span.start.to_formatted_string(&Locale::en),
+                                        current_span.end.to_formatted_string(&Locale::en),
+                                    );
+                                }
+                                debug!(
+                                    "📚 Backfill #{}: {} events, {} keys",
+                                    block_number.to_formatted_string(&Locale::en),
+                                    event_count.to_formatted_string(&Locale::en),
+                                    key_count.to_formatted_string(&Locale::en)
+                                );
+                                stats_blocks += 1;
+                                stats_events += event_count;
+                                stats_keys += key_count;
+                            }
+                            Err(IndexError::BlockNotFound(n)) => {
+                                error!("📚 Block not found #{n}");
+                                futures.clear();
+                                continue;
+                            }
+                            Err(IndexError::StatePruningMisconfigured { block_number }) => {
+                                save_current_span(
+                                    &trees,
+                                    &current_span,
+                                    versions_len,
+                                    index_variant,
+                                    store_events,
+                                )?;
+                                return Err(IndexError::StatePruningMisconfigured { block_number });
+                            }
+                            Err(err) => {
+                                error!("📚 Batch error: {err:?}");
+                                futures.clear();
+                                continue;
+                            }
+                        }
+                        drop(futures.swap_remove(idx));
+                        queue_next_backfill_block(&mut futures, &spans, &mut next_batch_block, &indexer);
                     }
                 }
-                drop(futures.swap_remove(idx));
-                queue_next_backfill_block(&mut futures, &spans, &mut next_batch_block, &indexer);
-            }
-        }
     }
 }
 
@@ -1296,7 +1283,15 @@ mod tests {
         toml::from_str(crate::config::POLKADOT_TOML).unwrap()
     }
 
-    fn test_indexer(trees: Trees, store_events: bool) -> Indexer {
+    fn test_runtime(max_total_subscriptions: usize) -> Arc<RuntimeState> {
+        Arc::new(RuntimeState::new(max_total_subscriptions))
+    }
+
+    fn test_indexer_with_runtime(
+        trees: Trees,
+        store_events: bool,
+        runtime: Arc<RuntimeState>,
+    ) -> Indexer {
         let config = test_config();
         Indexer {
             trees,
@@ -1304,12 +1299,18 @@ mod tests {
             rpc: None,
             index_variant: config.index_variant,
             store_events,
-            max_total_subscriptions: WsConfig::default().max_total_subscriptions,
-            status_subs: Mutex::new(Vec::new()),
-            events_subs: Mutex::new(HashMap::new()),
+            runtime,
             sdk_pallets: config.sdk_pallets(),
             custom_index: config.build_custom_index().expect("validated index spec"),
         }
+    }
+
+    fn test_indexer(trees: Trees, store_events: bool) -> Indexer {
+        test_indexer_with_runtime(
+            trees,
+            store_events,
+            test_runtime(WsConfig::default().max_total_subscriptions),
+        )
     }
 
     fn u128_value(value: u128) -> Value<()> {
@@ -1827,7 +1828,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
-            &indexer,
+            indexer.runtime.as_ref(),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
@@ -1862,7 +1863,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
-            &indexer,
+            indexer.runtime.as_ref(),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
@@ -1888,6 +1889,42 @@ mod tests {
             }
         );
         assert!(decoded_event.is_none());
+    }
+
+    #[tokio::test]
+    async fn subscriptions_survive_replacing_the_indexer_instance() {
+        let trees = temp_trees();
+        let runtime = test_runtime(WsConfig::default().max_total_subscriptions);
+        let first_indexer = test_indexer_with_runtime(trees.clone(), true, runtime.clone());
+        let key = Key::Custom(CustomKey {
+            name: "ref_index".into(),
+            value: CustomValue::U32(42),
+        });
+
+        let (tx, mut rx) = mpsc::channel(1);
+        process_sub_msg(
+            first_indexer.runtime.as_ref(),
+            SubscriptionMessage::SubscribeEvents {
+                key: key.clone(),
+                tx,
+            },
+        )
+        .unwrap();
+
+        let replacement_indexer = test_indexer_with_runtime(trees, true, runtime);
+        replacement_indexer.index_event_key(key, 9, 2).unwrap();
+
+        let NotificationBody::EventNotification { event, .. } = rx.recv().await.unwrap().body
+        else {
+            panic!("expected event notification");
+        };
+        assert_eq!(
+            event,
+            EventRef {
+                block_number: 9,
+                event_index: 2,
+            }
+        );
     }
 
     #[test]
@@ -1964,7 +2001,7 @@ count = "u32"
         let (tx, _rx) = mpsc::channel(1);
 
         process_sub_msg(
-            &indexer,
+            indexer.runtime.as_ref(),
             SubscriptionMessage::UnsubscribeEvents {
                 key: Key::Custom(CustomKey {
                     name: "ref_index".into(),

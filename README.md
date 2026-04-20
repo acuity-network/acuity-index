@@ -134,9 +134,11 @@ Without `--state-pruning archive-canonical`, the node may still serve recent hea
 Clean shutdown happens in two cases:
 
 - the process receives a termination signal
-- the upstream node closes the live block stream, such as when the node exits
+- a fatal startup/runtime error forces the process to exit
 
-In both cases the process logs the shutdown reason, stops the WebSocket server, flushes sled, and exits cleanly instead of panicking.
+If the upstream node closes the live block stream or the RPC connection drops, `acuity-index` saves the active span, keeps the WebSocket server running for sled-backed reads and existing subscriptions, and reconnects with exponential backoff instead of exiting. RPC-backed requests such as `Variants` return a temporary-unavailable error until the node comes back.
+
+On actual shutdown, the process logs the shutdown reason, stops the WebSocket server, flushes sled, and exits cleanly instead of panicking.
 
 Startup failures such as invalid cache-size configuration, genesis-hash mismatches, database open errors, RPC initialization failures, and signal-registration failures are also reported as structured errors and logged before the process exits.
 

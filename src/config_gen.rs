@@ -451,9 +451,7 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
                     out.push_str(&inline_string(scalar_kind_name(kind))?);
                 }
                 CustomKeyConfig::Composite(cfg) => {
-                    out.push_str("{ kind = ");
-                    out.push_str(&inline_string("composite")?);
-                    out.push_str(", fields = [");
+                    out.push_str("{ fields = [");
                     for (index, field_kind) in cfg.fields.iter().enumerate() {
                         if index > 0 {
                             out.push_str(", ");
@@ -759,6 +757,12 @@ mod tests {
                     "revision_id".into(),
                     CustomKeyConfig::Scalar(ScalarKind::U32),
                 ),
+                (
+                    "item_revision".into(),
+                    CustomKeyConfig::Composite(crate::config::CompositeKeyConfig {
+                        fields: vec![ScalarKind::Bytes32, ScalarKind::U32],
+                    }),
+                ),
             ]),
             pallets: vec![PalletConfig {
                 name: "Content".into(),
@@ -802,6 +806,12 @@ mod tests {
                                 key: "revision_id".into(),
                                 multi: false,
                             },
+                            ParamConfig {
+                                field: None,
+                                fields: vec!["item_id".into(), "revision_id".into()],
+                                key: "item_revision".into(),
+                                multi: false,
+                            },
                         ],
                     },
                 ],
@@ -810,11 +820,15 @@ mod tests {
 
         let toml = render_index_spec_toml(&spec).unwrap();
 
-        assert!(toml.contains("[custom_keys]\nitem_id = \"bytes32\"\nrevision_id = \"u32\"\n"));
+        assert!(toml.contains("item_id = \"bytes32\""));
+        assert!(toml.contains("item_revision = { fields = [\"bytes32\", \"u32\"] }"));
+        assert!(toml.contains("revision_id = \"u32\""));
+        assert!(!toml.contains("kind = \"composite\""));
         assert!(toml.contains("[[pallets]]\nname = \"Content\"\nevents = ["));
         assert!(toml.contains("{ name = \"PublishItem\", params = ["));
         assert!(toml.contains("{ field = \"item_id\", key = \"item_id\" }"));
         assert!(toml.contains("{ field = \"owner\", key = \"account_id\" }"));
         assert!(toml.contains("{ name = \"PublishRevision\", params = ["));
+        assert!(toml.contains("{ fields = [\"item_id\", \"revision_id\"], key = \"item_revision\" }"));
     }
 }

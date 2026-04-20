@@ -489,12 +489,19 @@ Additional error codes currently returned by the WebSocket layer include:
 
 - `subscription_limit` when a connection exceeds the per-connection subscription cap or the global total subscription cap
 
+Invalid custom key payloads are returned as `invalid_request` responses, including:
+
+- custom key names longer than `128` bytes
+- custom string values longer than `1024` bytes
+- composite keys with more than `64` elements
+- composite keys nested deeper than `8` composite levels
+- custom values whose encoded key payload exceeds `16384` bytes
+
 Operational failure modes that may also appear as request-scoped `internal_error`
 responses or connection drops include:
 
 - oversized WebSocket frame or message rejected during protocol handling
 - subscription control queue saturation
-- oversized custom key name or custom string key value
 - connection idle timeout
 
 ## Pagination Semantics
@@ -550,6 +557,12 @@ Supported scalar kinds:
 - `string`: JSON string
 - `bool`: JSON boolean
 
+Composite keys are encoded recursively and must satisfy these protocol-level limits:
+
+- max composite elements per composite value: `64`
+- max composite nesting depth: `8`
+- max encoded custom value size: `16384` bytes
+
 ## Storage Notes
 
 When `--store-events` is enabled, decoded events are stored individually under `(block_number, event_index)`.
@@ -594,3 +607,6 @@ Protocol-level limits (not configurable at runtime):
 - max WebSocket frame size: `64 KiB`
 - max custom key name length: `128` bytes
 - max custom string key length: `1024` bytes
+- max composite elements per composite value: `64`
+- max composite nesting depth: `8`
+- max encoded custom value size: `16384` bytes

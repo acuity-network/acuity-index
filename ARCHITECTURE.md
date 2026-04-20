@@ -364,7 +364,9 @@ Current WebSocket-side safeguards:
 - subscribe/unsubscribe forwarding uses bounded backpressure rather than unbounded buffering
 - per-connection subscriptions are capped (configurable: `--max-subscriptions-per-connection`)
 - total subscriptions across all connections are capped (configurable: `--max-total-subscriptions`)
-- oversized custom key names and string values are rejected before subscription registration or sled scans
+- invalid custom key payloads are rejected with request-scoped `invalid_request` responses before subscription registration or sled scans
+- custom key names are limited to `128` bytes and string values to `1024` bytes
+- composite values are limited to `64` elements, `8` nesting levels, and `16384` encoded bytes
 - idle connections are disconnected automatically (configurable: `--idle-timeout-secs`)
 - malformed persisted event/span index records are skipped during reads instead of crashing the server
 

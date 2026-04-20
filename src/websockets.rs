@@ -90,63 +90,70 @@ fn request_id_response(id: u64, body: ResponseBody) -> ResponseMessage {
     ResponseMessage { id: Some(id), body }
 }
 
-fn validate_key(key: &Key) -> Result<(), IndexError> {
+fn invalid_request_response(id: u64, message: impl Into<String>) -> ResponseMessage {
+    error_response(id, "invalid_request", message)
+}
+
+fn validate_key(key: &Key) -> Result<(), String> {
     let Key::Custom(custom) = key else {
         return Ok(());
     };
 
     let name_len = custom.name.len();
     if name_len > MAX_CUSTOM_KEY_NAME_BYTES {
-        return Err(disconnect_error(format!(
+        return Err(format!(
             "custom key name exceeds {MAX_CUSTOM_KEY_NAME_BYTES} bytes: {name_len}"
-        )));
+        ));
     }
 
-    if let CustomValue::String(value) = &custom.value {
-        let value_len = value.len();
-        if value_len > MAX_CUSTOM_STRING_VALUE_BYTES {
-            return Err(disconnect_error(format!(
-                "custom string key value exceeds {MAX_CUSTOM_STRING_VALUE_BYTES} bytes: {value_len}"
-            )));
-        }
+    let encoded_len = validate_custom_value(&custom.value, 0)?;
+    if encoded_len > MAX_CUSTOM_VALUE_BYTES {
+        return Err(format!(
+            "custom key encoded value exceeds {MAX_CUSTOM_VALUE_BYTES} bytes: {encoded_len} bytes"
+        ));
     }
-
-    validate_custom_value(&custom.value, 0)?;
 
     Ok(())
 }
 
-fn validate_custom_value(value: &CustomValue, depth: usize) -> Result<(), IndexError> {
+fn validate_custom_value(value: &CustomValue, depth: usize) -> Result<usize, String> {
     if depth > MAX_COMPOSITE_DEPTH {
-        return Err(disconnect_error(format!(
+        return Err(format!(
             "composite key nesting exceeds max depth {MAX_COMPOSITE_DEPTH}"
-        )));
+        ));
     }
 
     match value {
         CustomValue::Composite(values) => {
             if values.len() > MAX_COMPOSITE_ELEMENTS {
-                return Err(disconnect_error(format!(
+                return Err(format!(
                     "composite key has {} elements, max is {MAX_COMPOSITE_ELEMENTS}",
                     values.len()
-                )));
+                ));
             }
-            for v in values {
-                validate_custom_value(v, depth + 1)?;
-            }
-        }
-        _ => {}
-    }
 
-    match value.db_bytes() {
-        Ok(bytes) if bytes.len() > MAX_CUSTOM_VALUE_BYTES => {
-            Err(disconnect_error(format!(
-                "custom key encoded value exceeds {MAX_CUSTOM_VALUE_BYTES} bytes: {} bytes",
-                bytes.len()
-            )))
+            let mut encoded_len = 2usize;
+            for v in values {
+                let value_len = validate_custom_value(v, depth + 1)?;
+                encoded_len += 1 + 4 + value_len;
+            }
+
+            Ok(encoded_len)
         }
-        Err(err) => Err(err),
-        Ok(_) => Ok(()),
+        CustomValue::Bytes32(_) => Ok(32),
+        CustomValue::U32(_) => Ok(4),
+        CustomValue::U64(_) => Ok(8),
+        CustomValue::U128(_) => Ok(16),
+        CustomValue::String(value) => {
+            let value_len = value.len();
+            if value_len > MAX_CUSTOM_STRING_VALUE_BYTES {
+                return Err(format!(
+                    "custom string key value exceeds {MAX_CUSTOM_STRING_VALUE_BYTES} bytes: {value_len}"
+                ));
+            }
+            Ok(value_len)
+        }
+        CustomValue::Bool(_) => Ok(1),
     }
 }
 
@@ -324,7 +331,7 @@ fn process_local_msg(
         RequestBody::Variants => return None,
         RequestBody::GetEvents { key, limit, before } => {
             if let Err(err) = validate_key(&key) {
-                return Some(Err(err));
+                return Some(Ok(invalid_request_response(msg.id, err)));
             }
             match process_msg_get_events(trees, key, before, limit, max_events_limit) {
                 Ok(body) => request_id_response(msg.id, body),
@@ -333,7 +340,7 @@ fn process_local_msg(
         }
         RequestBody::SubscribeEvents { key } => {
             if let Err(err) = validate_key(&key) {
-                return Some(Err(err));
+                return Some(Ok(invalid_request_response(msg.id, err)));
             }
             if let Err(err) = enqueue_subscription_message(
                 sub_tx,
@@ -354,7 +361,7 @@ fn process_local_msg(
         }
         RequestBody::UnsubscribeEvents { key } => {
             if let Err(err) = validate_key(&key) {
-                return Some(Err(err));
+                return Some(Ok(invalid_request_response(msg.id, err)));
             }
             if let Err(err) = enqueue_subscription_message(
                 sub_tx,
@@ -606,6 +613,11 @@ pub async fn websockets_listen(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{SinkExt, StreamExt};
+    use std::sync::Arc;
+    use subxt::rpcs::client::{RawRpcFuture, RawRpcSubscription, RawValue, RpcClient, RpcClientT};
+    use tokio::sync::Semaphore;
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     const DEFAULT_WS_CONFIG: WsConfig = WsConfig {
         max_connections: 1024,
@@ -620,6 +632,33 @@ mod tests {
     fn temp_trees() -> Trees {
         let db_config = sled::Config::new().temporary(true);
         Trees::open(db_config).unwrap()
+    }
+
+    struct UnusedRpcClient;
+
+    impl RpcClientT for UnusedRpcClient {
+        fn request_raw<'a>(
+            &'a self,
+            method: &'a str,
+            _params: Option<Box<RawValue>>,
+        ) -> RawRpcFuture<'a, Box<RawValue>> {
+            Box::pin(async move { panic!("unexpected RPC request in websocket test: {method}") })
+        }
+
+        fn subscribe_raw<'a>(
+            &'a self,
+            sub: &'a str,
+            _params: Option<Box<RawValue>>,
+            _unsub: &'a str,
+        ) -> RawRpcFuture<'a, RawRpcSubscription> {
+            Box::pin(async move {
+                panic!("unexpected RPC subscription in websocket test: {sub}")
+            })
+        }
+    }
+
+    fn mock_rpc_methods() -> LegacyRpcMethods<RpcConfigFor<PolkadotConfig>> {
+        LegacyRpcMethods::new(RpcClient::new(UnusedRpcClient))
     }
 
     #[test]
@@ -1057,8 +1096,18 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            matches!(result, Err(IndexError::Io(err)) if err.kind() == std::io::ErrorKind::ConnectionAborted)
+        assert_eq!(
+            result.unwrap(),
+            ResponseMessage {
+                id: Some(10),
+                body: ResponseBody::Error(ApiError {
+                    code: "invalid_request",
+                    message: format!(
+                        "custom key name exceeds {MAX_CUSTOM_KEY_NAME_BYTES} bytes: {}",
+                        MAX_CUSTOM_KEY_NAME_BYTES + 1
+                    ),
+                }),
+            }
         );
     }
 
@@ -1084,8 +1133,18 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            matches!(result, Err(IndexError::Io(err)) if err.kind() == std::io::ErrorKind::ConnectionAborted)
+        assert_eq!(
+            result.unwrap(),
+            ResponseMessage {
+                id: Some(11),
+                body: ResponseBody::Error(ApiError {
+                    code: "invalid_request",
+                    message: format!(
+                        "custom string key value exceeds {MAX_CUSTOM_STRING_VALUE_BYTES} bytes: {}",
+                        MAX_CUSTOM_STRING_VALUE_BYTES + 1
+                    ),
+                }),
+            }
         );
     }
 
@@ -1115,8 +1174,18 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            matches!(result, Err(IndexError::Io(err)) if err.kind() == std::io::ErrorKind::ConnectionAborted)
+        assert_eq!(
+            result.unwrap(),
+            ResponseMessage {
+                id: Some(12),
+                body: ResponseBody::Error(ApiError {
+                    code: "invalid_request",
+                    message: format!(
+                        "composite key has {} elements, max is {MAX_COMPOSITE_ELEMENTS}",
+                        MAX_COMPOSITE_ELEMENTS + 1
+                    ),
+                }),
+            }
         );
     }
 
@@ -1148,8 +1217,115 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            matches!(result, Err(IndexError::Io(err)) if err.kind() == std::io::ErrorKind::ConnectionAborted)
+        assert_eq!(
+            result.unwrap(),
+            ResponseMessage {
+                id: Some(13),
+                body: ResponseBody::Error(ApiError {
+                    code: "invalid_request",
+                    message: format!(
+                        "composite key nesting exceeds max depth {MAX_COMPOSITE_DEPTH}"
+                    ),
+                }),
+            }
         );
+    }
+
+    #[test]
+    fn process_local_msg_rejects_oversized_encoded_composite_value() {
+        let trees = temp_trees();
+        let (sub_tx, _sub_rx) = mpsc::channel(1);
+        let (response_tx, _) = mpsc::channel(1);
+        let string_len = 252usize;
+        let encoded_len = 2 + MAX_COMPOSITE_ELEMENTS * (1 + 4 + string_len);
+        let key = Key::Custom(CustomKey {
+            name: "too_big".into(),
+            value: CustomValue::Composite(
+                (0..MAX_COMPOSITE_ELEMENTS)
+                    .map(|_| CustomValue::String("x".repeat(string_len)))
+                    .collect(),
+            ),
+        });
+
+        let result = process_local_msg(
+            &trees,
+            RequestMessage {
+                id: 14,
+                body: RequestBody::GetEvents {
+                    key,
+                    limit: 100,
+                    before: None,
+                },
+            },
+            &sub_tx,
+            &response_tx,
+            DEFAULT_WS_CONFIG.max_events_limit,
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.unwrap(),
+            ResponseMessage {
+                id: Some(14),
+                body: ResponseBody::Error(ApiError {
+                    code: "invalid_request",
+                    message: format!(
+                        "custom key encoded value exceeds {MAX_CUSTOM_VALUE_BYTES} bytes: {encoded_len} bytes"
+                    ),
+                }),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_request_returns_invalid_request_for_malicious_composite() {
+        let trees = temp_trees();
+        let (sub_tx, _sub_rx) = mpsc::channel(4);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, peer_addr) = listener.accept().await.unwrap();
+            handle_connection(
+                mock_rpc_methods(),
+                stream,
+                peer_addr,
+                trees,
+                sub_tx,
+                permit,
+                DEFAULT_WS_CONFIG,
+            )
+            .await
+        });
+
+        let (mut client, _) = connect_async(format!("ws://{addr}")).await.unwrap();
+        let request = format!(
+            r#"{{"id":15,"type":"GetEvents","key":{{"type":"Custom","value":{{"name":"too_many","kind":"composite","value":[{}]}}}},"limit":100}}"#,
+            std::iter::repeat_n(r#"{"kind":"u32","value":1}"#, MAX_COMPOSITE_ELEMENTS + 1)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        client
+            .send(Message::Text(request.into()))
+            .await
+            .unwrap();
+
+        let response = client.next().await.unwrap().unwrap();
+        let response: serde_json::Value = serde_json::from_str(response.to_text().unwrap()).unwrap();
+
+        assert_eq!(response["id"], 15);
+        assert_eq!(response["type"], "error");
+        assert_eq!(response["data"]["code"], "invalid_request");
+        assert_eq!(
+            response["data"]["message"],
+            format!(
+                "composite key has {} elements, max is {MAX_COMPOSITE_ELEMENTS}",
+                MAX_COMPOSITE_ELEMENTS + 1
+            )
+        );
+
+        client.close(None).await.unwrap();
+        assert!(server.await.unwrap().is_ok());
     }
 }

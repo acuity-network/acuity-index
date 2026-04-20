@@ -1,3 +1,5 @@
 /target
+/runtime/target
+/runtime/pallets/synthetic/target
 repomix-output.xml
 /.opencode

@@ -1,0 +1,42 @@
+name = "synthetic-runtime"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+default_url = "ws://127.0.0.1:9944"
+store_events = true
+versions = [0]
+
+[custom_keys]
+record_id = "u32"
+topic = "u32"
+digest = "bytes32"
+batch_id = "u32"
+seq = "u32"
+
+[[pallets]]
+name = "Balances"
+sdk = true
+
+[[pallets]]
+name = "TransactionPayment"
+sdk = true
+
+[[pallets]]
+name = "Synthetic"
+events = [
+  { name = "RecordStored", params = [
+    { field = "record_id", key = "record_id" },
+    { field = "owner", key = "account_id" },
+    { field = "digest", key = "digest" },
+    { field = "topics", key = "topic", multi = true },
+  ] },
+  { name = "LinksStored", params = [
+    { field = "record_id", key = "record_id" },
+    { field = "related_ids", key = "record_id", multi = true },
+    { field = "related_digests", key = "digest", multi = true },
+  ] },
+  { name = "BurstEmitted", params = [
+    { field = "batch_id", key = "batch_id" },
+    { field = "seq", key = "seq" },
+    { field = "owner", key = "account_id" },
+    { field = "digest", key = "digest" },
+  ] },
+]

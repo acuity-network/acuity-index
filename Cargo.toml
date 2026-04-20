@@ -30,6 +30,7 @@ signal-hook = "0.4"
 signal-hook-tokio = { version = "0.4", features = ["futures-v0_3"] }
 sled = "0.34"
 subxt = "0.50.0"
+subxt-signer = "0.50.0"
 thiserror = { version = "2", default-features = false }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.29.0"

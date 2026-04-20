@@ -38,6 +38,7 @@ Any Substrate chain can be supported by providing a custom index specification T
 - Rust **stable** (see `rust-toolchain.toml`)
 - A running Substrate node with WebSocket RPC enabled
 - The node must be started with `--state-pruning archive-canonical`
+- `polkadot-omni-node` if you want to use the in-repo synthetic runtime for local integration tests and benchmarks
 
 ## Installation
 
@@ -106,6 +107,49 @@ Generate a starter index specification from a live node:
 
 ```bash
 acuity-index generate-index-spec --url wss://mynode:443 ./chains/mychain.toml
+```
+
+## Local Synthetic Devnet
+
+This repository now includes a minimal in-repo Polkadot SDK runtime under `runtime/` and a matching local index spec template in `chains/synthetic.toml`.
+
+The synthetic runtime is intentionally small and deterministic:
+
+- one custom `Synthetic` pallet emits searchable `u32`, `bytes32`, `account_id`, and multi-value event fields
+- `Balances` and `TransactionPayment` remain present so built-in SDK event indexing is exercised too
+- the recommended local workflow uses `polkadot-omni-node` with `--instant-seal`, which makes transaction seeding deterministic and keeps benchmark tip targets fixed after seeding
+
+Useful recipes:
+
+```bash
+# build the in-repo runtime and emit a chain spec for omni-node
+just runtime-chain-spec
+
+# run the synthetic dev node locally
+just synthetic-node
+
+# seed a small deterministic dataset for integration testing
+just seed-smoke
+
+# run the ignored node-backed integration test
+just test-integration
+
+# seed many event-dense blocks and benchmark end-to-end indexing throughput
+just benchmark-indexing
+```
+
+The benchmark recipe reports wall-clock throughput for indexing the seeded chain from an empty database. The reported event rate is based on the synthetic pallet events submitted by the seeder.
+
+`just` recipe overrides are positional here. To change the benchmark inputs, use:
+
+```bash
+just benchmark-indexing <rpc_port> <queue_depth> <batch_start> <batches> <burst_count>
+```
+
+For example:
+
+```bash
+just benchmark-indexing 9944 8 1000 200 64
 ```
 
 `generate-index-spec` currently requires runtime metadata v14 or higher.

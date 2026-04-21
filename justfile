@@ -38,6 +38,7 @@ test-integration:
 
 benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='100' burst_count='64':
     #!/usr/bin/env bash
+    set -euo pipefail
     command -v polkadot-omni-node >/dev/null
     just runtime-chain-spec
     cargo build --bins

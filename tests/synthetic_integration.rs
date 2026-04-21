@@ -14,8 +14,8 @@ use std::{
 
 use common::{
     ConfigOverrides, IndexerOptions, SyntheticStack, WsClient, build_chain_spec,
-    build_runtime_release, read_text, run_bulk_seeder, run_smoke_seeder, start_indexer,
-    start_node, write_config_with_overrides,
+    build_runtime_release, read_text, run_bulk_seeder, run_smoke_seeder, start_indexer, start_node,
+    write_config_with_overrides,
 };
 
 fn response_events(response: &Value) -> Result<Vec<(u64, u64)>, Box<dyn Error>> {
@@ -192,6 +192,34 @@ async fn smoke_indexes_synthetic_runtime_events() -> Result<(), Box<dyn Error>> 
         &stack.indexer_url,
         manifest.end_block,
         Duration::from_secs(30),
+    )
+    .await?;
+
+    for query in &manifest.queries {
+        let limit = u16::try_from(query.min_events.max(16))?;
+        let response = get_events(&stack.indexer_url, query.key.clone(), limit).await?;
+        validate_query_expectation(query, &response).map_err(io::Error::other)?;
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires polkadot-omni-node and a release runtime build"]
+async fn bulk_seeder_handles_long_instant_seal_runs() -> Result<(), Box<dyn Error>> {
+    let stack =
+        SyntheticStack::start(ConfigOverrides::default(), IndexerOptions::default()).await?;
+    let temp = tempfile::tempdir()?;
+    let manifest_path = temp.path().join("bulk-manifest.json");
+
+    let manifest = run_bulk_seeder(&stack.node_url, &manifest_path, 9600, 100, 2)?;
+    assert_eq!(manifest.transactions_submitted, 100);
+    assert_eq!(manifest.synthetic_event_count, 200);
+
+    wait_for_indexed_tip(
+        &stack.indexer_url,
+        manifest.end_block,
+        Duration::from_secs(60),
     )
     .await?;
 

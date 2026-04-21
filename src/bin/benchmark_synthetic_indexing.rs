@@ -1,13 +1,12 @@
 use acuity_index::synthetic_devnet::{
-    BenchmarkReport, QueryExpectation, SeedManifest, get_events, pick_unused_port, size_on_disk,
+    BenchmarkReport, JsonWsClient, QueryExpectation, SeedManifest, pick_unused_port,
     unique_temp_path, validate_query_expectation, write_synthetic_index_spec,
 };
 use clap::Parser;
 use serde_json::to_string_pretty;
 use std::{
     error::Error,
-    fs::{self, File},
-    io,
+    fs, io,
     path::PathBuf,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -61,10 +60,6 @@ async fn run() -> Result<(), Box<dyn Error>> {
         None => sibling_binary("acuity-index")?,
     };
 
-    let log_path = workdir.join("indexer.log");
-    let log_file = File::create(&log_path)?;
-    let log_file_err = log_file.try_clone()?;
-
     let mut child = ChildGuard {
         child: Command::new(indexer_bin)
             .arg("--index-config")
@@ -79,18 +74,15 @@ async fn run() -> Result<(), Box<dyn Error>> {
             .arg(indexer_port.to_string())
             .arg("--max-events-limit")
             .arg(max_events_limit)
-            .stdout(Stdio::from(log_file))
-            .stderr(Stdio::from(log_file_err))
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()?,
     };
 
     let started = Instant::now();
-    wait_for_queries(
-        &indexer_url,
-        &manifest.queries,
-        Duration::from_secs(args.timeout_secs),
-    )
-    .await?;
+    let deadline = started + Duration::from_secs(args.timeout_secs);
+    let mut indexer_ws = connect_indexer(&indexer_url, deadline).await?;
+    wait_for_queries(&mut indexer_ws, &manifest.queries, deadline).await?;
 
     let elapsed = started.elapsed().as_secs_f64();
     if elapsed == 0.0 {
@@ -104,7 +96,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         elapsed_seconds: elapsed,
         blocks_per_second: f64::from(manifest.total_blocks) / elapsed,
         synthetic_events_per_second: f64::from(manifest.synthetic_event_count) / elapsed,
-        size_on_disk_bytes: size_on_disk(&indexer_url).await?,
+        size_on_disk_bytes: indexer_ws.size_on_disk().await?,
     };
 
     child.terminate();
@@ -112,24 +104,43 @@ async fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn verify_query(indexer_url: &str, query: &QueryExpectation) -> Result<(), Box<dyn Error>> {
+async fn connect_indexer(
+    indexer_url: &str,
+    deadline: Instant,
+) -> Result<JsonWsClient, Box<dyn Error>> {
+    loop {
+        match JsonWsClient::connect(indexer_url).await {
+            Ok(client) => return Ok(client),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(err);
+                }
+                sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+}
+
+async fn verify_query(
+    client: &mut JsonWsClient,
+    query: &QueryExpectation,
+) -> Result<(), Box<dyn Error>> {
     let limit = u16::try_from(query.min_events.max(16))
         .map_err(|_| io::Error::other("query limit exceeds u16"))?;
-    let response = get_events(indexer_url, query.key.clone(), limit).await?;
+    let response = client.get_events(query.key.clone(), limit).await?;
     validate_query_expectation(query, &response).map_err(io::Error::other)?;
     Ok(())
 }
 
 async fn wait_for_queries(
-    indexer_url: &str,
+    client: &mut JsonWsClient,
     queries: &[QueryExpectation],
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<(), Box<dyn Error>> {
-    let deadline = Instant::now() + timeout;
     loop {
         let mut all_ready = true;
         for query in queries {
-            match verify_query(indexer_url, query).await {
+            match verify_query(client, query).await {
                 Ok(()) => {}
                 Err(_) if Instant::now() < deadline => {
                     all_ready = false;

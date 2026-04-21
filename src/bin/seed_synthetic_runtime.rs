@@ -1,12 +1,13 @@
 use acuity_index::synthetic_devnet::{
     QueryExpectation, SeedManifest, current_block_number, key_account, key_bytes32, key_u32,
-    wait_for_node,
+    request_json_ws, wait_for_node,
 };
 use clap::{Parser, ValueEnum};
-use serde_json::to_string_pretty;
+use serde_json::{json, to_string_pretty};
 use std::{error::Error, fs, path::PathBuf, time::Duration};
 use subxt::config::PolkadotExtrinsicParamsBuilder;
 use subxt::tx::TransactionStatus;
+use subxt::utils::AccountId32;
 use subxt::{OnlineClient, PolkadotConfig, dynamic};
 use subxt_signer::sr25519::{Keypair, dev};
 
@@ -41,9 +42,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let start_block = current_block_number(&args.url).await?;
 
     let manifest = match args.mode {
-        SeedMode::Smoke => seed_smoke(&api, &genesis_hash, start_block).await?,
+        SeedMode::Smoke => seed_smoke(&args.url, &api, &genesis_hash, start_block).await?,
         SeedMode::Bulk => {
             seed_bulk(
+                &args.url,
                 &api,
                 &genesis_hash,
                 start_block,
@@ -64,6 +66,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn seed_smoke(
+    url: &str,
     api: &OnlineClient<PolkadotConfig>,
     genesis_hash: &str,
     start_block: u32,
@@ -71,8 +74,8 @@ async fn seed_smoke(
     let alice = dev::alice();
     let bob = dev::bob();
     let charlie = dev::charlie();
-    let mut alice_nonce = account_nonce(api, alice.public_key().0).await?;
-    let mut charlie_nonce = account_nonce(api, charlie.public_key().0).await?;
+    let mut alice_nonce = account_nonce(url, alice.public_key().0).await?;
+    let mut charlie_nonce = account_nonce(url, charlie.public_key().0).await?;
 
     let record_id = 100u32;
     let record_digest = [0x11; 32];
@@ -83,6 +86,7 @@ async fn seed_smoke(
 
     let transfer_block = submit_call_with_retry(
         api,
+        url,
         &dynamic::tx(
             "Balances",
             "transfer_allow_death",
@@ -95,6 +99,7 @@ async fn seed_smoke(
 
     let record_block = submit_call_with_retry(
         api,
+        url,
         &dynamic::tx(
             "Synthetic",
             "store_record",
@@ -107,6 +112,7 @@ async fn seed_smoke(
 
     let links_block = submit_call_with_retry(
         api,
+        url,
         &dynamic::tx(
             "Synthetic",
             "store_links",
@@ -119,6 +125,7 @@ async fn seed_smoke(
 
     let burst_block = submit_call_with_retry(
         api,
+        url,
         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
         &charlie,
         &mut charlie_nonce,
@@ -173,6 +180,7 @@ async fn seed_smoke(
 }
 
 async fn seed_bulk(
+    url: &str,
     api: &OnlineClient<PolkadotConfig>,
     genesis_hash: &str,
     start_block: u32,
@@ -183,9 +191,9 @@ async fn seed_bulk(
     let alice = dev::alice();
     let bob = dev::bob();
     let charlie = dev::charlie();
-    let mut alice_nonce = account_nonce(api, alice.public_key().0).await?;
-    let mut bob_nonce = account_nonce(api, bob.public_key().0).await?;
-    let mut charlie_nonce = account_nonce(api, charlie.public_key().0).await?;
+    let mut alice_nonce = account_nonce(url, alice.public_key().0).await?;
+    let mut bob_nonce = account_nonce(url, bob.public_key().0).await?;
+    let mut charlie_nonce = account_nonce(url, charlie.public_key().0).await?;
 
     let mut end_block = start_block;
     for idx in 0..batches {
@@ -195,6 +203,7 @@ async fn seed_bulk(
                 end_block = end_block.max(
                     submit_call_with_retry(
                         api,
+                        url,
                         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
                         &alice,
                         &mut alice_nonce,
@@ -206,6 +215,7 @@ async fn seed_bulk(
                 end_block = end_block.max(
                     submit_call_with_retry(
                         api,
+                        url,
                         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
                         &bob,
                         &mut bob_nonce,
@@ -217,6 +227,7 @@ async fn seed_bulk(
                 end_block = end_block.max(
                     submit_call_with_retry(
                         api,
+                        url,
                         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
                         &charlie,
                         &mut charlie_nonce,
@@ -266,6 +277,7 @@ where
 {
     let params = PolkadotExtrinsicParamsBuilder::<PolkadotConfig>::new()
         .nonce(nonce)
+        .immortal()
         .build();
     let mut progress = api
         .tx()
@@ -300,6 +312,7 @@ where
 
 async fn submit_call_with_retry<Call>(
     api: &OnlineClient<PolkadotConfig>,
+    url: &str,
     call: &Call,
     signer: &Keypair,
     nonce: &mut u64,
@@ -315,7 +328,7 @@ where
                 return Ok(block_number);
             }
             Err(err) if err.to_string().to_ascii_lowercase().contains("outdated") => {
-                *nonce = account_nonce(api, signer.public_key().0).await?;
+                *nonce = account_nonce(url, signer.public_key().0).await?;
             }
             Err(err) => return Err(err),
         }
@@ -324,12 +337,21 @@ where
     Err(std::io::Error::other("transaction remained outdated after nonce refresh").into())
 }
 
-async fn account_nonce(
-    api: &OnlineClient<PolkadotConfig>,
-    account_id: [u8; 32],
-) -> Result<u64, Box<dyn Error>> {
-    let at_block = api.at_current_block().await?;
-    let payload =
-        dynamic::runtime_api_call::<_, u32>("AccountNonceApi", "account_nonce", (account_id,));
-    Ok(u64::from(at_block.runtime_apis().call(payload).await?))
+async fn account_nonce(url: &str, account_id: [u8; 32]) -> Result<u64, Box<dyn Error>> {
+    // `system_accountNextIndex` reflects the transaction pool, which avoids stale finalized
+    // nonces when `--instant-seal` advances blocks faster than finality catches up.
+    let response = request_json_ws(
+        url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "system_accountNextIndex",
+            "params": [AccountId32(account_id)],
+        }),
+    )
+    .await?;
+    response["result"]
+        .as_u64()
+        .ok_or_else(|| std::io::Error::other(format!("unexpected nonce response: {response}")))
+        .map_err(Into::into)
 }

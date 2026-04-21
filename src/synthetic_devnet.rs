@@ -11,7 +11,7 @@ use std::{
 };
 use subxt::{OnlineClient, PolkadotConfig};
 use tokio::time::sleep;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 pub const SYNTHETIC_TEMPLATE: &str = include_str!("../chains/synthetic.toml");
 
@@ -160,12 +160,9 @@ pub fn pick_unused_port() -> io::Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
-pub async fn request_json_ws(url: &str, request: Value) -> Result<Value, Box<dyn Error>> {
-    let (mut socket, _) = connect_async(url).await?;
-    socket
-        .send(Message::Text(request.to_string().into()))
-        .await?;
+type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
+async fn recv_json_ws(socket: &mut WsStream) -> Result<Value, Box<dyn Error>> {
     while let Some(message) = socket.next().await {
         match message? {
             Message::Text(text) => return Ok(serde_json::from_str(text.as_ref())?),
@@ -179,6 +176,87 @@ pub async fn request_json_ws(url: &str, request: Value) -> Result<Value, Box<dyn
     }
 
     Err(io::Error::other("websocket ended before a response was received").into())
+}
+
+pub struct JsonWsClient {
+    socket: WsStream,
+    next_request_id: u64,
+}
+
+impl JsonWsClient {
+    pub async fn connect(url: &str) -> Result<Self, Box<dyn Error>> {
+        let (socket, _) = connect_async(url).await?;
+        Ok(Self {
+            socket,
+            next_request_id: 1,
+        })
+    }
+
+    async fn send_json(&mut self, request: Value) -> Result<(), Box<dyn Error>> {
+        self.socket
+            .send(Message::Text(request.to_string().into()))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn request(
+        &mut self,
+        request_type: &str,
+        body: Value,
+    ) -> Result<Value, Box<dyn Error>> {
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+
+        let mut request = json!({
+            "id": request_id,
+            "type": request_type,
+        });
+
+        match body {
+            Value::Null => {}
+            Value::Object(extra) => {
+                let request_obj = request
+                    .as_object_mut()
+                    .ok_or_else(|| io::Error::other("request payload was not an object"))?;
+                request_obj.extend(extra);
+            }
+            _ => {
+                return Err(
+                    io::Error::other("websocket request body must be a JSON object").into(),
+                );
+            }
+        }
+
+        self.send_json(request).await?;
+        recv_json_ws(&mut self.socket).await
+    }
+
+    pub async fn get_events(&mut self, key: Value, limit: u16) -> Result<Value, Box<dyn Error>> {
+        self.request(
+            "GetEvents",
+            json!({
+                "key": key,
+                "limit": limit,
+            }),
+        )
+        .await
+    }
+
+    pub async fn size_on_disk(&mut self) -> Result<u64, Box<dyn Error>> {
+        let response = self.request("SizeOnDisk", Value::Null).await?;
+        response["data"]
+            .as_u64()
+            .ok_or_else(|| io::Error::other(format!("unexpected SizeOnDisk response: {response}")))
+            .map_err(Into::into)
+    }
+}
+
+pub async fn request_json_ws(url: &str, request: Value) -> Result<Value, Box<dyn Error>> {
+    let (mut socket, _) = connect_async(url).await?;
+    socket
+        .send(Message::Text(request.to_string().into()))
+        .await?;
+    recv_json_ws(&mut socket).await
 }
 
 pub async fn fetch_status(indexer_url: &str) -> Result<Value, Box<dyn Error>> {

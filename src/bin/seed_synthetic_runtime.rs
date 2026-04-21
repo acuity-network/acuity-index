@@ -6,17 +6,21 @@ use serde_json::to_string_pretty;
 use std::{
     error::Error,
     fs,
+    io,
     path::PathBuf,
     time::{Duration, Instant},
 };
 use subxt::config::PolkadotExtrinsicParamsBuilder;
-use subxt::tx::TransactionStatus;
 use subxt::utils::AccountId32;
 use subxt::{
     OnlineClient, PolkadotConfig,
-    config::RpcConfigFor,
+    config::{HashFor, RpcConfigFor},
     dynamic,
-    rpcs::{RpcClient, methods::legacy::LegacyRpcMethods, rpc_params},
+    rpcs::{
+        RpcClient,
+        methods::legacy::{LegacyRpcMethods, TransactionStatus as RpcTransactionStatus},
+        rpc_params,
+    },
 };
 use subxt_signer::sr25519::{Keypair, dev};
 use tokio::time::sleep;
@@ -390,36 +394,103 @@ where
         .nonce(nonce)
         .immortal()
         .build();
-    let mut progress = client
+    let mut tx_client = client
         .api
         .tx()
-        .await?
-        .sign_and_submit_then_watch(call, signer, params)
         .await?;
+    let signed_tx = tx_client.create_signed(call, signer, params).await?;
+    let encoded = signed_tx.into_encoded();
+    let mut subscription = client.rpc.author_submit_and_watch_extrinsic(&encoded).await?;
+    let subscription_id = subscription
+        .subscription_id()
+        .ok_or_else(|| io::Error::other("author_submitAndWatchExtrinsic did not return a subscription id"))?
+        .to_owned();
 
-    while let Some(status) = progress.next().await {
-        match status? {
-            TransactionStatus::InBestBlock(in_block)
-            | TransactionStatus::InFinalizedBlock(in_block) => {
-                in_block.wait_for_success().await?;
-                let at = in_block.at().await?;
-                return Ok(at
-                    .block_number()
-                    .try_into()
-                    .map_err(|_| std::io::Error::other("block number exceeds u32"))?);
+    loop {
+        match subscription.next().await {
+            Some(Ok(RpcTransactionStatus::Future))
+            | Some(Ok(RpcTransactionStatus::Ready))
+            | Some(Ok(RpcTransactionStatus::Broadcast(_)))
+            | Some(Ok(RpcTransactionStatus::Retracted(_))) => continue,
+            Some(Ok(RpcTransactionStatus::InBlock(hash)))
+            | Some(Ok(RpcTransactionStatus::Finalized(hash))) => {
+                let block_number = block_number_for_hash(client, hash).await?;
+                return finish_watch(client, &subscription_id, Ok(block_number)).await;
             }
-            TransactionStatus::Error { message }
-            | TransactionStatus::Invalid { message }
-            | TransactionStatus::Dropped { message } => {
-                return Err(std::io::Error::other(message).into());
+            Some(Ok(RpcTransactionStatus::FinalityTimeout(hash))) => {
+                let err = io::Error::other(format!(
+                    "transaction finality timeout for block {hash:?}"
+                ));
+                return finish_watch(client, &subscription_id, Err(err.into())).await;
             }
-            TransactionStatus::Validated
-            | TransactionStatus::Broadcasted
-            | TransactionStatus::NoLongerInBestBlock => continue,
+            Some(Ok(RpcTransactionStatus::Usurped(hash))) => {
+                let err = io::Error::other(format!(
+                    "transaction was usurped by another extrinsic: {hash:?}"
+                ));
+                return finish_watch(client, &subscription_id, Err(err.into())).await;
+            }
+            Some(Ok(RpcTransactionStatus::Dropped)) => {
+                let err = io::Error::other("transaction was dropped");
+                return finish_watch(client, &subscription_id, Err(err.into())).await;
+            }
+            Some(Ok(RpcTransactionStatus::Invalid)) => {
+                let err = io::Error::other(
+                    "transaction is invalid (eg because of a bad nonce, signature etc)",
+                );
+                return finish_watch(client, &subscription_id, Err(err.into())).await;
+            }
+            Some(Err(err)) => {
+                return finish_watch(client, &subscription_id, Err(err.into())).await;
+            }
+            None => {
+                let err = io::Error::other(
+                    "transaction status stream ended before inclusion",
+                );
+                return finish_watch(client, &subscription_id, Err(err.into())).await;
+            }
         }
     }
+}
 
-    Err(std::io::Error::other("transaction status stream ended before inclusion").into())
+async fn block_number_for_hash(
+    client: &NodeClient,
+    hash: HashFor<PolkadotConfig>,
+) -> Result<u32, Box<dyn Error>> {
+    let header = client
+        .rpc
+        .chain_get_header(Some(hash))
+        .await?
+        .ok_or_else(|| io::Error::other(format!("header missing for included block {hash:?}")))?;
+    header
+        .number
+        .try_into()
+        .map_err(|_| io::Error::other("block number exceeds u32").into())
+}
+
+async fn unwatch_extrinsic(
+    client: &NodeClient,
+    subscription_id: &str,
+) -> Result<(), Box<dyn Error>> {
+    let unwatched: bool = client
+        .rpc_client
+        .request("author_unwatchExtrinsic", rpc_params![subscription_id])
+        .await?;
+    if !unwatched {
+        return Err(io::Error::other(format!(
+            "author_unwatchExtrinsic returned false for subscription {subscription_id}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+async fn finish_watch<T>(
+    client: &NodeClient,
+    subscription_id: &str,
+    result: Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>> {
+    unwatch_extrinsic(client, subscription_id).await?;
+    result
 }
 
 async fn submit_call_with_retry<Call>(

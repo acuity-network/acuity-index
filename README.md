@@ -131,7 +131,7 @@ just synthetic-node
 # seed a small deterministic dataset for integration testing
 just seed-smoke
 
-# run the ignored node-backed integration test
+# run the ignored node-backed integration suite
 just test-integration
 
 # seed many event-dense blocks and benchmark end-to-end indexing throughput
@@ -139,6 +139,11 @@ just benchmark-indexing
 ```
 
 The benchmark recipe reports wall-clock throughput for indexing the seeded chain from an empty database. The reported event rate is based on the synthetic pallet events submitted by the seeder.
+
+The ignored synthetic integration suite exercises the real node-backed stack end
+to end, including `Status`, `Variants`, `GetEvents`, `SizeOnDisk`, subscription
+flows, live notifications, selected WebSocket limits/error behavior, and
+restart/reconnect behavior.
 
 `just` recipe overrides are positional here. To change the benchmark inputs, use:
 

@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     error::Error,
-    fs,
-    io,
+    fs, io,
     net::TcpListener,
     path::{Path, PathBuf},
     process,
@@ -121,21 +120,28 @@ pub async fn wait_for_node(
                 return Err(io::Error::other(format!(
                     "node did not reach block {min_block}; last block {block}"
                 ))
-                .into())
+                .into());
             }
             Err(err) => return Err(err),
         }
     }
 }
 
-pub fn render_synthetic_index_spec(url: &str, genesis_hash: &str) -> Result<String, Box<dyn Error>> {
+pub fn render_synthetic_index_spec(
+    url: &str,
+    genesis_hash: &str,
+) -> Result<String, Box<dyn Error>> {
     let mut value: toml::Value = toml::from_str(SYNTHETIC_TEMPLATE)?;
     value["genesis_hash"] = toml::Value::String(genesis_hash.to_owned());
     value["default_url"] = toml::Value::String(url.to_owned());
     Ok(toml::to_string(&value)?)
 }
 
-pub fn write_synthetic_index_spec(path: &Path, url: &str, genesis_hash: &str) -> Result<(), Box<dyn Error>> {
+pub fn write_synthetic_index_spec(
+    path: &Path,
+    url: &str,
+    genesis_hash: &str,
+) -> Result<(), Box<dyn Error>> {
     let rendered = render_synthetic_index_spec(url, genesis_hash)?;
     fs::write(path, rendered)?;
     Ok(())
@@ -166,7 +172,7 @@ pub async fn request_json_ws(url: &str, request: Value) -> Result<Value, Box<dyn
             Message::Binary(bytes) => return Ok(serde_json::from_slice(&bytes)?),
             Message::Ping(payload) => socket.send(Message::Pong(payload)).await?,
             Message::Close(frame) => {
-                return Err(io::Error::other(format!("websocket closed: {frame:?}")).into())
+                return Err(io::Error::other(format!("websocket closed: {frame:?}")).into());
             }
             _ => continue,
         }
@@ -202,14 +208,18 @@ pub async fn wait_for_indexed_tip(
                 return Err(io::Error::other(format!(
                     "indexer did not reach tip {expected_tip}: {status}"
                 ))
-                .into())
+                .into());
             }
             Err(err) => return Err(err),
         }
     }
 }
 
-pub async fn get_events(indexer_url: &str, key: Value, limit: u16) -> Result<Value, Box<dyn Error>> {
+pub async fn get_events(
+    indexer_url: &str,
+    key: Value,
+    limit: u16,
+) -> Result<Value, Box<dyn Error>> {
     request_json_ws(
         indexer_url,
         json!({
@@ -234,15 +244,14 @@ pub fn decoded_event_names(response: &Value) -> Vec<String> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|event| {
-            event["event"]["eventName"]
-                .as_str()
-                .map(ToOwned::to_owned)
-        })
+        .filter_map(|event| event["event"]["eventName"].as_str().map(ToOwned::to_owned))
         .collect()
 }
 
-pub fn validate_query_expectation(query: &QueryExpectation, response: &Value) -> Result<(), String> {
+pub fn validate_query_expectation(
+    query: &QueryExpectation,
+    response: &Value,
+) -> Result<(), String> {
     let count = events_len(response);
     if count < query.min_events {
         return Err(format!(

@@ -1,6 +1,6 @@
 use acuity_index::synthetic_devnet::{
-    BenchmarkReport, SeedManifest, QueryExpectation, get_events, pick_unused_port,
-    size_on_disk, unique_temp_path, validate_query_expectation, write_synthetic_index_spec,
+    BenchmarkReport, QueryExpectation, SeedManifest, get_events, pick_unused_port, size_on_disk,
+    unique_temp_path, validate_query_expectation, write_synthetic_index_spec,
 };
 use clap::Parser;
 use serde_json::to_string_pretty;
@@ -42,7 +42,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 async fn run() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let manifest: SeedManifest = serde_json::from_slice(&fs::read(&args.manifest)?)?;
-    let workdir = args.workdir.unwrap_or_else(|| unique_temp_path("synthetic-index-benchmark"));
+    let workdir = args
+        .workdir
+        .unwrap_or_else(|| unique_temp_path("synthetic-index-benchmark"));
     fs::create_dir_all(&workdir)?;
 
     let config_path = workdir.join("synthetic.toml");
@@ -83,7 +85,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
     };
 
     let started = Instant::now();
-    wait_for_queries(&indexer_url, &manifest.queries, Duration::from_secs(args.timeout_secs)).await?;
+    wait_for_queries(
+        &indexer_url,
+        &manifest.queries,
+        Duration::from_secs(args.timeout_secs),
+    )
+    .await?;
 
     let elapsed = started.elapsed().as_secs_f64();
     if elapsed == 0.0 {

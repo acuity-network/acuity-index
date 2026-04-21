@@ -118,22 +118,47 @@ This means benchmark success is defined by observable API behavior, not only by 
 
 ## Synthetic Integration Testing
 
-The repository now has an external node-backed integration test in `tests/synthetic_integration.rs`.
+The repository now has an external node-backed integration suite in
+`tests/synthetic_integration.rs`.
 
-This test is marked `#[ignore]` because it requires heavyweight local tooling (`polkadot-omni-node` and a release runtime build), but its role is architectural rather than incidental: it is the full end-to-end validation path for the synthetic stack.
+These tests are marked `#[ignore]` because they require heavyweight local tooling
+(`polkadot-omni-node` and a release runtime build), but their role is
+architectural rather than incidental: they are the full end-to-end validation
+path for the synthetic stack.
 
-The integration test uses helpers from `tests/common/mod.rs` to orchestrate this pipeline:
+The suite uses helpers from `tests/common/mod.rs` to orchestrate this pipeline:
 
 1. Build the synthetic runtime in release mode.
 2. Generate a local chain spec from the runtime WASM.
 3. Start `polkadot-omni-node` on random local ports.
-4. Render a matching synthetic index config for that node's genesis hash.
-5. Start `acuity-index` against a temporary database.
-6. Run the smoke seeder and capture its `SeedManifest`.
-7. Wait until the indexer reports spans covering the seeded tip.
-8. Execute the manifest's `GetEvents` expectations against the public WebSocket API.
+4. Render a matching synthetic index config for that node's genesis hash, with
+   optional test-specific overrides such as `store_events = false` or
+   `index_variant = true`.
+5. Start `acuity-index` against a temporary database and test-specific runtime
+   options.
+6. Seed deterministic synthetic transactions.
+7. Validate observable behavior through the public WebSocket API.
 
-Because this path validates the actual WebSocket interface, it catches integration breakage across runtime metadata, config rendering, indexing, persistence, and query handling in one place.
+The current synthetic integration suite covers:
+
+- smoke end-to-end indexing and manifest-backed `GetEvents` validation
+- request/response flows for `Status`, `Variants`, `GetEvents`, and `SizeOnDisk`
+- `GetEvents` ordering and `before` cursor pagination
+- subscription lifecycle for `SubscribeStatus`, `UnsubscribeStatus`,
+  `SubscribeEvents`, and `UnsubscribeEvents`
+- pushed `status` and `eventNotification` messages
+- config-sensitive behavior for `store_events = false` and `index_variant = true`
+- request validation, subscription-limit handling, and idle timeout enforcement
+- process restart plus RPC outage/recovery behavior, including the documented
+  split between sled-backed requests and RPC-backed `Variants`
+
+Because this path validates the actual WebSocket interface, it catches
+integration breakage across runtime metadata, config rendering, indexing,
+persistence, connection lifecycle, and query handling in one place.
+
+It is intentionally broad, but it is not exhaustive. Notably, the suite does
+not yet exercise `subscriptionTerminated` backpressure handling, genesis-hash
+mismatch startup failure, or pruning-misconfiguration failure end to end.
 
 ## Developer Orchestration
 
@@ -142,7 +167,7 @@ The `justfile` is now part of the architecture for the synthetic workflow, not o
 - `runtime-build` and `runtime-chain-spec` materialize the local runtime artifacts.
 - `synthetic-node` starts the local omni-node instance with the required archival settings.
 - `seed-smoke` and `seed-bulk` produce deterministic seeded workloads.
-- `test-integration` runs the ignored end-to-end synthetic integration test.
+- `test-integration` runs the ignored end-to-end synthetic integration suite.
 - `benchmark-indexing` orchestrates runtime build, node startup, bulk seeding, and benchmark execution in one reproducible command.
 
 These recipes are the supported developer entrypoints for the synthetic stack. The binaries and helper module are structured so that the same underlying flow can be used interactively from `just`, from tests, or from future CI automation without duplicating the workflow logic.

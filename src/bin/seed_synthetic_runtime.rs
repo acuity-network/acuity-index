@@ -6,8 +6,8 @@ use clap::{Parser, ValueEnum};
 use serde_json::to_string_pretty;
 use std::{error::Error, fs, path::PathBuf, time::Duration};
 use subxt::config::PolkadotExtrinsicParamsBuilder;
-use subxt::{OnlineClient, PolkadotConfig, dynamic};
 use subxt::tx::TransactionStatus;
+use subxt::{OnlineClient, PolkadotConfig, dynamic};
 use subxt_signer::sr25519::{Keypair, dev};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -72,7 +72,7 @@ async fn seed_smoke(
     let bob = dev::bob();
     let charlie = dev::charlie();
     let mut alice_nonce = account_nonce(api, alice.public_key().0).await?;
-    let charlie_nonce = account_nonce(api, charlie.public_key().0).await?;
+    let mut charlie_nonce = account_nonce(api, charlie.public_key().0).await?;
 
     let record_id = 100u32;
     let record_digest = [0x11; 32];
@@ -81,7 +81,7 @@ async fn seed_smoke(
     let batch_id = 77u32;
     let burst_count = 4u32;
 
-    let transfer_block = submit_call(
+    let transfer_block = submit_call_with_retry(
         api,
         &dynamic::tx(
             "Balances",
@@ -89,12 +89,11 @@ async fn seed_smoke(
             (bob.public_key().to_address::<()>(), 123u128),
         ),
         &alice,
-        alice_nonce,
+        &mut alice_nonce,
     )
     .await?;
-    alice_nonce += 1;
 
-    let record_block = submit_call(
+    let record_block = submit_call_with_retry(
         api,
         &dynamic::tx(
             "Synthetic",
@@ -102,32 +101,27 @@ async fn seed_smoke(
             (record_id, record_digest, [7u32, 9u32]),
         ),
         &alice,
-        alice_nonce,
+        &mut alice_nonce,
     )
     .await?;
-    alice_nonce += 1;
 
-    let links_block = submit_call(
+    let links_block = submit_call_with_retry(
         api,
         &dynamic::tx(
             "Synthetic",
             "store_links",
-            (
-                record_id,
-                [200u32, 201u32],
-                [link_digest_a, link_digest_b],
-            ),
+            (record_id, [200u32, 201u32], [link_digest_a, link_digest_b]),
         ),
         &alice,
-        alice_nonce,
+        &mut alice_nonce,
     )
     .await?;
 
-    let burst_block = submit_call(
+    let burst_block = submit_call_with_retry(
         api,
         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
         &charlie,
-        charlie_nonce,
+        &mut charlie_nonce,
     )
     .await?;
     let end_block = [transfer_block, record_block, links_block, burst_block]
@@ -199,39 +193,36 @@ async fn seed_bulk(
         match idx % 3 {
             0 => {
                 end_block = end_block.max(
-                    submit_call(
-                    api,
-                    &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
-                    &alice,
-                    alice_nonce,
-                )
-                .await?,
+                    submit_call_with_retry(
+                        api,
+                        &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
+                        &alice,
+                        &mut alice_nonce,
+                    )
+                    .await?,
                 );
-                alice_nonce += 1;
             }
             1 => {
                 end_block = end_block.max(
-                    submit_call(
-                    api,
-                    &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
-                    &bob,
-                    bob_nonce,
-                )
-                .await?,
+                    submit_call_with_retry(
+                        api,
+                        &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
+                        &bob,
+                        &mut bob_nonce,
+                    )
+                    .await?,
                 );
-                bob_nonce += 1;
             }
             _ => {
                 end_block = end_block.max(
-                    submit_call(
-                    api,
-                    &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
-                    &charlie,
-                    charlie_nonce,
-                )
-                .await?,
+                    submit_call_with_retry(
+                        api,
+                        &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
+                        &charlie,
+                        &mut charlie_nonce,
+                    )
+                    .await?,
                 );
-                charlie_nonce += 1;
             }
         }
     }
@@ -307,11 +298,38 @@ where
     Err(std::io::Error::other("transaction status stream ended before inclusion").into())
 }
 
+async fn submit_call_with_retry<Call>(
+    api: &OnlineClient<PolkadotConfig>,
+    call: &Call,
+    signer: &Keypair,
+    nonce: &mut u64,
+) -> Result<u32, Box<dyn Error>>
+where
+    Call: subxt::tx::Payload,
+{
+    for _ in 0..3 {
+        let current_nonce = *nonce;
+        match submit_call(api, call, signer, current_nonce).await {
+            Ok(block_number) => {
+                *nonce = current_nonce + 1;
+                return Ok(block_number);
+            }
+            Err(err) if err.to_string().to_ascii_lowercase().contains("outdated") => {
+                *nonce = account_nonce(api, signer.public_key().0).await?;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(std::io::Error::other("transaction remained outdated after nonce refresh").into())
+}
+
 async fn account_nonce(
     api: &OnlineClient<PolkadotConfig>,
     account_id: [u8; 32],
 ) -> Result<u64, Box<dyn Error>> {
     let at_block = api.at_current_block().await?;
-    let payload = dynamic::runtime_api_call::<_, u32>("AccountNonceApi", "account_nonce", (account_id,));
+    let payload =
+        dynamic::runtime_api_call::<_, u32>("AccountNonceApi", "account_nonce", (account_id,));
     Ok(u64::from(at_block.runtime_apis().call(payload).await?))
 }

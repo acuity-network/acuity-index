@@ -3,18 +3,24 @@ use acuity_index::synthetic_devnet::{
 };
 use clap::{Parser, ValueEnum};
 use serde_json::to_string_pretty;
-use std::{error::Error, fs, path::PathBuf, time::{Duration, Instant}};
+use std::{
+    error::Error,
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+use subxt::config::PolkadotExtrinsicParamsBuilder;
+use subxt::tx::TransactionStatus;
+use subxt::utils::AccountId32;
 use subxt::{
     OnlineClient, PolkadotConfig,
     config::RpcConfigFor,
     dynamic,
     rpcs::{RpcClient, methods::legacy::LegacyRpcMethods, rpc_params},
 };
-use subxt::config::PolkadotExtrinsicParamsBuilder;
-use subxt::tx::TransactionStatus;
-use subxt::utils::AccountId32;
 use subxt_signer::sr25519::{Keypair, dev};
 use tokio::time::sleep;
+use tracing::{Level, info};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum SeedMode {
@@ -46,10 +52,25 @@ struct NodeClient {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(Level::INFO)
+        .init();
+
     let args = Args::parse();
+    info!(
+        url = %args.url,
+        mode = ?args.mode,
+        batch_start = args.batch_start,
+        batches = args.batches,
+        burst_count = args.burst_count,
+        "starting synthetic runtime seeder"
+    );
+
     let client = connect_when_ready(&args.url, Duration::from_secs(30)).await?;
     let genesis_hash = hex::encode(client.api.genesis_hash().as_ref());
     let start_block = current_block_number(&client).await?;
+    info!(genesis_hash = %genesis_hash, start_block, "connected to synthetic node");
 
     let manifest = match args.mode {
         SeedMode::Smoke => seed_smoke(&client, &genesis_hash, start_block).await?,
@@ -68,8 +89,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let rendered = to_string_pretty(&manifest)?;
     if let Some(path) = args.output {
-        fs::write(path, &rendered)?;
+        fs::write(&path, &rendered)?;
+        info!(path = %path.display(), "wrote seed manifest");
     }
+
+    info!(
+        mode = %manifest.mode,
+        start_block = manifest.start_block,
+        end_block = manifest.end_block,
+        transactions_submitted = manifest.transactions_submitted,
+        synthetic_event_count = manifest.synthetic_event_count,
+        "seeding complete"
+    );
     println!("{rendered}");
     Ok(())
 }
@@ -87,16 +118,20 @@ async fn connect_node(url: &str) -> Result<NodeClient, Box<dyn Error>> {
 
 async fn connect_when_ready(url: &str, timeout: Duration) -> Result<NodeClient, Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
+    info!(url, timeout = ?timeout, "waiting for node RPC");
 
     loop {
         match connect_node(url).await {
-            Ok(client) => return Ok(client),
+            Ok(client) => {
+                info!(url, "node RPC is reachable");
+                return Ok(client);
+            }
             Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(200)).await,
             Err(err) => {
                 return Err(std::io::Error::other(format!(
                     "node did not become reachable within {timeout:?}: {err}"
                 ))
-                .into())
+                .into());
             }
         }
     }
@@ -132,6 +167,12 @@ async fn seed_smoke(
     let batch_id = 77u32;
     let burst_count = 4u32;
 
+    info!(
+        start_block,
+        record_id, batch_id, burst_count, "seeding smoke workload"
+    );
+
+    info!(to = %hex::encode(bob.public_key().0), amount = 123u128, "submitting balances transfer");
     let transfer_block = submit_call_with_retry(
         client,
         &dynamic::tx(
@@ -143,7 +184,9 @@ async fn seed_smoke(
         &mut alice_nonce,
     )
     .await?;
+    info!(block_number = transfer_block, "balances transfer included");
 
+    info!(record_id, digest = %hex::encode(record_digest), "submitting synthetic record");
     let record_block = submit_call_with_retry(
         client,
         &dynamic::tx(
@@ -155,7 +198,12 @@ async fn seed_smoke(
         &mut alice_nonce,
     )
     .await?;
+    info!(
+        block_number = record_block,
+        record_id, "synthetic record included"
+    );
 
+    info!(record_id, link_count = 2, "submitting synthetic links");
     let links_block = submit_call_with_retry(
         client,
         &dynamic::tx(
@@ -167,7 +215,12 @@ async fn seed_smoke(
         &mut alice_nonce,
     )
     .await?;
+    info!(
+        block_number = links_block,
+        record_id, "synthetic links included"
+    );
 
+    info!(batch_id, burst_count, "submitting synthetic burst");
     let burst_block = submit_call_with_retry(
         client,
         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
@@ -175,6 +228,10 @@ async fn seed_smoke(
         &mut charlie_nonce,
     )
     .await?;
+    info!(
+        block_number = burst_block,
+        batch_id, burst_count, "synthetic burst included"
+    );
     let end_block = [transfer_block, record_block, links_block, burst_block]
         .into_iter()
         .max()
@@ -239,6 +296,11 @@ async fn seed_bulk(
     let mut charlie_nonce = account_nonce(client, charlie.public_key().0).await?;
 
     let mut end_block = start_block;
+    info!(
+        start_block,
+        batch_start, batches, burst_count, "seeding bulk workload"
+    );
+
     for idx in 0..batches {
         let batch_id = batch_start + idx;
         match idx % 3 {
@@ -276,6 +338,15 @@ async fn seed_bulk(
                 );
             }
         }
+
+        info!(
+            batch_id,
+            batch_index = idx + 1,
+            total_batches = batches,
+            burst_count,
+            block_number = end_block,
+            "seeded synthetic burst batch"
+        );
     }
 
     let first_batch = batch_start;
@@ -368,7 +439,13 @@ where
                 return Ok(block_number);
             }
             Err(err) if err.to_string().to_ascii_lowercase().contains("outdated") => {
+                info!(
+                    nonce = current_nonce,
+                    account = %hex::encode(signer.public_key().0),
+                    "transaction nonce outdated, refreshing account nonce"
+                );
                 *nonce = account_nonce(client, signer.public_key().0).await?;
+                info!(nonce = *nonce, account = %hex::encode(signer.public_key().0), "refreshed account nonce");
             }
             Err(err) => return Err(err),
         }
@@ -382,7 +459,10 @@ async fn account_nonce(client: &NodeClient, account_id: [u8; 32]) -> Result<u64,
     // nonces when `--instant-seal` advances blocks faster than finality catches up.
     client
         .rpc_client
-        .request("system_accountNextIndex", rpc_params![AccountId32(account_id)])
+        .request(
+            "system_accountNextIndex",
+            rpc_params![AccountId32(account_id)],
+        )
         .await
         .map_err(Into::into)
 }

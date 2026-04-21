@@ -1011,6 +1011,7 @@ pub async fn run_indexer(
         "📇 Finalized only: {}",
         if finalized { "yes" } else { "no" }
     );
+    info!("📇 Queue depth: {queue_depth}");
     info!(
         "📇 Variant indexing: {}",
         if index_variant { "yes" } else { "no" }

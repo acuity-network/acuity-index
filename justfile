@@ -41,7 +41,7 @@ benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='1
     set -euo pipefail
     command -v polkadot-omni-node >/dev/null
     just runtime-chain-spec
-    cargo build --bins
+    cargo build --release --bins
     workdir="$(mktemp -d)"
     cleanup() {
       if [[ -n "${node_pid:-}" ]]; then
@@ -52,8 +52,8 @@ benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='1
     trap cleanup EXIT
     polkadot-omni-node --chain "{{runtime_chain_spec}}" --dev --instant-seal --pool-type single-state --state-pruning archive-canonical --blocks-pruning archive-canonical --rpc-port "{{rpc_port}}" --prometheus-port 0 --no-prometheus --port 0 >"$workdir/node.log" 2>&1 &
     node_pid=$!
-    cargo run --bin seed_synthetic_runtime -- --url "ws://127.0.0.1:{{rpc_port}}" --mode bulk --batch-start "{{batch_start}}" --batches "{{batches}}" --burst-count "{{burst_count}}" --output "$workdir/seed-manifest.json"
-    cargo run --bin benchmark_synthetic_indexing -- --node-url "ws://127.0.0.1:{{rpc_port}}" --manifest "$workdir/seed-manifest.json" --queue-depth "{{queue_depth}}" --workdir "$workdir"
+    cargo run --release --bin seed_synthetic_runtime -- --url "ws://127.0.0.1:{{rpc_port}}" --mode bulk --batch-start "{{batch_start}}" --batches "{{batches}}" --burst-count "{{burst_count}}" --output "$workdir/seed-manifest.json"
+    cargo run --release --bin benchmark_synthetic_indexing -- --node-url "ws://127.0.0.1:{{rpc_port}}" --manifest "$workdir/seed-manifest.json" --queue-depth "{{queue_depth}}" --workdir "$workdir"
 
 generate-chain-configs:
     cargo build --release

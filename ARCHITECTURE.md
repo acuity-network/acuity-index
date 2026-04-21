@@ -166,11 +166,11 @@ pruning-misconfiguration failure end to end.
 
 The `justfile` is now part of the architecture for the synthetic workflow, not only a convenience wrapper.
 
-- `runtime-build` and `runtime-chain-spec` materialize the local runtime artifacts.
-- `synthetic-node` starts the local omni-node instance with the required archival settings.
+- `runtime-build` builds the in-repo synthetic runtime in release mode.
+- `synthetic-node` materializes the local chain spec and starts the local omni-node instance with the required archival settings.
 - `seed-smoke` and `seed-bulk` produce deterministic seeded workloads.
 - `test-integration` runs the ignored end-to-end synthetic integration suite.
-- `benchmark-indexing` orchestrates runtime build, node startup, bulk seeding, and benchmark execution in one reproducible command.
+- `benchmark-indexing` bulk-seeds an already running synthetic node and benchmarks indexing against that workload.
 
 These recipes are the supported developer entrypoints for the synthetic stack. The binaries and helper module are structured so that the same underlying flow can be used interactively from `just`, from tests, or from future CI automation without duplicating the workflow logic.
 

@@ -122,23 +122,20 @@ The synthetic runtime is intentionally small and deterministic:
 Useful recipes:
 
 ```bash
-# build the in-repo runtime and emit a chain spec for omni-node
-just runtime-chain-spec
-
-# run the synthetic dev node locally
+# build the in-repo runtime, emit a chain spec, and run the synthetic dev node locally
 just synthetic-node
 
-# seed a small deterministic dataset for integration testing
+# seed a small deterministic dataset for integration testing against the running node
 just seed-smoke
 
 # run the ignored node-backed integration suite
 just test-integration
 
-# seed many event-dense blocks and benchmark end-to-end indexing throughput
+# seed many event-dense blocks and benchmark end-to-end indexing throughput against the running node
 just benchmark-indexing
 ```
 
-The benchmark recipe reports wall-clock throughput for indexing the seeded chain from an empty database. The reported event rate is based on the synthetic pallet events submitted by the seeder.
+The benchmark recipe assumes the synthetic node is already running on the selected RPC port. It performs the bulk seeding step itself for each run, then reports wall-clock throughput for indexing the seeded chain from an empty database. The reported event rate is based on the synthetic pallet events submitted by the seeder.
 
 By default, `just benchmark-indexing` now seeds 1,000 burst blocks with `burst_count=128`, and the final JSON report includes the configured `queueDepth`.
 

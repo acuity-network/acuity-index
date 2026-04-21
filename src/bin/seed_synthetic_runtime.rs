@@ -17,8 +17,9 @@ use subxt::{
     config::{HashFor, RpcConfigFor},
     dynamic,
     rpcs::{
+        client::RpcSubscription,
         RpcClient,
-        methods::legacy::{LegacyRpcMethods, TransactionStatus as RpcTransactionStatus},
+        methods::legacy::LegacyRpcMethods,
         rpc_params,
     },
 };
@@ -52,6 +53,7 @@ struct NodeClient {
     api: OnlineClient<PolkadotConfig>,
     rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     rpc_client: RpcClient,
+    new_heads: RpcSubscription<<PolkadotConfig as subxt::Config>::Header>,
 }
 
 #[tokio::main]
@@ -71,16 +73,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "starting synthetic runtime seeder"
     );
 
-    let client = connect_when_ready(&args.url, Duration::from_secs(30)).await?;
+    let mut client = connect_when_ready(&args.url, Duration::from_secs(30)).await?;
     let genesis_hash = hex::encode(client.api.genesis_hash().as_ref());
     let start_block = current_block_number(&client).await?;
     info!(genesis_hash = %genesis_hash, start_block, "connected to synthetic node");
 
     let manifest = match args.mode {
-        SeedMode::Smoke => seed_smoke(&client, &genesis_hash, start_block).await?,
+        SeedMode::Smoke => seed_smoke(&mut client, &genesis_hash, start_block).await?,
         SeedMode::Bulk => {
             seed_bulk(
-                &client,
+                &mut client,
                 &genesis_hash,
                 start_block,
                 args.batch_start,
@@ -113,10 +115,12 @@ async fn connect_node(url: &str) -> Result<NodeClient, Box<dyn Error>> {
     let rpc_client = RpcClient::from_url(url).await?;
     let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone()).await?;
     let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client.clone());
+    let new_heads = rpc.chain_subscribe_new_heads().await?;
     Ok(NodeClient {
         api,
         rpc,
         rpc_client,
+        new_heads,
     })
 }
 
@@ -154,7 +158,7 @@ async fn current_block_number(client: &NodeClient) -> Result<u32, Box<dyn Error>
 }
 
 async fn seed_smoke(
-    client: &NodeClient,
+    client: &mut NodeClient,
     genesis_hash: &str,
     start_block: u32,
 ) -> Result<SeedManifest, Box<dyn Error>> {
@@ -285,7 +289,7 @@ async fn seed_smoke(
 }
 
 async fn seed_bulk(
-    client: &NodeClient,
+    client: &mut NodeClient,
     genesis_hash: &str,
     start_block: u32,
     batch_start: u32,
@@ -382,7 +386,7 @@ async fn seed_bulk(
 }
 
 async fn submit_call<Call>(
-    client: &NodeClient,
+    client: &mut NodeClient,
     call: &Call,
     signer: &Keypair,
     nonce: u64,
@@ -398,103 +402,72 @@ where
         .api
         .tx()
         .await?;
+    let min_block_exclusive = current_block_number(client).await?;
     let signed_tx = tx_client.create_signed(call, signer, params).await?;
     let encoded = signed_tx.into_encoded();
-    let mut subscription = client.rpc.author_submit_and_watch_extrinsic(&encoded).await?;
-    let subscription_id = subscription
-        .subscription_id()
-        .ok_or_else(|| io::Error::other("author_submitAndWatchExtrinsic did not return a subscription id"))?
-        .to_owned();
+    let extrinsic_hash = client.rpc.author_submit_extrinsic(&encoded).await?;
+    wait_for_in_block_via_new_heads(client, &encoded, extrinsic_hash, min_block_exclusive).await
+}
 
+async fn wait_for_in_block_via_new_heads(
+    client: &mut NodeClient,
+    encoded_xt: &[u8],
+    extrinsic_hash: HashFor<PolkadotConfig>,
+    min_block_exclusive: u32,
+) -> Result<u32, Box<dyn Error>> {
     loop {
-        match subscription.next().await {
-            Some(Ok(RpcTransactionStatus::Future))
-            | Some(Ok(RpcTransactionStatus::Ready))
-            | Some(Ok(RpcTransactionStatus::Broadcast(_)))
-            | Some(Ok(RpcTransactionStatus::Retracted(_))) => continue,
-            Some(Ok(RpcTransactionStatus::InBlock(hash)))
-            | Some(Ok(RpcTransactionStatus::Finalized(hash))) => {
-                let block_number = block_number_for_hash(client, hash).await?;
-                return finish_watch(client, &subscription_id, Ok(block_number)).await;
-            }
-            Some(Ok(RpcTransactionStatus::FinalityTimeout(hash))) => {
-                let err = io::Error::other(format!(
-                    "transaction finality timeout for block {hash:?}"
-                ));
-                return finish_watch(client, &subscription_id, Err(err.into())).await;
-            }
-            Some(Ok(RpcTransactionStatus::Usurped(hash))) => {
-                let err = io::Error::other(format!(
-                    "transaction was usurped by another extrinsic: {hash:?}"
-                ));
-                return finish_watch(client, &subscription_id, Err(err.into())).await;
-            }
-            Some(Ok(RpcTransactionStatus::Dropped)) => {
-                let err = io::Error::other("transaction was dropped");
-                return finish_watch(client, &subscription_id, Err(err.into())).await;
-            }
-            Some(Ok(RpcTransactionStatus::Invalid)) => {
-                let err = io::Error::other(
-                    "transaction is invalid (eg because of a bad nonce, signature etc)",
-                );
-                return finish_watch(client, &subscription_id, Err(err.into())).await;
-            }
+        let header = match client.new_heads.next().await {
+            Some(Ok(header)) => header,
             Some(Err(err)) => {
-                return finish_watch(client, &subscription_id, Err(err.into())).await;
+                return Err(io::Error::other(format!(
+                    "chain_subscribeNewHeads failed while waiting for extrinsic {extrinsic_hash:?}: {err}"
+                ))
+                .into())
             }
             None => {
-                let err = io::Error::other(
-                    "transaction status stream ended before inclusion",
-                );
-                return finish_watch(client, &subscription_id, Err(err.into())).await;
+                return Err(io::Error::other(format!(
+                    "chain_subscribeNewHeads ended while waiting for extrinsic {extrinsic_hash:?}"
+                ))
+                .into())
             }
+        };
+
+        let block_number: u32 = header
+            .number
+            .try_into()
+            .map_err(|_| io::Error::other("block number exceeds u32"))?;
+        if block_number <= min_block_exclusive {
+            continue;
+        }
+
+        let block_hash = client
+            .rpc
+            .chain_get_block_hash(Some(block_number.into()))
+            .await?
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "block hash missing for new head #{block_number} while waiting for extrinsic {extrinsic_hash:?}"
+                ))
+            })?;
+        let block = client.rpc.chain_get_block(Some(block_hash)).await?.ok_or_else(|| {
+            io::Error::other(format!(
+                "block body missing for new head #{block_number} ({block_hash:?}) while waiting for extrinsic {extrinsic_hash:?}"
+            ))
+        })?;
+
+        if block
+            .block
+            .extrinsics
+            .iter()
+            .any(|extrinsic| extrinsic.0.as_slice() == encoded_xt)
+        {
+            return Ok(block_number);
         }
     }
 }
 
-async fn block_number_for_hash(
-    client: &NodeClient,
-    hash: HashFor<PolkadotConfig>,
-) -> Result<u32, Box<dyn Error>> {
-    let header = client
-        .rpc
-        .chain_get_header(Some(hash))
-        .await?
-        .ok_or_else(|| io::Error::other(format!("header missing for included block {hash:?}")))?;
-    header
-        .number
-        .try_into()
-        .map_err(|_| io::Error::other("block number exceeds u32").into())
-}
-
-async fn unwatch_extrinsic(
-    client: &NodeClient,
-    subscription_id: &str,
-) -> Result<(), Box<dyn Error>> {
-    let unwatched: bool = client
-        .rpc_client
-        .request("author_unwatchExtrinsic", rpc_params![subscription_id])
-        .await?;
-    if !unwatched {
-        return Err(io::Error::other(format!(
-            "author_unwatchExtrinsic returned false for subscription {subscription_id}"
-        ))
-        .into());
-    }
-    Ok(())
-}
-
-async fn finish_watch<T>(
-    client: &NodeClient,
-    subscription_id: &str,
-    result: Result<T, Box<dyn Error>>,
-) -> Result<T, Box<dyn Error>> {
-    unwatch_extrinsic(client, subscription_id).await?;
-    result
-}
-
 async fn submit_call_with_retry<Call>(
-    client: &NodeClient,
+    client: &mut NodeClient,
     call: &Call,
     signer: &Keypair,
     nonce: &mut u64,

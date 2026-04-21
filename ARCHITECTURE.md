@@ -75,11 +75,12 @@ This keeps the checked-in config stable while still making the synthetic workflo
 
 ### Why `polkadot-omni-node --instant-seal`
 
-The synthetic workflow uses `polkadot-omni-node` in dev mode with `--instant-seal`.
+The synthetic workflow uses `polkadot-omni-node` in dev mode with `--instant-seal --pool-type single-state`.
 
 - Each submitted extrinsic is included promptly and deterministically.
 - Seeder-generated manifests can refer to stable expected block ranges and query results.
 - Benchmark runs can seed a known amount of work first, then measure how long `acuity-index` takes to index that fixed workload from an empty database.
+- The legacy single-state pool avoids the fork-aware tx-pool stalls that can otherwise stop high-volume local seeding before the benchmark workload is fully submitted.
 
 The node is still required to run with archival pruning settings because the indexer's normal historical-state requirement remains in force even for the synthetic chain.
 

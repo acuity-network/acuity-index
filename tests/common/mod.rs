@@ -141,6 +141,8 @@ pub fn start_node(
         .arg(chain_spec_path)
         .arg("--dev")
         .arg("--instant-seal")
+        .arg("--pool-type")
+        .arg("single-state")
         .arg("--state-pruning")
         .arg("archive-canonical")
         .arg("--blocks-pruning")

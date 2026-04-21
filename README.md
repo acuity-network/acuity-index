@@ -117,7 +117,7 @@ The synthetic runtime is intentionally small and deterministic:
 
 - one custom `Synthetic` pallet emits searchable `u32`, `bytes32`, `account_id`, and multi-value event fields
 - `Balances` and `TransactionPayment` remain present so built-in SDK event indexing is exercised too
-- the recommended local workflow uses `polkadot-omni-node` with `--instant-seal`, which makes transaction seeding deterministic and keeps benchmark tip targets fixed after seeding
+- the recommended local workflow uses `polkadot-omni-node --instant-seal --pool-type single-state`, which keeps transaction seeding deterministic and avoids fork-aware tx-pool stalls during large local seed runs
 
 Useful recipes:
 
@@ -140,6 +140,8 @@ just benchmark-indexing
 
 The benchmark recipe reports wall-clock throughput for indexing the seeded chain from an empty database. The reported event rate is based on the synthetic pallet events submitted by the seeder.
 
+By default, `just benchmark-indexing` now seeds 1,000 burst blocks with `burst_count=128`, and the final JSON report includes the configured `queueDepth`.
+
 The ignored synthetic integration suite exercises the real node-backed stack end
 to end, including `Status`, `Variants`, `GetEvents`, `SizeOnDisk`, subscription
 flows, live notifications, selected WebSocket limits/error behavior, and
@@ -154,7 +156,7 @@ just benchmark-indexing <rpc_port> <queue_depth> <batch_start> <batches> <burst_
 For example:
 
 ```bash
-just benchmark-indexing 9944 8 1000 200 64
+just benchmark-indexing 9944 8 1000 1000 128
 ```
 
 `generate-index-spec` currently requires runtime metadata v14 or higher.

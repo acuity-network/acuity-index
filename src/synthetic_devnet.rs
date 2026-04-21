@@ -42,6 +42,7 @@ pub struct SeedManifest {
 pub struct BenchmarkReport {
     pub chain_tip: u32,
     pub indexed_blocks: u32,
+    pub queue_depth: u8,
     pub synthetic_event_count: u32,
     pub elapsed_seconds: f64,
     pub blocks_per_second: f64,

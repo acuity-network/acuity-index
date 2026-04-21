@@ -25,7 +25,7 @@ runtime-chain-spec: runtime-build
 
 synthetic-node rpc_port='9944': runtime-chain-spec
     command -v polkadot-omni-node >/dev/null
-    polkadot-omni-node --chain "{{runtime_chain_spec}}" --dev --instant-seal --state-pruning archive-canonical --blocks-pruning archive-canonical --rpc-port "{{rpc_port}}" --prometheus-port 0 --no-prometheus --port 0
+    polkadot-omni-node --chain "{{runtime_chain_spec}}" --dev --instant-seal --pool-type single-state --state-pruning archive-canonical --blocks-pruning archive-canonical --rpc-port "{{rpc_port}}" --prometheus-port 0 --no-prometheus --port 0
 
 seed-smoke url='ws://127.0.0.1:9944':
     cargo run --bin seed_synthetic_runtime -- --url "{{url}}" --mode smoke
@@ -36,7 +36,7 @@ seed-bulk url='ws://127.0.0.1:9944' batch_start='1000' batches='100' burst_count
 test-integration:
     cargo test --test synthetic_integration -- --ignored --nocapture
 
-benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='100' burst_count='64':
+benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='1000' burst_count='128':
     #!/usr/bin/env bash
     set -euo pipefail
     command -v polkadot-omni-node >/dev/null
@@ -50,7 +50,7 @@ benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='1
       fi
     }
     trap cleanup EXIT
-    polkadot-omni-node --chain "{{runtime_chain_spec}}" --dev --instant-seal --state-pruning archive-canonical --blocks-pruning archive-canonical --rpc-port "{{rpc_port}}" --prometheus-port 0 --no-prometheus --port 0 >"$workdir/node.log" 2>&1 &
+    polkadot-omni-node --chain "{{runtime_chain_spec}}" --dev --instant-seal --pool-type single-state --state-pruning archive-canonical --blocks-pruning archive-canonical --rpc-port "{{rpc_port}}" --prometheus-port 0 --no-prometheus --port 0 >"$workdir/node.log" 2>&1 &
     node_pid=$!
     cargo run --bin seed_synthetic_runtime -- --url "ws://127.0.0.1:{{rpc_port}}" --mode bulk --batch-start "{{batch_start}}" --batches "{{batches}}" --burst-count "{{burst_count}}" --output "$workdir/seed-manifest.json"
     cargo run --bin benchmark_synthetic_indexing -- --node-url "ws://127.0.0.1:{{rpc_port}}" --manifest "$workdir/seed-manifest.json" --queue-depth "{{queue_depth}}" --workdir "$workdir"

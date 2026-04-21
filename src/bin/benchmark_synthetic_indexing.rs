@@ -92,6 +92,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let report = BenchmarkReport {
         chain_tip: manifest.end_block,
         indexed_blocks: manifest.total_blocks,
+        queue_depth: args.queue_depth,
         synthetic_event_count: manifest.synthetic_event_count,
         elapsed_seconds: elapsed,
         blocks_per_second: f64::from(manifest.total_blocks) / elapsed,

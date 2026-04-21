@@ -1,15 +1,20 @@
 use acuity_index::synthetic_devnet::{
-    QueryExpectation, SeedManifest, current_block_number, key_account, key_bytes32, key_u32,
-    request_json_ws, wait_for_node,
+    QueryExpectation, SeedManifest, key_account, key_bytes32, key_u32,
 };
 use clap::{Parser, ValueEnum};
-use serde_json::{json, to_string_pretty};
-use std::{error::Error, fs, path::PathBuf, time::Duration};
+use serde_json::to_string_pretty;
+use std::{error::Error, fs, path::PathBuf, time::{Duration, Instant}};
+use subxt::{
+    OnlineClient, PolkadotConfig,
+    config::RpcConfigFor,
+    dynamic,
+    rpcs::{RpcClient, methods::legacy::LegacyRpcMethods, rpc_params},
+};
 use subxt::config::PolkadotExtrinsicParamsBuilder;
 use subxt::tx::TransactionStatus;
 use subxt::utils::AccountId32;
-use subxt::{OnlineClient, PolkadotConfig, dynamic};
 use subxt_signer::sr25519::{Keypair, dev};
+use tokio::time::sleep;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum SeedMode {
@@ -33,20 +38,24 @@ struct Args {
     output: Option<PathBuf>,
 }
 
+struct NodeClient {
+    api: OnlineClient<PolkadotConfig>,
+    rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    rpc_client: RpcClient,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-    wait_for_node(&args.url, 0, Duration::from_secs(30)).await?;
-    let api = OnlineClient::<PolkadotConfig>::from_insecure_url(&args.url).await?;
-    let genesis_hash = hex::encode(api.genesis_hash().as_ref());
-    let start_block = current_block_number(&args.url).await?;
+    let client = connect_when_ready(&args.url, Duration::from_secs(30)).await?;
+    let genesis_hash = hex::encode(client.api.genesis_hash().as_ref());
+    let start_block = current_block_number(&client).await?;
 
     let manifest = match args.mode {
-        SeedMode::Smoke => seed_smoke(&args.url, &api, &genesis_hash, start_block).await?,
+        SeedMode::Smoke => seed_smoke(&client, &genesis_hash, start_block).await?,
         SeedMode::Bulk => {
             seed_bulk(
-                &args.url,
-                &api,
+                &client,
                 &genesis_hash,
                 start_block,
                 args.batch_start,
@@ -65,17 +74,56 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+async fn connect_node(url: &str) -> Result<NodeClient, Box<dyn Error>> {
+    let rpc_client = RpcClient::from_url(url).await?;
+    let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone()).await?;
+    let rpc = LegacyRpcMethods::<RpcConfigFor<PolkadotConfig>>::new(rpc_client.clone());
+    Ok(NodeClient {
+        api,
+        rpc,
+        rpc_client,
+    })
+}
+
+async fn connect_when_ready(url: &str, timeout: Duration) -> Result<NodeClient, Box<dyn Error>> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match connect_node(url).await {
+            Ok(client) => return Ok(client),
+            Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(200)).await,
+            Err(err) => {
+                return Err(std::io::Error::other(format!(
+                    "node did not become reachable within {timeout:?}: {err}"
+                ))
+                .into())
+            }
+        }
+    }
+}
+
+async fn current_block_number(client: &NodeClient) -> Result<u32, Box<dyn Error>> {
+    let header = client
+        .rpc
+        .chain_get_header(None)
+        .await?
+        .ok_or_else(|| std::io::Error::other("best head header missing"))?;
+    header
+        .number
+        .try_into()
+        .map_err(|_| std::io::Error::other("block number exceeds u32").into())
+}
+
 async fn seed_smoke(
-    url: &str,
-    api: &OnlineClient<PolkadotConfig>,
+    client: &NodeClient,
     genesis_hash: &str,
     start_block: u32,
 ) -> Result<SeedManifest, Box<dyn Error>> {
     let alice = dev::alice();
     let bob = dev::bob();
     let charlie = dev::charlie();
-    let mut alice_nonce = account_nonce(url, alice.public_key().0).await?;
-    let mut charlie_nonce = account_nonce(url, charlie.public_key().0).await?;
+    let mut alice_nonce = account_nonce(client, alice.public_key().0).await?;
+    let mut charlie_nonce = account_nonce(client, charlie.public_key().0).await?;
 
     let record_id = 100u32;
     let record_digest = [0x11; 32];
@@ -85,8 +133,7 @@ async fn seed_smoke(
     let burst_count = 4u32;
 
     let transfer_block = submit_call_with_retry(
-        api,
-        url,
+        client,
         &dynamic::tx(
             "Balances",
             "transfer_allow_death",
@@ -98,8 +145,7 @@ async fn seed_smoke(
     .await?;
 
     let record_block = submit_call_with_retry(
-        api,
-        url,
+        client,
         &dynamic::tx(
             "Synthetic",
             "store_record",
@@ -111,8 +157,7 @@ async fn seed_smoke(
     .await?;
 
     let links_block = submit_call_with_retry(
-        api,
-        url,
+        client,
         &dynamic::tx(
             "Synthetic",
             "store_links",
@@ -124,8 +169,7 @@ async fn seed_smoke(
     .await?;
 
     let burst_block = submit_call_with_retry(
-        api,
-        url,
+        client,
         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
         &charlie,
         &mut charlie_nonce,
@@ -180,8 +224,7 @@ async fn seed_smoke(
 }
 
 async fn seed_bulk(
-    url: &str,
-    api: &OnlineClient<PolkadotConfig>,
+    client: &NodeClient,
     genesis_hash: &str,
     start_block: u32,
     batch_start: u32,
@@ -191,9 +234,9 @@ async fn seed_bulk(
     let alice = dev::alice();
     let bob = dev::bob();
     let charlie = dev::charlie();
-    let mut alice_nonce = account_nonce(url, alice.public_key().0).await?;
-    let mut bob_nonce = account_nonce(url, bob.public_key().0).await?;
-    let mut charlie_nonce = account_nonce(url, charlie.public_key().0).await?;
+    let mut alice_nonce = account_nonce(client, alice.public_key().0).await?;
+    let mut bob_nonce = account_nonce(client, bob.public_key().0).await?;
+    let mut charlie_nonce = account_nonce(client, charlie.public_key().0).await?;
 
     let mut end_block = start_block;
     for idx in 0..batches {
@@ -202,8 +245,7 @@ async fn seed_bulk(
             0 => {
                 end_block = end_block.max(
                     submit_call_with_retry(
-                        api,
-                        url,
+                        client,
                         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
                         &alice,
                         &mut alice_nonce,
@@ -214,8 +256,7 @@ async fn seed_bulk(
             1 => {
                 end_block = end_block.max(
                     submit_call_with_retry(
-                        api,
-                        url,
+                        client,
                         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
                         &bob,
                         &mut bob_nonce,
@@ -226,8 +267,7 @@ async fn seed_bulk(
             _ => {
                 end_block = end_block.max(
                     submit_call_with_retry(
-                        api,
-                        url,
+                        client,
                         &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
                         &charlie,
                         &mut charlie_nonce,
@@ -267,7 +307,7 @@ async fn seed_bulk(
 }
 
 async fn submit_call<Call>(
-    api: &OnlineClient<PolkadotConfig>,
+    client: &NodeClient,
     call: &Call,
     signer: &Keypair,
     nonce: u64,
@@ -279,7 +319,8 @@ where
         .nonce(nonce)
         .immortal()
         .build();
-    let mut progress = api
+    let mut progress = client
+        .api
         .tx()
         .await?
         .sign_and_submit_then_watch(call, signer, params)
@@ -311,8 +352,7 @@ where
 }
 
 async fn submit_call_with_retry<Call>(
-    api: &OnlineClient<PolkadotConfig>,
-    url: &str,
+    client: &NodeClient,
     call: &Call,
     signer: &Keypair,
     nonce: &mut u64,
@@ -322,13 +362,13 @@ where
 {
     for _ in 0..3 {
         let current_nonce = *nonce;
-        match submit_call(api, call, signer, current_nonce).await {
+        match submit_call(client, call, signer, current_nonce).await {
             Ok(block_number) => {
                 *nonce = current_nonce + 1;
                 return Ok(block_number);
             }
             Err(err) if err.to_string().to_ascii_lowercase().contains("outdated") => {
-                *nonce = account_nonce(url, signer.public_key().0).await?;
+                *nonce = account_nonce(client, signer.public_key().0).await?;
             }
             Err(err) => return Err(err),
         }
@@ -337,21 +377,12 @@ where
     Err(std::io::Error::other("transaction remained outdated after nonce refresh").into())
 }
 
-async fn account_nonce(url: &str, account_id: [u8; 32]) -> Result<u64, Box<dyn Error>> {
+async fn account_nonce(client: &NodeClient, account_id: [u8; 32]) -> Result<u64, Box<dyn Error>> {
     // `system_accountNextIndex` reflects the transaction pool, which avoids stale finalized
     // nonces when `--instant-seal` advances blocks faster than finality catches up.
-    let response = request_json_ws(
-        url,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "system_accountNextIndex",
-            "params": [AccountId32(account_id)],
-        }),
-    )
-    .await?;
-    response["result"]
-        .as_u64()
-        .ok_or_else(|| std::io::Error::other(format!("unexpected nonce response: {response}")))
+    client
+        .rpc_client
+        .request("system_accountNextIndex", rpc_params![AccountId32(account_id)])
+        .await
         .map_err(Into::into)
 }

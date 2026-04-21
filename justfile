@@ -33,7 +33,7 @@ seed-bulk url='ws://127.0.0.1:9944' batch_start='1000' batches='100' burst_count
 test-integration:
     cargo test --test synthetic_integration -- --ignored --nocapture
 
-benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='1000' burst_count='128':
+benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='500' burst_count='128':
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release --bins

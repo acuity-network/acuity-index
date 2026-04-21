@@ -149,6 +149,7 @@ The current synthetic integration suite covers:
 - pushed `status` and `eventNotification` messages
 - config-sensitive behavior for `store_events = false` and `index_variant = true`
 - request validation, subscription-limit handling, and idle timeout enforcement
+- fatal startup refusal on chain genesis-hash mismatch
 - process restart plus RPC outage/recovery behavior, including the documented
   split between sled-backed requests and RPC-backed `Variants`
 
@@ -157,8 +158,8 @@ integration breakage across runtime metadata, config rendering, indexing,
 persistence, connection lifecycle, and query handling in one place.
 
 It is intentionally broad, but it is not exhaustive. Notably, the suite does
-not yet exercise `subscriptionTerminated` backpressure handling, genesis-hash
-mismatch startup failure, or pruning-misconfiguration failure end to end.
+not yet exercise `subscriptionTerminated` backpressure handling or
+pruning-misconfiguration failure end to end.
 
 ## Developer Orchestration
 

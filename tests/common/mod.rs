@@ -10,7 +10,7 @@ use std::{
     fs::{self, File},
     io,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::OnceLock,
     time::{Duration, Instant},
 };
@@ -159,6 +159,10 @@ pub fn start_node(
         .spawn()?;
 
     Ok(ManagedChild { child })
+}
+
+pub fn read_text(path: &Path) -> Result<String, Box<dyn Error>> {
+    Ok(fs::read_to_string(path)?)
 }
 
 pub fn start_indexer(
@@ -385,6 +389,26 @@ pub struct ManagedChild {
 }
 
 impl ManagedChild {
+    pub async fn wait_for_exit(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<ExitStatus, Box<dyn Error>> {
+        let deadline = Instant::now() + timeout_duration;
+        loop {
+            match self.child.try_wait()? {
+                Some(status) => return Ok(status),
+                None if Instant::now() < deadline => sleep(Duration::from_millis(100)).await,
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out waiting for child process to exit",
+                    )
+                    .into());
+                }
+            }
+        }
+    }
+
     pub fn terminate(&mut self) {
         if self.child.try_wait().ok().flatten().is_some() {
             return;

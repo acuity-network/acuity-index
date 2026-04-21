@@ -1,8 +1,9 @@
 mod common;
 
 use acuity_index::synthetic_devnet::{
-    QueryExpectation, events_len, fetch_status, get_events, key_u32, size_on_disk, spans_cover_tip,
-    validate_query_expectation, wait_for_indexed_tip,
+    QueryExpectation, events_len, fetch_genesis_hash, fetch_status, get_events, key_u32,
+    pick_unused_port, size_on_disk, spans_cover_tip, validate_query_expectation,
+    wait_for_indexed_tip, wait_for_node,
 };
 use serde_json::{Value, json};
 use std::{
@@ -12,7 +13,9 @@ use std::{
 };
 
 use common::{
-    ConfigOverrides, IndexerOptions, SyntheticStack, WsClient, run_bulk_seeder, run_smoke_seeder,
+    ConfigOverrides, IndexerOptions, SyntheticStack, WsClient, build_chain_spec,
+    build_runtime_release, read_text, run_bulk_seeder, run_smoke_seeder, start_indexer,
+    start_node, write_config_with_overrides,
 };
 
 fn response_events(response: &Value) -> Result<Vec<(u64, u64)>, Box<dyn Error>> {
@@ -165,6 +168,11 @@ async fn wait_for_query_expectation(
 
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+fn different_genesis_hash(actual: &str) -> String {
+    let replacement = if actual.starts_with("00") { "11" } else { "00" };
+    format!("{replacement}{}", &actual[2..])
 }
 
 fn is_sorted_newest_first(events: &[(u64, u64)]) -> bool {
@@ -539,5 +547,55 @@ async fn indexer_restart_and_rpc_reconnect_preserve_queryability() -> Result<(),
         response_events(&query_after_reconnect)?,
         response_events(&baseline)?
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires polkadot-omni-node and a release runtime build"]
+async fn startup_fails_on_chain_genesis_hash_mismatch() -> Result<(), Box<dyn Error>> {
+    build_runtime_release()?;
+
+    let temp = tempfile::tempdir()?;
+    let chain_spec = temp.path().join("synthetic-dev-chain-spec.json");
+    let node_base = temp.path().join("node");
+    let node_log = temp.path().join("node.log");
+    let config_path = temp.path().join("synthetic.toml");
+    let index_db = temp.path().join("db");
+    let indexer_log = temp.path().join("indexer.log");
+    let rpc_port = pick_unused_port()?;
+    let indexer_port = pick_unused_port()?;
+
+    build_chain_spec(&chain_spec)?;
+
+    let _node = start_node(&chain_spec, rpc_port, &node_base, &node_log)?;
+    let node_url = format!("ws://127.0.0.1:{rpc_port}");
+    wait_for_node(&node_url, 0, Duration::from_secs(30)).await?;
+
+    let actual_genesis_hash = fetch_genesis_hash(&node_url).await?;
+    let wrong_genesis_hash = different_genesis_hash(&actual_genesis_hash);
+    write_config_with_overrides(
+        &config_path,
+        &node_url,
+        &wrong_genesis_hash,
+        &ConfigOverrides::default(),
+    )?;
+
+    let mut indexer = start_indexer(
+        &config_path,
+        &node_url,
+        &index_db,
+        indexer_port,
+        &indexer_log,
+        &IndexerOptions::default(),
+    )?;
+    let status = indexer.wait_for_exit(Duration::from_secs(30)).await?;
+    assert!(!status.success());
+
+    let log = read_text(&indexer_log)?;
+    assert!(
+        log.contains("chain genesis hash mismatch"),
+        "indexer log missing chain genesis mismatch: {log}"
+    );
+
     Ok(())
 }

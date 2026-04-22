@@ -36,7 +36,7 @@ seed-bulk url='ws://127.0.0.1:9944' batch_start='1000' batches='100' burst_count
 test-integration:
     cargo test --test synthetic_integration -- --ignored --nocapture
 
-benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='500' burst_count='128': runtime-chain-spec
+benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='5000' burst_count='128' timeout_secs='600': runtime-chain-spec
     #!/usr/bin/env bash
     set -euo pipefail
     command -v polkadot-omni-node >/dev/null
@@ -49,10 +49,10 @@ benchmark-indexing rpc_port='9944' queue_depth='1' batch_start='1000' batches='5
       fi
     }
     trap cleanup EXIT
-    polkadot-omni-node --chain "{{runtime_chain_spec}}" --dev --dev-block-time 50 --pool-type single-state --state-pruning archive-canonical --blocks-pruning archive-canonical --rpc-port "{{rpc_port}}" --prometheus-port 0 --no-prometheus --port 0 >"$workdir/node.log" 2>&1 &
+    polkadot-omni-node --chain "{{runtime_chain_spec}}" --dev --dev-block-time 100 --pool-type single-state --state-pruning archive-canonical --blocks-pruning archive-canonical --rpc-port "{{rpc_port}}" --prometheus-port 0 --no-prometheus --port 0 >"$workdir/node.log" 2>&1 &
     node_pid=$!
     cargo run --release --bin seed_synthetic_runtime -- --url "ws://127.0.0.1:{{rpc_port}}" --mode bulk --batch-start "{{batch_start}}" --batches "{{batches}}" --burst-count "{{burst_count}}" --output "$workdir/seed-manifest.json"
-    cargo run --release --bin benchmark_synthetic_indexing -- --node-url "ws://127.0.0.1:{{rpc_port}}" --manifest "$workdir/seed-manifest.json" --queue-depth "{{queue_depth}}" --workdir "$workdir"
+    cargo run --release --bin benchmark_synthetic_indexing -- --node-url "ws://127.0.0.1:{{rpc_port}}" --manifest "$workdir/seed-manifest.json" --queue-depth "{{queue_depth}}" --timeout-secs "{{timeout_secs}}" --workdir "$workdir"
 
 generate-chain-configs:
     cargo build --release

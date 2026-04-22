@@ -138,7 +138,7 @@ just benchmark-indexing
 
 The benchmark recipe starts its own synthetic node on the selected RPC port. Its bulk seeder submits one transaction, waits until that transaction has been included in a block, and only then submits the next one. The reported event rate is based on the synthetic pallet events submitted by the seeder.
 
-By default, `just benchmark-indexing` seeds 500 burst blocks with `burst_count=128`, and the final JSON report includes the configured `queueDepth`.
+By default, `just benchmark-indexing` seeds 500 burst blocks with `burst_count=128`, waits up to 600 seconds for the benchmark queries to become ready, and the final JSON report includes the configured `queueDepth`.
 
 The ignored synthetic integration suite exercises the real node-backed stack end
 to end, including `Status`, `Variants`, `GetEvents`, `SizeOnDisk`, subscription
@@ -148,13 +148,13 @@ restart/reconnect behavior.
 `just` recipe overrides are positional here. To change the benchmark inputs, use:
 
 ```bash
-just benchmark-indexing <rpc_port> <queue_depth> <batch_start> <batches> <burst_count>
+just benchmark-indexing <rpc_port> <queue_depth> <batch_start> <batches> <burst_count> <timeout_secs>
 ```
 
 For example:
 
 ```bash
-just benchmark-indexing 9944 8 1000 1000 128
+just benchmark-indexing 9944 8 1000 1000 128 600
 ```
 
 `generate-index-spec` currently requires runtime metadata v14 or higher.

@@ -82,7 +82,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     let deadline = started + Duration::from_secs(args.timeout_secs);
     let mut indexer_ws = connect_indexer(&indexer_url, deadline).await?;
-    wait_for_queries(&mut indexer_ws, &manifest.queries, deadline).await?;
+    wait_for_queries(
+        &mut indexer_ws,
+        &manifest.queries,
+        deadline,
+        args.timeout_secs,
+    )
+    .await?;
 
     let elapsed = started.elapsed().as_secs_f64();
     if elapsed == 0.0 {
@@ -137,6 +143,7 @@ async fn wait_for_queries(
     client: &mut JsonWsClient,
     queries: &[QueryExpectation],
     deadline: Instant,
+    timeout_secs: u64,
 ) -> Result<(), Box<dyn Error>> {
     loop {
         let mut all_ready = true;
@@ -147,7 +154,13 @@ async fn wait_for_queries(
                     all_ready = false;
                     break;
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    return Err(io::Error::other(format!(
+                        "timed out after {timeout_secs}s waiting for benchmark query '{}': {err}",
+                        query.description,
+                    ))
+                    .into());
+                }
             }
         }
 

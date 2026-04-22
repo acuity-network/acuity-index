@@ -178,13 +178,13 @@ Response payload:
 
 Each `EventRef` contains:
 
-- `blockNumber`
-- `eventIndex`
+- `blockNumber`: `u32`
+- `eventIndex`: zero-based `u32` ordinal within the block
 
 Each `DecodedEvent` contains:
 
-- `blockNumber`
-- `eventIndex`
+- `blockNumber`: `u32`
+- `eventIndex`: zero-based `u32` ordinal within the block
 - `event`: decoded event JSON
 
 Decoded event JSON currently contains:
@@ -194,7 +194,7 @@ Decoded event JSON currently contains:
 - `eventName`
 - `palletIndex`
 - `variantIndex`
-- `eventIndex`
+- `eventIndex`: zero-based `u32` ordinal within the block
 - `fields`
 
 Example:

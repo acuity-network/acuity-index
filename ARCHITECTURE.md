@@ -208,9 +208,11 @@ The sled layout is opened in `Trees::open` in `src/shared.rs`.
 - `span`
   Stores indexed block spans for resume/reindex logic.
 - `variant`
-  Stores event references keyed by `(pallet_index, variant_index, block_number, event_index)`.
+  Stores event references keyed by `(pallet_index, variant_index, block_number, event_index)`,
+  with `block_number` and `event_index` encoded as big-endian `u32` values.
 - `index`
-  Stores custom and built-in query keys under a compact binary prefix plus `(block_number, event_index)` suffix.
+  Stores custom and built-in query keys under a compact binary prefix plus a
+  `(block_number, event_index)` suffix encoded as big-endian `u32` values.
 - `events`
   Stores decoded event JSON keyed by `(block_number, event_index)`.
 

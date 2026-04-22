@@ -76,18 +76,18 @@ mod websocket_tests {
             name: "para_id".into(),
             value: CustomValue::U32(1000),
         });
-        key.write_db_key(&trees, 50, 3).unwrap();
+        key.write_db_key(&trees, 50, 70_000).unwrap();
 
         // Insert decoded event JSON.
         let event_key = EventKey {
             block_number: 50u32.into(),
-            event_index: 3u16.into(),
+            event_index: 70_000u32.into(),
         };
         let json = serde_json::to_vec(&serde_json::json!({
             "specVersion": 1234,
             "palletName": "Paras",
             "eventName": "Test",
-            "eventIndex": 3
+            "eventIndex": 70_000
         }))
         .unwrap();
         trees
@@ -104,10 +104,10 @@ mod websocket_tests {
             } => {
                 assert_eq!(events.len(), 1);
                 assert_eq!(events[0].block_number, 50);
-                assert_eq!(events[0].event_index, 3);
+                assert_eq!(events[0].event_index, 70_000);
                 assert_eq!(decoded_events.len(), 1);
                 assert_eq!(decoded_events[0].block_number, 50);
-                assert_eq!(decoded_events[0].event_index, 3);
+                assert_eq!(decoded_events[0].event_index, 70_000);
                 assert_eq!(decoded_events[0].event["specVersion"], 1234);
                 assert_eq!(decoded_events[0].event["eventName"], "Test");
             }
@@ -268,7 +268,7 @@ mod websocket_tests {
         });
 
         for i in 0..5u32 {
-            key.write_db_key(&trees, i + 1, i as u16).unwrap();
+            key.write_db_key(&trees, i + 1, i).unwrap();
         }
 
         let ResponseBody::Events { events, .. } = process_msg_get_events(

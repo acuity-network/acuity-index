@@ -69,13 +69,15 @@ mod shared_tests {
             pallet_index: 5,
             variant_index: 3,
             block_number: 1000u32.into(),
-            event_index: 7u16.into(),
+            event_index: 70_000u32.into(),
         };
         let bytes = key.as_bytes();
-        // 1 + 1 + 4 + 2 = 8 bytes
-        assert_eq!(bytes.len(), 8);
+        // 1 + 1 + 4 + 4 = 10 bytes
+        assert_eq!(bytes.len(), 10);
         assert_eq!(bytes[0], 5);
         assert_eq!(bytes[1], 3);
+        assert_eq!(&bytes[2..6], &1000u32.to_be_bytes());
+        assert_eq!(&bytes[6..10], &70_000u32.to_be_bytes());
     }
 
     #[test]
@@ -109,13 +111,13 @@ mod shared_tests {
     fn event_key_layout() {
         let key = EventKey {
             block_number: 123u32.into(),
-            event_index: 9u16.into(),
+            event_index: 70_000u32.into(),
         };
         let bytes = key.as_bytes();
-        // 4 + 2 = 6 bytes
-        assert_eq!(bytes.len(), 6);
+        // 4 + 4 = 8 bytes
+        assert_eq!(bytes.len(), 8);
         assert_eq!(&bytes[..4], &123u32.to_be_bytes());
-        assert_eq!(&bytes[4..], &9u16.to_be_bytes());
+        assert_eq!(&bytes[4..], &70_000u32.to_be_bytes());
     }
 
     // ─── Key serialization ────────────────────────────────────────────────
@@ -322,11 +324,11 @@ mod shared_tests {
         ];
 
         for (i, key) in keys.into_iter().enumerate() {
-            key.write_db_key(&trees, 1000 + i as u32, i as u16).unwrap();
+            key.write_db_key(&trees, 1000 + i as u32, i as u32).unwrap();
             let events = key.get_events(&trees, None, 100).unwrap();
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].block_number, 1000 + i as u32);
-            assert_eq!(events[0].event_index, i as u16);
+            assert_eq!(events[0].event_index, i as u32);
         }
     }
 

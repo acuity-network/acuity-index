@@ -165,8 +165,8 @@ impl Indexer {
                 }
             };
 
-            let event_index: u16 = i.try_into().map_err(|_| {
-                internal_error(format!("event index exceeds u16 for block {block_number}"))
+            let event_index: u32 = i.try_into().map_err(|_| {
+                internal_error(format!("event index exceeds u32 for block {block_number}"))
             })?;
             let pallet_name = event.pallet_name();
             let event_name = event.event_name();
@@ -226,7 +226,7 @@ impl Indexer {
     fn store_event(
         &self,
         block_number: u32,
-        event_index: u16,
+        event_index: u32,
         spec_version: u32,
         pallet_name: &str,
         event_name: &str,
@@ -308,7 +308,7 @@ impl Indexer {
         event_name: &str,
         pallet_index: u8,
         variant_index: u8,
-        event_index: u16,
+        event_index: u32,
         fields: &Composite<()>,
     ) -> serde_json::Value {
         json!({
@@ -327,7 +327,7 @@ impl Indexer {
         &self,
         key: Key,
         block_number: u32,
-        event_index: u16,
+        event_index: u32,
     ) -> Result<(), IndexError> {
         key.write_db_key(&self.trees, block_number, event_index)?;
         self.notify_event_subscribers(
@@ -1768,7 +1768,7 @@ mod tests {
         indexer
             .store_event(
                 42,
-                7,
+                70_000,
                 1234,
                 "Balances",
                 "Deposit",
@@ -1780,14 +1780,14 @@ mod tests {
 
         let db_key = EventKey {
             block_number: 42u32.into(),
-            event_index: 7u16.into(),
+            event_index: 70_000u32.into(),
         };
         let bytes = trees.events.get(db_key.as_bytes()).unwrap().unwrap();
         let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(stored["specVersion"], json!(1234));
         assert_eq!(stored["palletName"], json!("Balances"));
         assert_eq!(stored["eventName"], json!("Deposit"));
-        assert_eq!(stored["eventIndex"], json!(7));
+        assert_eq!(stored["eventIndex"], json!(70_000));
         assert_eq!(stored["fields"], json!({"amount": "999"}));
     }
 
@@ -1811,7 +1811,7 @@ mod tests {
 
         let db_key = EventKey {
             block_number: 42u32.into(),
-            event_index: 7u16.into(),
+            event_index: 7u32.into(),
         };
         assert!(trees.events.get(db_key.as_bytes()).unwrap().is_none());
     }
@@ -1826,7 +1826,7 @@ mod tests {
         });
         let db_key = EventKey {
             block_number: 7u32.into(),
-            event_index: 3u16.into(),
+            event_index: 3u32.into(),
         };
         trees
             .events

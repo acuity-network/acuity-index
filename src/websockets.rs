@@ -60,10 +60,10 @@ pub fn get_events_index(
     let mut events = Vec::new();
     let mut iter = tree.scan_prefix(prefix).keys();
     while let Some(Ok(raw)) = iter.next_back() {
-        if raw.len() < 6 {
+        if raw.len() < EVENT_REF_SUFFIX_LEN {
             continue;
         }
-        let suffix = &raw[raw.len() - 6..];
+        let suffix = &raw[raw.len() - EVENT_REF_SUFFIX_LEN..];
         let Some(event) = decode_event_ref_suffix(suffix) else {
             error!("Skipping malformed event index key");
             continue;
@@ -1141,7 +1141,7 @@ mod tests {
         key.write_db_key(&trees, 10, 1).unwrap();
         let db_key = EventKey {
             block_number: 10u32.into(),
-            event_index: 1u16.into(),
+            event_index: 1u32.into(),
         };
         trees
             .events

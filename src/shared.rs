@@ -124,11 +124,13 @@ pub fn decode_u32_key(bytes: &[u8]) -> Option<u32> {
     Some(u32::from_be_bytes(key))
 }
 
+pub const EVENT_REF_SUFFIX_LEN: usize = 8;
+
 pub fn decode_event_ref_suffix(bytes: &[u8]) -> Option<EventRef> {
-    let suffix: [u8; 6] = bytes.try_into().ok()?;
+    let suffix: [u8; EVENT_REF_SUFFIX_LEN] = bytes.try_into().ok()?;
     Some(EventRef {
         block_number: u32::from_be_bytes(suffix[..4].try_into().ok()?),
-        event_index: u16::from_be_bytes(suffix[4..].try_into().ok()?),
+        event_index: u32::from_be_bytes(suffix[4..].try_into().ok()?),
     })
 }
 
@@ -145,7 +147,7 @@ pub struct VariantKey {
     pub pallet_index: u8,
     pub variant_index: u8,
     pub block_number: U32<BigEndian>,
-    pub event_index: U16<BigEndian>,
+    pub event_index: U32<BigEndian>,
 }
 
 /// On-disk format for stored event keys.
@@ -153,7 +155,7 @@ pub struct VariantKey {
 #[repr(C)]
 pub struct EventKey {
     pub block_number: U32<BigEndian>,
-    pub event_index: U16<BigEndian>,
+    pub event_index: U32<BigEndian>,
 }
 
 /// On-disk format for span values.
@@ -460,10 +462,10 @@ impl Key {
         &self,
         trees: &Trees,
         block_number: u32,
-        event_index: u16,
+        event_index: u32,
     ) -> Result<(), IndexError> {
         let bn: U32<BigEndian> = block_number.into();
-        let ei: U16<BigEndian> = event_index.into();
+        let ei: U32<BigEndian> = event_index.into();
 
         match self {
             Key::Variant(pi, vi) => {
@@ -546,7 +548,7 @@ fn get_events_variant(
 #[serde(rename_all = "camelCase")]
 pub struct EventRef {
     pub block_number: u32,
-    pub event_index: u16,
+    pub event_index: u32,
 }
 
 impl fmt::Display for EventRef {
@@ -564,7 +566,7 @@ impl fmt::Display for EventRef {
 #[serde(rename_all = "camelCase")]
 pub struct DecodedEvent {
     pub block_number: u32,
-    pub event_index: u16,
+    pub event_index: u32,
     /// JSON object for the decoded event.
     pub event: serde_json::Value,
 }

@@ -1,6 +1,6 @@
 use acuity_index::synthetic_devnet::{
-    BenchmarkReport, JsonWsClient, QueryExpectation, SeedManifest, pick_unused_port,
-    unique_temp_path, validate_query_expectation, write_synthetic_index_spec,
+    BenchmarkReport, JsonWsClient, QueryExpectation, SeedManifest, events_len, pick_unused_port,
+    render_synthetic_index_spec, unique_temp_path,
 };
 use clap::Parser;
 use serde_json::to_string_pretty;
@@ -51,7 +51,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&workdir)?;
 
     let config_path = workdir.join("synthetic.toml");
-    write_synthetic_index_spec(&config_path, &args.node_url, &manifest.genesis_hash)?;
+    write_benchmark_index_spec(&config_path, &args.node_url, &manifest.genesis_hash)?;
 
     let db_root = args.db_path.unwrap_or_else(|| workdir.join("db"));
     fs::create_dir_all(&db_root)?;
@@ -288,7 +288,14 @@ async fn verify_query(
     let limit = u16::try_from(query.min_events.max(16))
         .map_err(|_| io::Error::other("query limit exceeds u16"))?;
     let response = client.get_events(query.key.clone(), limit).await?;
-    validate_query_expectation(query, &response).map_err(io::Error::other)?;
+    let count = events_len(&response);
+    if count < query.min_events {
+        return Err(io::Error::other(format!(
+            "query '{}' returned {count} events, expected at least {}",
+            query.description, query.min_events,
+        ))
+        .into());
+    }
     Ok(())
 }
 
@@ -333,6 +340,17 @@ fn sibling_binary(name: &str) -> io::Result<PathBuf> {
         name.to_owned()
     };
     Ok(current.with_file_name(binary_name))
+}
+
+fn write_benchmark_index_spec(
+    path: &Path,
+    url: &str,
+    genesis_hash: &str,
+) -> Result<(), Box<dyn Error>> {
+    let mut value: toml::Value = toml::from_str(&render_synthetic_index_spec(url, genesis_hash)?)?;
+    value["store_events"] = toml::Value::Boolean(false);
+    fs::write(path, toml::to_string(&value)?)?;
+    Ok(())
 }
 
 struct ChildGuard {

@@ -11,11 +11,13 @@ use subxt::{
     OnlineClient, PolkadotConfig,
     client::Block,
     config::RpcConfigFor,
+    events::Events,
     error::{BackendError, OnlineClientAtBlockError, RpcError},
     rpcs::methods::legacy::LegacyRpcMethods,
 };
 use tokio::{
     sync::{mpsc, watch},
+    task,
     time::{self, Duration, Instant, MissedTickBehavior},
 };
 use tracing::{debug, error, info};
@@ -37,13 +39,124 @@ pub struct Indexer {
     pub trees: Trees,
     api: Option<OnlineClient<PolkadotConfig>>,
     rpc: Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>,
+    runtime: Arc<RuntimeState>,
+    processing_ctx: Arc<BlockProcessingContext>,
+}
+
+#[derive(Clone)]
+struct BlockProcessingContext {
     index_variant: bool,
     store_events: bool,
-    runtime: Arc<RuntimeState>,
-    /// sdk_pallets: set of pallet names using built-in SDK rules.
     sdk_pallets: std::collections::HashSet<String>,
-    /// custom_index: pallet → event → params mapping from TOML.
     custom_index: HashMap<String, HashMap<String, Vec<ResolvedParamConfig>>>,
+}
+
+struct FetchedBlock {
+    block_number: u32,
+    spec_version: u32,
+    events: Events<PolkadotConfig>,
+}
+
+struct ProcessedBlock {
+    block_number: u32,
+    event_count: u32,
+    key_count: u32,
+    events: Vec<ProcessedEvent>,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessedEvent {
+    event_index: u32,
+    variant_key: Option<Key>,
+    keys: Vec<Key>,
+    stored_event_json: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DerivedEvent {
+    variant_key: Option<Key>,
+    keys: Vec<Key>,
+    stored_event_json: Option<Vec<u8>>,
+}
+
+impl BlockProcessingContext {
+    fn new(config: &IndexSpec) -> Self {
+        Self {
+            index_variant: config.index_variant,
+            store_events: config.store_events,
+            sdk_pallets: config.sdk_pallets(),
+            custom_index: config.build_custom_index().expect("validated index spec"),
+        }
+    }
+
+    fn keys_for_event(&self, pallet_name: &str, event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+        if self.sdk_pallets.contains(pallet_name) {
+            if let Some(keys) = index_sdk_pallet(pallet_name, event_name, fields) {
+                return keys;
+            }
+        }
+        if let Some(event_map) = self.custom_index.get(pallet_name) {
+            if let Some(params) = event_map.get(event_name) {
+                return self.keys_from_params(params, fields);
+            }
+        }
+        vec![]
+    }
+
+    fn keys_from_params(&self, params: &[ResolvedParamConfig], fields: &Composite<()>) -> Vec<Key> {
+        let mut keys = Vec::new();
+        for param in params {
+            if param.multi {
+                let Some(field) = param.fields.first() else {
+                    continue;
+                };
+                let value = match get_field(fields, field) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                keys.extend(values_to_keys(value, &param.key));
+            } else if let Some(key) = values_to_key(fields, &param.fields, &param.key) {
+                keys.push(key);
+            }
+        }
+        keys
+    }
+
+    fn derive_event(
+        &self,
+        spec_version: u32,
+        pallet_name: &str,
+        event_name: &str,
+        pallet_index: u8,
+        variant_index: u8,
+        event_index: u32,
+        fields: &Composite<()>,
+    ) -> Result<DerivedEvent, IndexError> {
+        let variant_key = self
+            .index_variant
+            .then_some(Key::Variant(pallet_index, variant_index));
+        let keys = self.keys_for_event(pallet_name, event_name, fields);
+        let should_store_event = self.index_variant || !keys.is_empty();
+        let stored_event_json = if self.store_events && should_store_event {
+            Some(encode_event_json(
+                spec_version,
+                pallet_name,
+                event_name,
+                pallet_index,
+                variant_index,
+                event_index,
+                fields,
+            )?)
+        } else {
+            None
+        };
+
+        Ok(DerivedEvent {
+            variant_key,
+            keys,
+            stored_event_json,
+        })
+    }
 }
 
 impl Indexer {
@@ -58,11 +171,8 @@ impl Indexer {
             trees,
             api: Some(api),
             rpc: Some(rpc),
-            index_variant: config.index_variant,
-            store_events: config.store_events,
             runtime,
-            sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index().expect("validated index spec"),
+            processing_ctx: Arc::new(BlockProcessingContext::new(config)),
         }
     }
 
@@ -76,11 +186,8 @@ impl Indexer {
             trees,
             api: None,
             rpc: None,
-            index_variant: config.index_variant,
-            store_events: config.store_events,
             runtime: Arc::new(RuntimeState::new(max_total_subscriptions)),
-            sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index().expect("validated index spec"),
+            processing_ctx: Arc::new(BlockProcessingContext::new(config)),
         }
     }
 
@@ -90,13 +197,10 @@ impl Indexer {
             trees,
             api: None,
             rpc: None,
-            index_variant: config.index_variant,
-            store_events: config.store_events,
             runtime: Arc::new(RuntimeState::new(
                 WsConfig::default().max_total_subscriptions,
             )),
-            sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index().expect("validated index spec"),
+            processing_ctx: Arc::new(BlockProcessingContext::new(config)),
         }
     }
 
@@ -138,7 +242,32 @@ impl Indexer {
     }
 
     pub async fn index_block(&self, block_number: u32) -> Result<(u32, u32, u32), IndexError> {
-        let mut key_count = 0u32;
+        let fetch_started = Instant::now();
+        let fetched = self.fetch_block_events(block_number).await?;
+        let fetch_elapsed = fetch_started.elapsed();
+
+        let process_started = Instant::now();
+        let processing_ctx = Arc::clone(&self.processing_ctx);
+        let processed = task::spawn_blocking(move || Self::process_block_cpu(processing_ctx, fetched))
+            .await
+            .map_err(|err| internal_error(format!("blocking event processor panicked: {err}")))??;
+        let process_elapsed = process_started.elapsed();
+
+        let commit_started = Instant::now();
+        let summary = self.commit_processed_block(processed)?;
+        let commit_elapsed = commit_started.elapsed();
+
+        debug!(
+            "Block {block_number} stage timings: fetch={}ms cpu={}ms commit={}ms",
+            fetch_elapsed.as_millis(),
+            process_elapsed.as_millis(),
+            commit_elapsed.as_millis(),
+        );
+
+        Ok(summary)
+    }
+
+    async fn fetch_block_events(&self, block_number: u32) -> Result<FetchedBlock, IndexError> {
         let (api, rpc) = self.runtime_clients()?;
 
         let block_hash = rpc
@@ -153,8 +282,28 @@ impl Indexer {
                 err.into()
             }
         })?;
-        let spec = at_block.spec_version();
+        let spec_version = at_block.spec_version();
         let events = at_block.events().fetch().await?;
+
+        Ok(FetchedBlock {
+            block_number,
+            spec_version,
+            events,
+        })
+    }
+
+    fn process_block_cpu(
+        processing_ctx: Arc<BlockProcessingContext>,
+        fetched: FetchedBlock,
+    ) -> Result<ProcessedBlock, IndexError> {
+        let FetchedBlock {
+            block_number,
+            spec_version,
+            events,
+        } = fetched;
+
+        let mut key_count = 0u32;
+        let mut processed_events = Vec::new();
 
         for (i, event_result) in events.iter().enumerate() {
             let event = match event_result {
@@ -173,17 +322,6 @@ impl Indexer {
             let pallet_index = event.pallet_index();
             let variant_index = event.event_index();
 
-            // Index the variant key if enabled.
-            if self.index_variant {
-                self.index_event_key(
-                    Key::Variant(pallet_index, variant_index),
-                    block_number,
-                    event_index,
-                )?;
-                key_count += 1;
-            }
-
-            // Decode field values schema-lessly.
             let field_values: Composite<()> =
                 match event.decode_fields_unchecked_as::<Composite<()>>() {
                     Ok(fv) => fv,
@@ -196,33 +334,62 @@ impl Indexer {
                     }
                 };
 
-            // Determine indexing keys from config.
-            let keys = self.keys_for_event(pallet_name, event_name, &field_values);
-            let should_store_event = self.index_variant || !keys.is_empty();
+            let derived = processing_ctx.derive_event(
+                spec_version,
+                pallet_name,
+                event_name,
+                pallet_index,
+                variant_index,
+                event_index,
+                &field_values,
+            )?;
 
-            for key in &keys {
-                self.index_event_key(key.clone(), block_number, event_index)?;
+            key_count += derived.keys.len() as u32;
+            if derived.variant_key.is_some() {
                 key_count += 1;
             }
+            processed_events.push(ProcessedEvent {
+                event_index,
+                variant_key: derived.variant_key,
+                keys: derived.keys,
+                stored_event_json: derived.stored_event_json,
+            });
+        }
 
-            // Persist the decoded event row for direct retrieval.
-            if self.store_events && should_store_event {
-                self.store_event(
-                    block_number,
-                    event_index,
-                    spec,
-                    pallet_name,
-                    event_name,
-                    pallet_index,
-                    variant_index,
-                    &field_values,
-                )?;
+        Ok(ProcessedBlock {
+            block_number,
+            event_count: events.len(),
+            key_count,
+            events: processed_events,
+        })
+    }
+
+    fn commit_processed_block(&self, processed: ProcessedBlock) -> Result<(u32, u32, u32), IndexError> {
+        let ProcessedBlock {
+            block_number,
+            event_count,
+            key_count,
+            events,
+        } = processed;
+
+        for event in events {
+            if let Some(variant_key) = event.variant_key {
+                self.index_event_key(variant_key, block_number, event.event_index)?;
+            }
+
+            for key in event.keys {
+                self.index_event_key(key, block_number, event.event_index)?;
+            }
+
+            if let Some(json_bytes) = event.stored_event_json {
+                self.store_encoded_event(block_number, event.event_index, &json_bytes)?;
             }
         }
 
-        Ok((block_number, events.len() as u32, key_count))
+        Ok((block_number, event_count, key_count))
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn store_event(
         &self,
         block_number: u32,
@@ -234,7 +401,7 @@ impl Indexer {
         variant_index: u8,
         fields: &Composite<()>,
     ) -> Result<(), IndexError> {
-        if !self.store_events {
+        if !self.processing_ctx.store_events {
             return Ok(());
         }
 
@@ -242,66 +409,48 @@ impl Indexer {
             block_number: block_number.into(),
             event_index: event_index.into(),
         };
-        let mut encoded = self.encode_event(
+        let json_bytes = encode_event_json(
+            spec_version,
             pallet_name,
             event_name,
             pallet_index,
             variant_index,
             event_index,
             fields,
-        );
-        encoded["specVersion"] = json!(spec_version);
-        let json_bytes = serde_json::to_vec(&encoded)?;
-        self.trees
-            .events
-            .insert(db_key.as_bytes(), json_bytes.as_slice())?;
+        )?;
+        self.trees.events.insert(db_key.as_bytes(), json_bytes.as_slice())?;
+        Ok(())
+    }
+
+    fn store_encoded_event(
+        &self,
+        block_number: u32,
+        event_index: u32,
+        json_bytes: &[u8],
+    ) -> Result<(), IndexError> {
+        let db_key = EventKey {
+            block_number: block_number.into(),
+            event_index: event_index.into(),
+        };
+        self.trees.events.insert(db_key.as_bytes(), json_bytes)?;
         Ok(())
     }
 
     // ─── Key derivation ───────────────────────────────────────────────────────
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn keys_for_event(
         &self,
         pallet_name: &str,
         event_name: &str,
         fields: &Composite<()>,
     ) -> Vec<Key> {
-        // Try SDK built-in first.
-        if self.sdk_pallets.contains(pallet_name) {
-            if let Some(keys) = index_sdk_pallet(pallet_name, event_name, fields) {
-                return keys;
-            }
-        }
-        // Fall back to TOML custom config.
-        if let Some(event_map) = self.custom_index.get(pallet_name) {
-            if let Some(params) = event_map.get(event_name) {
-                return self.keys_from_params(params, fields);
-            }
-        }
-        vec![]
-    }
-
-    fn keys_from_params(&self, params: &[ResolvedParamConfig], fields: &Composite<()>) -> Vec<Key> {
-        let mut keys = Vec::new();
-        for param in params {
-            if param.multi {
-                let Some(field) = param.fields.first() else {
-                    continue;
-                };
-                let value = match get_field(fields, field) {
-                    Some(v) => v,
-                    None => continue,
-                };
-                keys.extend(values_to_keys(value, &param.key));
-            } else if let Some(key) = values_to_key(fields, &param.fields, &param.key) {
-                keys.push(key);
-            }
-        }
-        keys
+        self.processing_ctx.keys_for_event(pallet_name, event_name, fields)
     }
 
     // ─── Event encoding ───────────────────────────────────────────────────────
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn encode_event(
         &self,
         pallet_name: &str,
@@ -311,16 +460,57 @@ impl Indexer {
         event_index: u32,
         fields: &Composite<()>,
     ) -> serde_json::Value {
-        json!({
-            "palletName": pallet_name,
-            "eventName": event_name,
-            "palletIndex": pallet_index,
-            "variantIndex": variant_index,
-            "eventIndex": event_index,
-            "fields": composite_to_json(fields),
-        })
+        encode_event_value(
+            pallet_name,
+            event_name,
+            pallet_index,
+            variant_index,
+            event_index,
+            fields,
+        )
     }
+}
 
+fn encode_event_value(
+        pallet_name: &str,
+        event_name: &str,
+        pallet_index: u8,
+        variant_index: u8,
+        event_index: u32,
+        fields: &Composite<()>,
+    ) -> serde_json::Value {
+    json!({
+        "palletName": pallet_name,
+        "eventName": event_name,
+        "palletIndex": pallet_index,
+        "variantIndex": variant_index,
+        "eventIndex": event_index,
+        "fields": composite_to_json(fields),
+    })
+}
+
+fn encode_event_json(
+    spec_version: u32,
+    pallet_name: &str,
+    event_name: &str,
+    pallet_index: u8,
+    variant_index: u8,
+    event_index: u32,
+    fields: &Composite<()>,
+) -> Result<Vec<u8>, IndexError> {
+    let mut encoded = encode_event_value(
+        pallet_name,
+        event_name,
+        pallet_index,
+        variant_index,
+        event_index,
+        fields,
+    );
+    encoded["specVersion"] = json!(spec_version);
+    Ok(serde_json::to_vec(&encoded)?)
+}
+
+impl Indexer {
     // ─── DB write & notification ──────────────────────────────────────────────
 
     pub fn index_event_key(
@@ -1304,15 +1494,14 @@ mod tests {
         runtime: Arc<RuntimeState>,
     ) -> Indexer {
         let config = test_config();
+        let mut processing_ctx = BlockProcessingContext::new(&config);
+        processing_ctx.store_events = store_events;
         Indexer {
             trees,
             api: None,
             rpc: None,
-            index_variant: config.index_variant,
-            store_events,
             runtime,
-            sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index().expect("validated index spec"),
+            processing_ctx: Arc::new(processing_ctx),
         }
     }
 
@@ -1758,6 +1947,91 @@ mod tests {
 
         assert!(futures.is_empty());
         assert_eq!(next_batch_block, None);
+    }
+
+    #[test]
+    fn derive_event_builds_custom_key_and_stored_event_json() {
+        let spec = IndexSpec {
+            name: "test".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            versions: vec![0],
+            index_variant: false,
+            store_events: true,
+            custom_keys: HashMap::from([(
+                "amount".into(),
+                crate::config::CustomKeyConfig::Scalar(ScalarKind::U128),
+            )]),
+            pallets: vec![crate::config::PalletConfig {
+                name: "MyPallet".into(),
+                sdk: false,
+                events: vec![crate::config::EventConfig {
+                    name: "Stored".into(),
+                    params: vec![crate::config::ParamConfig {
+                        field: Some("amount".into()),
+                        fields: vec![],
+                        key: "amount".into(),
+                        multi: false,
+                    }],
+                }],
+            }],
+        };
+        let ctx = BlockProcessingContext::new(&spec);
+
+        let derived = ctx
+            .derive_event(
+                1234,
+                "MyPallet",
+                "Stored",
+                9,
+                2,
+                7,
+                &Composite::Named(vec![("amount".into(), u128_value(999))]),
+            )
+            .unwrap();
+
+        assert_eq!(derived.variant_key, None);
+        assert_eq!(
+            derived.keys,
+            vec![Key::Custom(CustomKey {
+                name: "amount".into(),
+                value: CustomValue::U128(U128Text(999)),
+            })]
+        );
+        let stored: serde_json::Value =
+            serde_json::from_slice(&derived.stored_event_json.expect("expected stored event"))
+                .unwrap();
+        assert_eq!(stored["specVersion"], json!(1234));
+        assert_eq!(stored["eventName"], json!("Stored"));
+        assert_eq!(stored["fields"], json!({"amount": "999"}));
+    }
+
+    #[test]
+    fn derive_event_stores_variant_only_event_when_variant_indexing_enabled() {
+        let spec = IndexSpec {
+            name: "test".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            versions: vec![0],
+            index_variant: true,
+            store_events: true,
+            custom_keys: HashMap::new(),
+            pallets: vec![],
+        };
+        let ctx = BlockProcessingContext::new(&spec);
+
+        let derived = ctx
+            .derive_event(55, "Unindexed", "OnlyVariant", 4, 1, 3, &Composite::Named(vec![]))
+            .unwrap();
+
+        assert_eq!(derived.variant_key, Some(Key::Variant(4, 1)));
+        assert!(derived.keys.is_empty());
+        let stored: serde_json::Value =
+            serde_json::from_slice(&derived.stored_event_json.expect("expected stored event"))
+                .unwrap();
+        assert_eq!(stored["specVersion"], json!(55));
+        assert_eq!(stored["palletIndex"], json!(4));
+        assert_eq!(stored["variantIndex"], json!(1));
     }
 
     #[test]

@@ -4,6 +4,7 @@ use acuity_index::synthetic_devnet::{
 use clap::{Parser, ValueEnum};
 use serde_json::to_string_pretty;
 use std::{
+    collections::HashSet,
     error::Error,
     fs,
     io,
@@ -54,6 +55,11 @@ struct NodeClient {
     rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     rpc_client: RpcClient,
     new_heads: RpcSubscription<<PolkadotConfig as subxt::Config>::Header>,
+}
+
+struct SubmittedExtrinsic {
+    encoded: Vec<u8>,
+    extrinsic_hash: HashFor<PolkadotConfig>,
 }
 
 #[tokio::main]
@@ -155,6 +161,23 @@ async fn current_block_number(client: &NodeClient) -> Result<u32, Box<dyn Error>
         .number
         .try_into()
         .map_err(|_| std::io::Error::other("block number exceeds u32").into())
+}
+
+async fn next_new_head(
+    client: &mut NodeClient,
+    waiting_for: &str,
+) -> Result<<PolkadotConfig as subxt::Config>::Header, Box<dyn Error>> {
+    match client.new_heads.next().await {
+        Some(Ok(header)) => Ok(header),
+        Some(Err(err)) => Err(io::Error::other(format!(
+            "chain_subscribeNewHeads failed while waiting for {waiting_for}: {err}"
+        ))
+        .into()),
+        None => Err(io::Error::other(format!(
+            "chain_subscribeNewHeads ended while waiting for {waiting_for}"
+        ))
+        .into()),
+    }
 }
 
 async fn seed_smoke(
@@ -302,49 +325,33 @@ async fn seed_bulk(
     let mut alice_nonce = account_nonce(client, alice.public_key().0).await?;
     let mut bob_nonce = account_nonce(client, bob.public_key().0).await?;
     let mut charlie_nonce = account_nonce(client, charlie.public_key().0).await?;
+    let mut pending = HashSet::with_capacity(batches as usize);
 
-    let mut end_block = start_block;
     info!(
         start_block,
         batch_start, batches, burst_count, "seeding bulk workload"
     );
+    info!(batches, burst_count, "submitting synthetic burst batches");
 
     for idx in 0..batches {
         let batch_id = batch_start + idx;
-        match idx % 3 {
-            0 => {
-                end_block = end_block.max(
-                    submit_call_with_retry(
-                        client,
-                        &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
-                        &alice,
-                        &mut alice_nonce,
-                    )
-                    .await?,
-                );
-            }
-            1 => {
-                end_block = end_block.max(
-                    submit_call_with_retry(
-                        client,
-                        &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
-                        &bob,
-                        &mut bob_nonce,
-                    )
-                    .await?,
-                );
-            }
-            _ => {
-                end_block = end_block.max(
-                    submit_call_with_retry(
-                        client,
-                        &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
-                        &charlie,
-                        &mut charlie_nonce,
-                    )
-                    .await?,
-                );
-            }
+        let (signer_name, signer, nonce) = match idx % 3 {
+            0 => ("alice", &alice, &mut alice_nonce),
+            1 => ("bob", &bob, &mut bob_nonce),
+            _ => ("charlie", &charlie, &mut charlie_nonce),
+        };
+        let submitted = submit_call_only_with_retry(
+            client,
+            &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
+            signer,
+            nonce,
+        )
+        .await?;
+        if !pending.insert(submitted.encoded) {
+            return Err(io::Error::other(format!(
+                "duplicate submitted extrinsic recorded for batch {batch_id}"
+            ))
+            .into());
         }
 
         info!(
@@ -352,10 +359,18 @@ async fn seed_bulk(
             batch_index = idx + 1,
             total_batches = batches,
             burst_count,
-            block_number = end_block,
-            "seeded synthetic burst batch"
+            signer = signer_name,
+            submitted_batches = idx + 1,
+            "submitted synthetic burst batch"
         );
     }
+
+    let end_block = wait_for_all_in_blocks_via_new_heads(client, pending, start_block).await?;
+    info!(
+        end_block,
+        total_batches = batches,
+        "all submitted synthetic burst batches included"
+    );
 
     let first_batch = batch_start;
     let last_batch = batch_start + batches.saturating_sub(1);
@@ -394,6 +409,26 @@ async fn submit_call<Call>(
 where
     Call: subxt::tx::Payload,
 {
+    let min_block_exclusive = current_block_number(client).await?;
+    let submitted = submit_call_only(client, call, signer, nonce).await?;
+    wait_for_in_block_via_new_heads(
+        client,
+        &submitted.encoded,
+        submitted.extrinsic_hash,
+        min_block_exclusive,
+    )
+    .await
+}
+
+async fn submit_call_only<Call>(
+    client: &NodeClient,
+    call: &Call,
+    signer: &Keypair,
+    nonce: u64,
+) -> Result<SubmittedExtrinsic, Box<dyn Error>>
+where
+    Call: subxt::tx::Payload,
+{
     let params = PolkadotExtrinsicParamsBuilder::<PolkadotConfig>::new()
         .nonce(nonce)
         .immortal()
@@ -402,11 +437,13 @@ where
         .api
         .tx()
         .await?;
-    let min_block_exclusive = current_block_number(client).await?;
     let signed_tx = tx_client.create_signed(call, signer, params).await?;
     let encoded = signed_tx.into_encoded();
     let extrinsic_hash = client.rpc.author_submit_extrinsic(&encoded).await?;
-    wait_for_in_block_via_new_heads(client, &encoded, extrinsic_hash, min_block_exclusive).await
+    Ok(SubmittedExtrinsic {
+        encoded,
+        extrinsic_hash,
+    })
 }
 
 async fn wait_for_in_block_via_new_heads(
@@ -415,22 +452,9 @@ async fn wait_for_in_block_via_new_heads(
     extrinsic_hash: HashFor<PolkadotConfig>,
     min_block_exclusive: u32,
 ) -> Result<u32, Box<dyn Error>> {
+    let waiting_for = format!("extrinsic {extrinsic_hash:?}");
     loop {
-        let header = match client.new_heads.next().await {
-            Some(Ok(header)) => header,
-            Some(Err(err)) => {
-                return Err(io::Error::other(format!(
-                    "chain_subscribeNewHeads failed while waiting for extrinsic {extrinsic_hash:?}: {err}"
-                ))
-                .into())
-            }
-            None => {
-                return Err(io::Error::other(format!(
-                    "chain_subscribeNewHeads ended while waiting for extrinsic {extrinsic_hash:?}"
-                ))
-                .into())
-            }
-        };
+        let header = next_new_head(client, &waiting_for).await?;
 
         let block_number: u32 = header
             .number
@@ -466,21 +490,125 @@ async fn wait_for_in_block_via_new_heads(
     }
 }
 
-async fn submit_call_with_retry<Call>(
+async fn wait_for_all_in_blocks_via_new_heads(
     client: &mut NodeClient,
+    mut pending: HashSet<Vec<u8>>,
+    min_block_exclusive: u32,
+) -> Result<u32, Box<dyn Error>> {
+    if pending.is_empty() {
+        return Ok(min_block_exclusive);
+    }
+
+    let mut end_block = min_block_exclusive;
+    let mut next_block_to_scan = min_block_exclusive.saturating_add(1);
+    info!(
+        remaining_transactions = pending.len(),
+        from_block = next_block_to_scan,
+        "waiting for submitted transactions to be included"
+    );
+
+    loop {
+        let best_block = current_block_number(client).await?;
+        scan_pending_through_block(
+            client,
+            &mut pending,
+            &mut next_block_to_scan,
+            &mut end_block,
+            best_block,
+        )
+        .await?;
+        if pending.is_empty() {
+            return Ok(end_block);
+        }
+
+        let header = next_new_head(client, "submitted transactions").await?;
+        let head_block: u32 = header
+            .number
+            .try_into()
+            .map_err(|_| io::Error::other("block number exceeds u32"))?;
+        scan_pending_through_block(
+            client,
+            &mut pending,
+            &mut next_block_to_scan,
+            &mut end_block,
+            head_block,
+        )
+        .await?;
+        if pending.is_empty() {
+            return Ok(end_block);
+        }
+    }
+}
+
+async fn scan_pending_through_block(
+    client: &NodeClient,
+    pending: &mut HashSet<Vec<u8>>,
+    next_block_to_scan: &mut u32,
+    end_block: &mut u32,
+    target_block: u32,
+) -> Result<(), Box<dyn Error>> {
+    while !pending.is_empty() && *next_block_to_scan <= target_block {
+        let block_number = *next_block_to_scan;
+        let included_transactions = scan_block_for_pending(client, block_number, pending).await?;
+        if included_transactions > 0 {
+            *end_block = block_number;
+            info!(
+                block_number,
+                included_transactions,
+                remaining_transactions = pending.len(),
+                "observed submitted transactions in block"
+            );
+        }
+        *next_block_to_scan += 1;
+    }
+    Ok(())
+}
+
+async fn scan_block_for_pending(
+    client: &NodeClient,
+    block_number: u32,
+    pending: &mut HashSet<Vec<u8>>,
+) -> Result<usize, Box<dyn Error>> {
+    let block_hash = client
+        .rpc
+        .chain_get_block_hash(Some(block_number.into()))
+        .await?
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "block hash missing for block #{block_number} while draining submitted transactions"
+            ))
+        })?;
+    let block = client.rpc.chain_get_block(Some(block_hash)).await?.ok_or_else(|| {
+        io::Error::other(format!(
+            "block body missing for block #{block_number} ({block_hash:?}) while draining submitted transactions"
+        ))
+    })?;
+
+    let mut included_transactions = 0;
+    for extrinsic in &block.block.extrinsics {
+        if pending.remove(extrinsic.0.as_slice()) {
+            included_transactions += 1;
+        }
+    }
+
+    Ok(included_transactions)
+}
+
+async fn submit_call_only_with_retry<Call>(
+    client: &NodeClient,
     call: &Call,
     signer: &Keypair,
     nonce: &mut u64,
-) -> Result<u32, Box<dyn Error>>
+) -> Result<SubmittedExtrinsic, Box<dyn Error>>
 where
     Call: subxt::tx::Payload,
 {
     for _ in 0..3 {
         let current_nonce = *nonce;
-        match submit_call(client, call, signer, current_nonce).await {
-            Ok(block_number) => {
+        match submit_call_only(client, call, signer, current_nonce).await {
+            Ok(submitted) => {
                 *nonce = current_nonce + 1;
-                return Ok(block_number);
+                return Ok(submitted);
             }
             Err(err) if err.to_string().to_ascii_lowercase().contains("outdated") => {
                 info!(
@@ -498,9 +626,29 @@ where
     Err(std::io::Error::other("transaction remained outdated after nonce refresh").into())
 }
 
+async fn submit_call_with_retry<Call>(
+    client: &mut NodeClient,
+    call: &Call,
+    signer: &Keypair,
+    nonce: &mut u64,
+) -> Result<u32, Box<dyn Error>>
+where
+    Call: subxt::tx::Payload,
+{
+    let min_block_exclusive = current_block_number(client).await?;
+    let submitted = submit_call_only_with_retry(client, call, signer, nonce).await?;
+    wait_for_in_block_via_new_heads(
+        client,
+        &submitted.encoded,
+        submitted.extrinsic_hash,
+        min_block_exclusive,
+    )
+    .await
+}
+
 async fn account_nonce(client: &NodeClient, account_id: [u8; 32]) -> Result<u64, Box<dyn Error>> {
-    // `system_accountNextIndex` reflects the transaction pool, which avoids stale finalized
-    // nonces when `--instant-seal` advances blocks faster than finality catches up.
+    // `system_accountNextIndex` reflects the transaction pool, which keeps rapid local
+    // submissions aligned with pending nonces instead of finalized state only.
     client
         .rpc_client
         .request(

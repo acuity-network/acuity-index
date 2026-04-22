@@ -73,14 +73,14 @@ The synthetic index spec checked into `chains/synthetic.toml` is a template, not
 
 This keeps the checked-in config stable while still making the synthetic workflow safe for disposable local chains whose genesis hash is only known after the chain spec/runtime is materialized.
 
-### Why `polkadot-omni-node --instant-seal`
+### Synthetic Node Modes
 
-The synthetic workflow uses `polkadot-omni-node` in dev mode with `--instant-seal --pool-type single-state`.
+The synthetic tooling currently uses two local-node modes.
 
-- Each submitted extrinsic is included promptly and deterministically.
-- Seeder-generated manifests can refer to stable expected block ranges and query results.
-- Benchmark runs can seed a known amount of work first, then measure how long `acuity-index` takes to index that fixed workload from an empty database.
-- The legacy single-state pool avoids the fork-aware tx-pool stalls that can otherwise stop high-volume local seeding before the benchmark workload is fully submitted.
+- `just synthetic-node` runs `polkadot-omni-node` in dev mode with `--instant-seal --pool-type single-state` for interactive local experimentation and smoke-style seeding.
+- `just benchmark-indexing` starts its own disposable dev node with `--dev-block-time 1000 --pool-type single-state` and deliberately does not use `--instant-seal`.
+- The benchmark path needs the node to accept the full transaction burst quickly, then keep producing timed blocks until every submitted extrinsic has been observed on-chain.
+- The benchmark node avoids the instant-seal behavior that previously forced increasingly complex inclusion workarounds during large local seed runs.
 
 The node is still required to run with archival pruning settings because the indexer's normal historical-state requirement remains in force even for the synthetic chain.
 
@@ -93,8 +93,8 @@ The synthetic benchmark path is organized around durable artifacts rather than a
 `src/bin/seed_synthetic_runtime.rs` is the source of truth for the seeded workload.
 
 - In `smoke` mode it submits a small set of hand-picked transactions that exercise several query shapes.
-- In `bulk` mode it submits many `Synthetic::emit_burst` transactions to generate an event-dense benchmark workload.
-- After submission it emits a `SeedManifest` JSON document containing:
+- In `bulk` mode it submits many `Synthetic::emit_burst` transactions as fast as possible to generate an event-dense benchmark workload, then waits until every accepted extrinsic has been included in a block.
+- After submission and confirmed inclusion it emits a `SeedManifest` JSON document containing:
   - chain identity (`genesis_hash`)
   - seeded block range
   - transaction and synthetic event counts
@@ -170,7 +170,7 @@ The `justfile` is now part of the architecture for the synthetic workflow, not o
 - `synthetic-node` materializes the local chain spec and starts the local omni-node instance with the required archival settings.
 - `seed-smoke` and `seed-bulk` produce deterministic seeded workloads.
 - `test-integration` runs the ignored end-to-end synthetic integration suite.
-- `benchmark-indexing` bulk-seeds an already running synthetic node and benchmarks indexing against that workload.
+- `benchmark-indexing` starts a disposable timed synthetic node, bulk-seeds it, and benchmarks indexing against that workload.
 
 These recipes are the supported developer entrypoints for the synthetic stack. The binaries and helper module are structured so that the same underlying flow can be used interactively from `just`, from tests, or from future CI automation without duplicating the workflow logic.
 

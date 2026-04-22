@@ -400,26 +400,6 @@ async fn seed_bulk(
     })
 }
 
-async fn submit_call<Call>(
-    client: &mut NodeClient,
-    call: &Call,
-    signer: &Keypair,
-    nonce: u64,
-) -> Result<u32, Box<dyn Error>>
-where
-    Call: subxt::tx::Payload,
-{
-    let min_block_exclusive = current_block_number(client).await?;
-    let submitted = submit_call_only(client, call, signer, nonce).await?;
-    wait_for_in_block_via_new_heads(
-        client,
-        &submitted.encoded,
-        submitted.extrinsic_hash,
-        min_block_exclusive,
-    )
-    .await
-}
-
 async fn submit_call_only<Call>(
     client: &NodeClient,
     call: &Call,

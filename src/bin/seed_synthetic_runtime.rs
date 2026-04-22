@@ -4,10 +4,8 @@ use acuity_index::synthetic_devnet::{
 use clap::{Parser, ValueEnum};
 use serde_json::to_string_pretty;
 use std::{
-    collections::HashSet,
     error::Error,
-    fs,
-    io,
+    fs, io,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -17,12 +15,7 @@ use subxt::{
     OnlineClient, PolkadotConfig,
     config::{HashFor, RpcConfigFor},
     dynamic,
-    rpcs::{
-        client::RpcSubscription,
-        RpcClient,
-        methods::legacy::LegacyRpcMethods,
-        rpc_params,
-    },
+    rpcs::{RpcClient, client::RpcSubscription, methods::legacy::LegacyRpcMethods, rpc_params},
 };
 use subxt_signer::sr25519::{Keypair, dev};
 use tokio::time::sleep;
@@ -325,13 +318,16 @@ async fn seed_bulk(
     let mut alice_nonce = account_nonce(client, alice.public_key().0).await?;
     let mut bob_nonce = account_nonce(client, bob.public_key().0).await?;
     let mut charlie_nonce = account_nonce(client, charlie.public_key().0).await?;
-    let mut pending = HashSet::with_capacity(batches as usize);
+    let mut end_block = start_block;
 
     info!(
         start_block,
         batch_start, batches, burst_count, "seeding bulk workload"
     );
-    info!(batches, burst_count, "submitting synthetic burst batches");
+    info!(
+        batches,
+        burst_count, "submitting synthetic burst batches sequentially"
+    );
 
     for idx in 0..batches {
         let batch_id = batch_start + idx;
@@ -340,37 +336,26 @@ async fn seed_bulk(
             1 => ("bob", &bob, &mut bob_nonce),
             _ => ("charlie", &charlie, &mut charlie_nonce),
         };
-        let submitted = submit_call_only_with_retry(
+        let block_number = submit_call_with_retry(
             client,
             &dynamic::tx("Synthetic", "emit_burst", (batch_id, burst_count)),
             signer,
             nonce,
         )
         .await?;
-        if !pending.insert(submitted.encoded) {
-            return Err(io::Error::other(format!(
-                "duplicate submitted extrinsic recorded for batch {batch_id}"
-            ))
-            .into());
-        }
+        end_block = block_number;
 
         info!(
             batch_id,
+            block_number,
             batch_index = idx + 1,
             total_batches = batches,
             burst_count,
             signer = signer_name,
-            submitted_batches = idx + 1,
-            "submitted synthetic burst batch"
+            included_batches = idx + 1,
+            "synthetic burst batch included"
         );
     }
-
-    let end_block = wait_for_all_in_blocks_via_new_heads(client, pending, start_block).await?;
-    info!(
-        end_block,
-        total_batches = batches,
-        "all submitted synthetic burst batches included"
-    );
 
     let first_batch = batch_start;
     let last_batch = batch_start + batches.saturating_sub(1);
@@ -413,10 +398,7 @@ where
         .nonce(nonce)
         .immortal()
         .build();
-    let mut tx_client = client
-        .api
-        .tx()
-        .await?;
+    let mut tx_client = client.api.tx().await?;
     let signed_tx = tx_client.create_signed(call, signer, params).await?;
     let encoded = signed_tx.into_encoded();
     let extrinsic_hash = client.rpc.author_submit_extrinsic(&encoded).await?;
@@ -468,110 +450,6 @@ async fn wait_for_in_block_via_new_heads(
             return Ok(block_number);
         }
     }
-}
-
-async fn wait_for_all_in_blocks_via_new_heads(
-    client: &mut NodeClient,
-    mut pending: HashSet<Vec<u8>>,
-    min_block_exclusive: u32,
-) -> Result<u32, Box<dyn Error>> {
-    if pending.is_empty() {
-        return Ok(min_block_exclusive);
-    }
-
-    let mut end_block = min_block_exclusive;
-    let mut next_block_to_scan = min_block_exclusive.saturating_add(1);
-    info!(
-        remaining_transactions = pending.len(),
-        from_block = next_block_to_scan,
-        "waiting for submitted transactions to be included"
-    );
-
-    loop {
-        let best_block = current_block_number(client).await?;
-        scan_pending_through_block(
-            client,
-            &mut pending,
-            &mut next_block_to_scan,
-            &mut end_block,
-            best_block,
-        )
-        .await?;
-        if pending.is_empty() {
-            return Ok(end_block);
-        }
-
-        let header = next_new_head(client, "submitted transactions").await?;
-        let head_block: u32 = header
-            .number
-            .try_into()
-            .map_err(|_| io::Error::other("block number exceeds u32"))?;
-        scan_pending_through_block(
-            client,
-            &mut pending,
-            &mut next_block_to_scan,
-            &mut end_block,
-            head_block,
-        )
-        .await?;
-        if pending.is_empty() {
-            return Ok(end_block);
-        }
-    }
-}
-
-async fn scan_pending_through_block(
-    client: &NodeClient,
-    pending: &mut HashSet<Vec<u8>>,
-    next_block_to_scan: &mut u32,
-    end_block: &mut u32,
-    target_block: u32,
-) -> Result<(), Box<dyn Error>> {
-    while !pending.is_empty() && *next_block_to_scan <= target_block {
-        let block_number = *next_block_to_scan;
-        let included_transactions = scan_block_for_pending(client, block_number, pending).await?;
-        if included_transactions > 0 {
-            *end_block = block_number;
-            info!(
-                block_number,
-                included_transactions,
-                remaining_transactions = pending.len(),
-                "observed submitted transactions in block"
-            );
-        }
-        *next_block_to_scan += 1;
-    }
-    Ok(())
-}
-
-async fn scan_block_for_pending(
-    client: &NodeClient,
-    block_number: u32,
-    pending: &mut HashSet<Vec<u8>>,
-) -> Result<usize, Box<dyn Error>> {
-    let block_hash = client
-        .rpc
-        .chain_get_block_hash(Some(block_number.into()))
-        .await?
-        .ok_or_else(|| {
-            io::Error::other(format!(
-                "block hash missing for block #{block_number} while draining submitted transactions"
-            ))
-        })?;
-    let block = client.rpc.chain_get_block(Some(block_hash)).await?.ok_or_else(|| {
-        io::Error::other(format!(
-            "block body missing for block #{block_number} ({block_hash:?}) while draining submitted transactions"
-        ))
-    })?;
-
-    let mut included_transactions = 0;
-    for extrinsic in &block.block.extrinsics {
-        if pending.remove(extrinsic.0.as_slice()) {
-            included_transactions += 1;
-        }
-    }
-
-    Ok(included_transactions)
 }
 
 async fn submit_call_only_with_retry<Call>(

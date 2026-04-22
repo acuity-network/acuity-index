@@ -118,7 +118,7 @@ The synthetic runtime is intentionally small and deterministic:
 - one custom `Synthetic` pallet emits searchable `u32`, `bytes32`, `account_id`, and multi-value event fields
 - `Balances` and `TransactionPayment` remain present so built-in SDK event indexing is exercised too
 - `just synthetic-node` runs `polkadot-omni-node --instant-seal --pool-type single-state` for ad hoc local experimentation and smoke-style seeding
-- `just benchmark-indexing` starts its own disposable synthetic node with `--dev-block-time 1000 --pool-type single-state` and does not use `--instant-seal`
+- `just benchmark-indexing` starts its own disposable synthetic node with `--dev-block-time 50 --pool-type single-state` and does not use `--instant-seal`
 
 Useful recipes:
 
@@ -136,7 +136,7 @@ just test-integration
 just benchmark-indexing
 ```
 
-The benchmark recipe starts its own synthetic node on the selected RPC port. Its bulk seeder first submits the full workload as fast as possible, then waits until every submitted transaction has been included in a block before `benchmark_synthetic_indexing` starts timing the indexer. The reported event rate is based on the synthetic pallet events submitted by the seeder.
+The benchmark recipe starts its own synthetic node on the selected RPC port. Its bulk seeder submits one transaction, waits until that transaction has been included in a block, and only then submits the next one. The reported event rate is based on the synthetic pallet events submitted by the seeder.
 
 By default, `just benchmark-indexing` seeds 500 burst blocks with `burst_count=128`, and the final JSON report includes the configured `queueDepth`.
 

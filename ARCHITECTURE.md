@@ -78,8 +78,8 @@ This keeps the checked-in config stable while still making the synthetic workflo
 The synthetic tooling currently uses two local-node modes.
 
 - `just synthetic-node` runs `polkadot-omni-node` in dev mode with `--instant-seal --pool-type single-state` for interactive local experimentation and smoke-style seeding.
-- `just benchmark-indexing` starts its own disposable dev node with `--dev-block-time 1000 --pool-type single-state` and deliberately does not use `--instant-seal`.
-- The benchmark path needs the node to accept the full transaction burst quickly, then keep producing timed blocks until every submitted extrinsic has been observed on-chain.
+- `just benchmark-indexing` starts its own disposable dev node with `--dev-block-time 50 --pool-type single-state` and deliberately does not use `--instant-seal`.
+- The benchmark path needs deterministic timed blocks, so the bulk seeder submits one extrinsic at a time and waits for on-chain inclusion before issuing the next submission.
 - The benchmark node avoids the instant-seal behavior that previously forced increasingly complex inclusion workarounds during large local seed runs.
 
 The node is still required to run with archival pruning settings because the indexer's normal historical-state requirement remains in force even for the synthetic chain.
@@ -93,7 +93,7 @@ The synthetic benchmark path is organized around durable artifacts rather than a
 `src/bin/seed_synthetic_runtime.rs` is the source of truth for the seeded workload.
 
 - In `smoke` mode it submits a small set of hand-picked transactions that exercise several query shapes.
-- In `bulk` mode it submits many `Synthetic::emit_burst` transactions as fast as possible to generate an event-dense benchmark workload, then waits until every accepted extrinsic has been included in a block.
+- In `bulk` mode it submits many `Synthetic::emit_burst` transactions, waiting for each one to be included before submitting the next, so the resulting seeded workload spans successive blocks.
 - After submission and confirmed inclusion it emits a `SeedManifest` JSON document containing:
   - chain identity (`genesis_hash`)
   - seeded block range

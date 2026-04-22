@@ -206,7 +206,7 @@ async fn smoke_indexes_synthetic_runtime_events() -> Result<(), Box<dyn Error>> 
 
 #[tokio::test]
 #[ignore = "requires polkadot-omni-node and a release runtime build"]
-async fn bulk_seeder_handles_long_instant_seal_runs() -> Result<(), Box<dyn Error>> {
+async fn bulk_seeder_waits_for_each_submission_to_land_in_a_block() -> Result<(), Box<dyn Error>> {
     let stack =
         SyntheticStack::start(ConfigOverrides::default(), IndexerOptions::default()).await?;
     let temp = tempfile::tempdir()?;
@@ -215,6 +215,7 @@ async fn bulk_seeder_handles_long_instant_seal_runs() -> Result<(), Box<dyn Erro
     let manifest = run_bulk_seeder(&stack.node_url, &manifest_path, 9600, 100, 2)?;
     assert_eq!(manifest.transactions_submitted, 100);
     assert_eq!(manifest.synthetic_event_count, 200);
+    assert_eq!(manifest.total_blocks, manifest.transactions_submitted);
 
     wait_for_indexed_tip(
         &stack.indexer_url,

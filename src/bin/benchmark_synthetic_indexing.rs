@@ -204,15 +204,62 @@ impl From<&BenchmarkReport> for SummaryRow {
 
 fn print_summary_table(rows: &[SummaryRow]) {
     println!();
-    println!("| queue_depth | elapsed time | blocks per second | events per second |");
-    println!("| --- | --- | --- | --- |");
-    for row in rows {
+    let headers = ["queue", "elapsed", "blocks/s", "events/s"];
+    let formatted_rows: Vec<[String; 4]> = rows
+        .iter()
+        .map(|row| {
+            [
+                row.queue_depth.to_string(),
+                format!("{:.3} s", row.elapsed_seconds),
+                format!("{:.3}", row.blocks_per_second),
+                format!("{:.3}", row.synthetic_events_per_second),
+            ]
+        })
+        .collect();
+    let widths = [0, 1, 2, 3].map(|column| {
+        let header_width = headers[column].len();
+        let value_width = formatted_rows
+            .iter()
+            .map(|row| row[column].len())
+            .max()
+            .unwrap_or(0);
+        header_width.max(value_width)
+    });
+
+    println!(
+        "{:<w0$}  {:>w1$}  {:>w2$}  {:>w3$}",
+        headers[0],
+        headers[1],
+        headers[2],
+        headers[3],
+        w0 = widths[0],
+        w1 = widths[1],
+        w2 = widths[2],
+        w3 = widths[3],
+    );
+    println!(
+        "{:<w0$}  {:>w1$}  {:>w2$}  {:>w3$}",
+        "-".repeat(widths[0]),
+        "-".repeat(widths[1]),
+        "-".repeat(widths[2]),
+        "-".repeat(widths[3]),
+        w0 = widths[0],
+        w1 = widths[1],
+        w2 = widths[2],
+        w3 = widths[3],
+    );
+
+    for row in formatted_rows {
         println!(
-            "| {} | {:.3}s | {:.3} | {:.3} |",
-            row.queue_depth,
-            row.elapsed_seconds,
-            row.blocks_per_second,
-            row.synthetic_events_per_second,
+            "{:<w0$}  {:>w1$}  {:>w2$}  {:>w3$}",
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2],
+            w3 = widths[3],
         );
     }
 }

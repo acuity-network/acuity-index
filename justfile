@@ -36,7 +36,7 @@ seed-bulk url='ws://127.0.0.1:9944' batch_start='1000' batches='100' burst_count
 test-integration:
     cargo test --test synthetic_integration -- --ignored --nocapture
 
-benchmark-indexing rpc_port='9944' queue_depth='4' batch_start='1000' batches='5000' burst_count='128' timeout_secs='600': runtime-chain-spec
+benchmark-indexing rpc_port='9944' queue_depth='4' batch_start='1000' batches='1000' burst_count='128' timeout_secs='600': runtime-chain-spec
     #!/usr/bin/env bash
     set -euo pipefail
     command -v polkadot-omni-node >/dev/null

@@ -411,7 +411,7 @@ fn classify_spec_update(
     let indexing_changed = current.spec.spec_change_blocks != candidate.spec.spec_change_blocks
         || current.spec.index_variant != candidate.spec.index_variant
         || current.spec.store_events != candidate.spec.store_events
-        || current.spec.custom_keys != candidate.spec.custom_keys
+        || current.spec.keys != candidate.spec.keys
         || current.spec.pallets != candidate.spec.pallets;
 
     if effective_url_changed || indexing_changed {
@@ -1160,7 +1160,7 @@ mod main_tests {
             spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
-            custom_keys: Default::default(),
+            keys: Default::default(),
             pallets: vec![],
         }
     }

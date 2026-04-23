@@ -24,7 +24,7 @@ use tracing::{debug, error, info};
 use zerocopy::IntoBytes;
 
 use crate::{
-    config::{IndexSpec, KeyTypeName, ParamKey, ResolvedParamConfig, ScalarKind},
+    config::{IndexSpec, ParamKey, ResolvedParamConfig, ScalarKind},
     shared::*,
     websockets::process_msg_status,
 };
@@ -740,47 +740,6 @@ fn keep_subscriber(tx: &mpsc::Sender<NotificationMessage>, msg: &NotificationMes
 
 // ─── scale_value → Key conversion ────────────────────────────────────────────
 
-fn value_to_builtin_key(value: &Value<()>, key_type: &KeyTypeName) -> Option<Key> {
-    let (name, value) = match key_type {
-        KeyTypeName::AccountId => (
-            "account_id",
-            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
-        ),
-        KeyTypeName::AccountIndex => ("account_index", extract_u32(value).map(CustomValue::U32)),
-        KeyTypeName::BountyIndex => ("bounty_index", extract_u32(value).map(CustomValue::U32)),
-        KeyTypeName::EraIndex => ("era_index", extract_u32(value).map(CustomValue::U32)),
-        KeyTypeName::MessageId => (
-            "message_id",
-            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
-        ),
-        KeyTypeName::PoolId => ("pool_id", extract_u32(value).map(CustomValue::U32)),
-        KeyTypeName::PreimageHash => (
-            "preimage_hash",
-            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
-        ),
-        KeyTypeName::ProposalHash => (
-            "proposal_hash",
-            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
-        ),
-        KeyTypeName::ProposalIndex => ("proposal_index", extract_u32(value).map(CustomValue::U32)),
-        KeyTypeName::RefIndex => ("ref_index", extract_u32(value).map(CustomValue::U32)),
-        KeyTypeName::RegistrarIndex => {
-            ("registrar_index", extract_u32(value).map(CustomValue::U32))
-        }
-        KeyTypeName::SessionIndex => ("session_index", extract_u32(value).map(CustomValue::U32)),
-        KeyTypeName::SpendIndex => ("spend_index", extract_u32(value).map(CustomValue::U32)),
-        KeyTypeName::TipHash => (
-            "tip_hash",
-            extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
-        ),
-    };
-
-    Some(Key::Custom(CustomKey {
-        name: name.to_owned(),
-        value: value?,
-    }))
-}
-
 fn value_to_custom_value(value: &Value<()>, kind: &ScalarKind) -> Option<CustomValue> {
     match kind {
         ScalarKind::Bytes32 => extract_bytes32(value).map(|b| CustomValue::Bytes32(Bytes32(b))),
@@ -803,12 +762,12 @@ fn value_to_custom_key(value: &Value<()>, name: &str, kind: &ScalarKind) -> Opti
 
 fn values_to_key(fields: &Composite<()>, field_names: &[String], key: &ParamKey) -> Option<Key> {
     match key {
-        ParamKey::BuiltIn(_) | ParamKey::Custom { .. } => {
+        ParamKey::Scalar { .. } => {
             let field = field_names.first()?;
             let value = get_field(fields, field)?;
             value_to_key(value, key)
         }
-        ParamKey::CompositeCustom {
+        ParamKey::Composite {
             name,
             fields: kinds,
         } => {
@@ -827,9 +786,8 @@ fn values_to_key(fields: &Composite<()>, field_names: &[String], key: &ParamKey)
 
 fn value_to_key(value: &Value<()>, key: &ParamKey) -> Option<Key> {
     match key {
-        ParamKey::BuiltIn(key_type) => value_to_builtin_key(value, key_type),
-        ParamKey::Custom { name, kind } => value_to_custom_key(value, name, kind),
-        ParamKey::CompositeCustom { .. } => None,
+        ParamKey::Scalar { name, kind } => value_to_custom_key(value, name, kind),
+        ParamKey::Composite { .. } => None,
     }
 }
 
@@ -1594,7 +1552,8 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 spec_change_blocks = [0]
 
-[custom_keys]
+[keys]
+account_id = "bytes32"
 para_id = "u32"
 id = "bytes32"
 
@@ -1708,123 +1667,6 @@ events = [
         Value {
             value: ValueDef::Composite(Composite::Unnamed(vec![u128_value(byte.into()); 32])),
             context: (),
-        }
-    }
-
-    #[test]
-    fn value_to_builtin_key_supports_every_builtin_key_type() {
-        let number = u128_value(9);
-        let bytes = bytes32_value(0xAB);
-
-        for (key_type, expected) in [
-            (
-                KeyTypeName::AccountId,
-                Key::Custom(CustomKey {
-                    name: "account_id".into(),
-                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
-                }),
-            ),
-            (
-                KeyTypeName::AccountIndex,
-                Key::Custom(CustomKey {
-                    name: "account_index".into(),
-                    value: CustomValue::U32(9),
-                }),
-            ),
-            (
-                KeyTypeName::BountyIndex,
-                Key::Custom(CustomKey {
-                    name: "bounty_index".into(),
-                    value: CustomValue::U32(9),
-                }),
-            ),
-            (
-                KeyTypeName::EraIndex,
-                Key::Custom(CustomKey {
-                    name: "era_index".into(),
-                    value: CustomValue::U32(9),
-                }),
-            ),
-            (
-                KeyTypeName::MessageId,
-                Key::Custom(CustomKey {
-                    name: "message_id".into(),
-                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
-                }),
-            ),
-            (
-                KeyTypeName::PoolId,
-                Key::Custom(CustomKey {
-                    name: "pool_id".into(),
-                    value: CustomValue::U32(9),
-                }),
-            ),
-            (
-                KeyTypeName::PreimageHash,
-                Key::Custom(CustomKey {
-                    name: "preimage_hash".into(),
-                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
-                }),
-            ),
-            (
-                KeyTypeName::ProposalHash,
-                Key::Custom(CustomKey {
-                    name: "proposal_hash".into(),
-                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
-                }),
-            ),
-            (
-                KeyTypeName::ProposalIndex,
-                Key::Custom(CustomKey {
-                    name: "proposal_index".into(),
-                    value: CustomValue::U32(9),
-                }),
-            ),
-            (
-                KeyTypeName::RefIndex,
-                Key::Custom(CustomKey {
-                    name: "ref_index".into(),
-                    value: CustomValue::U32(9),
-                }),
-            ),
-            (
-                KeyTypeName::RegistrarIndex,
-                Key::Custom(CustomKey {
-                    name: "registrar_index".into(),
-                    value: CustomValue::U32(9),
-                }),
-            ),
-            (
-                KeyTypeName::SessionIndex,
-                Key::Custom(CustomKey {
-                    name: "session_index".into(),
-                    value: CustomValue::U32(9),
-                }),
-            ),
-            (
-                KeyTypeName::SpendIndex,
-                Key::Custom(CustomKey {
-                    name: "spend_index".into(),
-                    value: CustomValue::U32(9),
-                }),
-            ),
-            (
-                KeyTypeName::TipHash,
-                Key::Custom(CustomKey {
-                    name: "tip_hash".into(),
-                    value: CustomValue::Bytes32(Bytes32([0xAB; 32])),
-                }),
-            ),
-        ] {
-            let value = match key_type {
-                KeyTypeName::AccountId
-                | KeyTypeName::MessageId
-                | KeyTypeName::PreimageHash
-                | KeyTypeName::ProposalHash
-                | KeyTypeName::TipHash => &bytes,
-                _ => &number,
-            };
-            assert_eq!(value_to_builtin_key(value, &key_type), Some(expected));
         }
     }
 
@@ -2097,7 +1939,7 @@ events = [
             spec_change_blocks: vec![0],
             index_variant: false,
             store_events: true,
-            custom_keys: HashMap::from([(
+            keys: HashMap::from([(
                 "amount".into(),
                 crate::config::CustomKeyConfig::Scalar(ScalarKind::U128),
             )]),
@@ -2153,7 +1995,7 @@ events = [
             spec_change_blocks: vec![0],
             index_variant: true,
             store_events: true,
-            custom_keys: HashMap::new(),
+            keys: HashMap::new(),
             pallets: vec![],
         };
         let ctx = BlockProcessingContext::new(&spec);
@@ -2387,8 +2229,9 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 spec_change_blocks = [0]
 
-        [custom_keys]
-count = "u32"
+        [keys]
+        account_id = "bytes32"
+        count = "u32"
 
         [[pallets]]
         name = "Custom"

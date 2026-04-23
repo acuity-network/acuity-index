@@ -10,9 +10,11 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 spec_change_blocks = [0]
 
-[custom_keys]
+[keys]
+account_id = "bytes32"
 amount = "u128"
 item_id = "bytes32"
+revision_id = "u32"
 item_revision = { fields = ["bytes32", "u32"] }
 
 [[pallets]]
@@ -60,7 +62,7 @@ events = [
             spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
-            custom_keys: Default::default(),
+            keys: Default::default(),
             pallets: vec![],
         };
         assert!(cfg.genesis_hash_bytes().is_err());
@@ -75,7 +77,7 @@ events = [
             spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
-            custom_keys: Default::default(),
+            keys: Default::default(),
             pallets: vec![],
         };
         assert!(cfg.genesis_hash_bytes().is_err());
@@ -102,11 +104,14 @@ events = [
         assert_eq!(claimed_params[0].fields, vec!["who".to_owned()]);
         assert_eq!(
             claimed_params[0].key,
-            ParamKey::BuiltIn(KeyTypeName::AccountId)
+            ParamKey::Scalar {
+                name: "account_id".into(),
+                kind: ScalarKind::Bytes32,
+            }
         );
         assert_eq!(
             claimed_params[1].key,
-            ParamKey::Custom {
+            ParamKey::Scalar {
                 name: "amount".into(),
                 kind: ScalarKind::U128,
             }
@@ -122,7 +127,7 @@ events = [
 
         assert_eq!(
             params[0].key,
-            ParamKey::CompositeCustom {
+            ParamKey::Composite {
                 name: "item_revision".into(),
                 fields: vec![ScalarKind::Bytes32, ScalarKind::U32],
             }
@@ -136,6 +141,9 @@ name = "test"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "wss://test:443"
 spec_change_blocks = [0]
+
+[keys]
+account_id = "bytes32"
 
 [[pallets]]
 name = "System"
@@ -158,7 +166,7 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 spec_change_blocks = [0]
 
-[custom_keys]
+[keys]
 item_revision = { fields = ["bytes32", "u32"] }
 
 [[pallets]]
@@ -181,7 +189,8 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 spec_change_blocks = [0]
 
-[custom_keys]
+[keys]
+account_id = "bytes32"
 item_id = "bytes32"
 
 [[pallets]]

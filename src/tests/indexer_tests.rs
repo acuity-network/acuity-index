@@ -68,11 +68,11 @@ mod indexer_tests {
         })
     }
 
-    fn builtin_u32_key(name: &str, value: u32) -> Key {
+    fn u32_key(name: &str, value: u32) -> Key {
         custom_u32_key(name, value)
     }
 
-    fn builtin_bytes32_key(name: &str, value: [u8; 32]) -> Key {
+    fn bytes32_key(name: &str, value: [u8; 32]) -> Key {
         custom_bytes32_key(name, value)
     }
 
@@ -84,7 +84,8 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 spec_change_blocks = [0]
 
-[custom_keys]
+[keys]
+account_id = "bytes32"
 para_id = "u32"
 id = "bytes32"
 
@@ -133,7 +134,8 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 spec_change_blocks = [0]
 
-[custom_keys]
+[keys]
+account_id = "bytes32"
 item_id = "bytes32"
 revision_id = "u32"
 item_revision = { fields = ["bytes32", "u32"] }
@@ -190,7 +192,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let acct = [0xAAu8; 32];
         let fields = named(vec![("account", bytes32_val(acct))]);
         let keys = indexer.keys_for_event("System", "NewAccount", &fields);
-        assert_eq!(keys, vec![builtin_bytes32_key("account_id", acct)]);
+        assert_eq!(keys, vec![bytes32_key("account_id", acct)]);
     }
 
     // ─── keys_for_event: custom pallet ────────────────────────────────────
@@ -204,7 +206,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let who = [0xBBu8; 32];
         let fields = named(vec![("who", bytes32_val(who))]);
         let keys = indexer.keys_for_event("Claims", "Claimed", &fields);
-        assert_eq!(keys, vec![builtin_bytes32_key("account_id", who)]);
+        assert_eq!(keys, vec![bytes32_key("account_id", who)]);
     }
 
     #[test]
@@ -232,7 +234,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let keys = indexer.keys_for_event("Registrar", "Registered", &fields);
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&custom_u32_key("para_id", 1000)));
-        assert!(keys.contains(&builtin_bytes32_key("account_id", manager)));
+        assert!(keys.contains(&bytes32_key("account_id", manager)));
     }
 
     #[test]
@@ -251,7 +253,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let keys = indexer.keys_for_event("Content", "PublishRevision", &fields);
         assert_eq!(keys.len(), 3);
         assert!(keys.contains(&custom_bytes32_key("item_id", item_id)));
-        assert!(keys.contains(&builtin_bytes32_key("account_id", owner)));
+        assert!(keys.contains(&bytes32_key("account_id", owner)));
         assert!(keys.contains(&custom_u32_key("revision_id", 7)));
     }
 
@@ -281,7 +283,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let item_keys = indexer.keys_for_event("Content", "PublishItem", &publish_item_fields);
         assert_eq!(item_keys.len(), 4);
         assert!(item_keys.contains(&custom_bytes32_key("item_id", item_id)));
-        assert!(item_keys.contains(&builtin_bytes32_key("account_id", owner)));
+        assert!(item_keys.contains(&bytes32_key("account_id", owner)));
         assert!(item_keys.contains(&custom_bytes32_key("item_id", parent_a)));
         assert!(item_keys.contains(&custom_bytes32_key("item_id", parent_b)));
 
@@ -302,12 +304,12 @@ item_revision = { fields = ["bytes32", "u32"] }
             indexer.keys_for_event("Content", "PublishRevision", &publish_revision_fields);
         assert_eq!(revision_keys.len(), 7);
         assert!(revision_keys.contains(&custom_bytes32_key("item_id", item_id)));
-        assert!(revision_keys.contains(&builtin_bytes32_key("account_id", owner)));
+        assert!(revision_keys.contains(&bytes32_key("account_id", owner)));
         assert!(revision_keys.contains(&custom_u32_key("revision_id", 7)));
         assert!(revision_keys.contains(&custom_bytes32_key("item_id", link_a)));
         assert!(revision_keys.contains(&custom_bytes32_key("item_id", link_b)));
-        assert!(revision_keys.contains(&builtin_bytes32_key("account_id", mention_a)));
-        assert!(revision_keys.contains(&builtin_bytes32_key("account_id", mention_b)));
+        assert!(revision_keys.contains(&bytes32_key("account_id", mention_a)));
+        assert!(revision_keys.contains(&bytes32_key("account_id", mention_b)));
     }
 
     #[test]
@@ -332,8 +334,8 @@ item_revision = { fields = ["bytes32", "u32"] }
             "item_revision",
             vec![CustomValue::Bytes32(Bytes32(item_id)), CustomValue::U32(7)],
         )));
-        assert!(keys.contains(&builtin_bytes32_key("account_id", item_owner)));
-        assert!(keys.contains(&builtin_bytes32_key("account_id", reactor)));
+        assert!(keys.contains(&bytes32_key("account_id", item_owner)));
+        assert!(keys.contains(&bytes32_key("account_id", reactor)));
     }
 
     #[test]
@@ -394,7 +396,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let indexer = Indexer::new_test(trees.clone(), &config);
 
         let acct = Bytes32([0xDD; 32]);
-        let key = builtin_bytes32_key("account_id", acct.0);
+        let key = bytes32_key("account_id", acct.0);
         indexer.index_event_key(key.clone(), 100, 3).unwrap();
         indexer.index_event_key(key.clone(), 200, 1).unwrap();
 
@@ -422,7 +424,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 
     #[test]
     fn should_store_event_when_configured_keys_exist() {
-        let keys = vec![builtin_u32_key("ref_index", 7)];
+        let keys = vec![u32_key("ref_index", 7)];
         assert!(should_store_event(false, &keys));
     }
 
@@ -491,7 +493,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let config = test_config();
         let indexer = Indexer::new_test(trees.clone(), &config);
 
-        let key = builtin_u32_key("era_index", 1);
+        let key = u32_key("era_index", 1);
         for i in 0..150u32 {
             indexer.index_event_key(key.clone(), i, 0).unwrap();
         }
@@ -886,7 +888,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let config = test_config();
         let indexer = Indexer::new_test(trees, &config);
 
-        let key = builtin_u32_key("ref_index", 42);
+        let key = u32_key("ref_index", 42);
         let (tx, mut rx) = mpsc::channel(1);
 
         process_sub_msg(
@@ -918,7 +920,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         .unwrap();
 
         indexer
-            .index_event_key(builtin_u32_key("ref_index", 42), 8, 2)
+            .index_event_key(u32_key("ref_index", 42), 8, 2)
             .unwrap();
         assert!(rx.try_recv().is_err());
     }
@@ -956,7 +958,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let config = test_config();
         let indexer = Indexer::new_test(trees, &config);
 
-        let key = builtin_u32_key("ref_index", 42);
+        let key = u32_key("ref_index", 42);
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime_state(),
@@ -1032,7 +1034,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         )
         .unwrap();
 
-        let key = builtin_u32_key("ref_index", 1);
+        let key = u32_key("ref_index", 1);
         let (tx3, _rx3) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime_state(),
@@ -1063,7 +1065,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let result = process_sub_msg(
             indexer.runtime_state(),
             SubscriptionMessage::SubscribeEvents {
-                key: builtin_u32_key("ref_index", 2),
+                key: u32_key("ref_index", 2),
                 tx: tx5.clone(),
                 response_tx: None,
             },

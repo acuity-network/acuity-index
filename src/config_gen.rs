@@ -36,6 +36,10 @@ fn is_account_type_name(type_name: &str) -> bool {
     type_name.contains("AccountId")
 }
 
+fn is_account_scalar_kind(kind: &ScalarKind) -> bool {
+    matches!(kind, ScalarKind::Bytes32)
+}
+
 fn type_last_segment(ty: &Type<PortableForm>) -> Option<&str> {
     ty.path.segments.last().map(String::as_str)
 }
@@ -222,10 +226,11 @@ pub(crate) fn infer_param(
             .and_then(|name| name.split('<').nth(1))
             .and_then(|name| name.split(',').next())
             .map(str::trim);
-        if field_name.is_some_and(is_account_field_name)
-            || element_type_name.is_some_and(is_account_type_name)
-            || type_last_segment(element_ty).is_some_and(is_account_type_name)
-        {
+        let kind = infer_scalar_kind(element_type_id, types)?;
+        let explicit_account_type = element_type_name.is_some_and(is_account_type_name)
+            || type_last_segment(element_ty).is_some_and(is_account_type_name);
+        let account_like_name = field_name.is_some_and(is_account_field_name);
+        if explicit_account_type || (account_like_name && is_account_scalar_kind(&kind)) {
             return Some((
                 ParamConfig {
                     field: Some(field_ref),
@@ -237,7 +242,6 @@ pub(crate) fn infer_param(
             ));
         }
 
-        let kind = infer_scalar_kind(element_type_id, types)?;
         return Some((
             ParamConfig {
                 field: Some(field_ref),
@@ -249,10 +253,11 @@ pub(crate) fn infer_param(
         ));
     }
 
-    if field_name.is_some_and(is_account_field_name)
-        || type_name.is_some_and(is_account_type_name)
-        || type_last_segment(ty).is_some_and(is_account_type_name)
-    {
+    let kind = infer_scalar_kind(field.ty.id, types)?;
+    let explicit_account_type = type_name.is_some_and(is_account_type_name)
+        || type_last_segment(ty).is_some_and(is_account_type_name);
+    let account_like_name = field_name.is_some_and(is_account_field_name);
+    if explicit_account_type || (account_like_name && is_account_scalar_kind(&kind)) {
         return Some((
             ParamConfig {
                 field: Some(field_ref),
@@ -263,8 +268,6 @@ pub(crate) fn infer_param(
             None,
         ));
     }
-
-    let kind = infer_scalar_kind(field.ty.id, types)?;
 
     Some((
         ParamConfig {
@@ -280,7 +283,7 @@ pub(crate) fn infer_param(
 fn event_config(
     variant: &Variant<PortableForm>,
     types: &PortableRegistry,
-    custom_keys: &mut HashMap<String, CustomKeyConfig>,
+    keys: &mut HashMap<String, CustomKeyConfig>,
 ) -> EventConfig {
     EventConfig {
         name: variant.name.clone(),
@@ -290,8 +293,12 @@ fn event_config(
             .enumerate()
             .filter_map(|(idx, field)| infer_param(field, idx, types))
             .map(|(param, kind)| {
-                if let Some(kind) = kind {
-                    custom_keys.insert(param.key.clone(), CustomKeyConfig::Scalar(kind));
+                if param.key == "account_id" {
+                    keys.entry(param.key.clone())
+                        .or_insert_with(|| CustomKeyConfig::Scalar(ScalarKind::Bytes32));
+                } else if let Some(kind) = kind {
+                    keys.entry(param.key.clone())
+                        .or_insert_with(|| CustomKeyConfig::Scalar(kind));
                 }
                 param
             })
@@ -306,14 +313,14 @@ pub(crate) fn build_index_spec(
     metadata: &Metadata,
 ) -> IndexSpec {
     let types = metadata.types();
-    let mut custom_keys = HashMap::new();
+    let mut keys = HashMap::new();
     let pallets = metadata
         .pallets()
         .filter_map(|pallet| {
             let variants = pallet.event_variants()?;
             let events = variants
                 .iter()
-                .map(|variant| event_config(variant, types, &mut custom_keys))
+                .map(|variant| event_config(variant, types, &mut keys))
                 .collect();
             Some(PalletConfig {
                 name: pallet.name().to_owned(),
@@ -329,7 +336,7 @@ pub(crate) fn build_index_spec(
         spec_change_blocks: vec![0],
         index_variant: false,
         store_events: false,
-        custom_keys,
+        keys,
         pallets,
     }
 }
@@ -438,18 +445,17 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
     out.push_str(if spec.store_events { "true" } else { "false" });
     out.push_str("\n\n");
 
-    out.push_str("# Declare custom query keys here when you want to index event fields with\n");
-    out.push_str("# non-built-in key names. Built-in keys like account_id do not belong here.\n");
-    out.push_str("# Scalar keys map one event field to one typed query key.\n");
+    out.push_str("# Declare all query keys here. Event params may only reference names declared\n");
+    out.push_str("# in this section. Scalar keys map one event field to one typed query key.\n");
     out.push_str("# Composite keys combine multiple fields into one query key.\n");
     out.push_str("# Supported scalar kinds: bytes32, u32, u64, u128, string, bool.\n");
     out.push_str("# Example scalar key: item_id = \"bytes32\"\n");
     out.push_str("# Example composite key: item_revision = { fields = [\"bytes32\", \"u32\"] }\n");
-    out.push_str("[custom_keys]\n");
-    if !spec.custom_keys.is_empty() {
-        let mut custom_keys: Vec<_> = spec.custom_keys.iter().collect();
-        custom_keys.sort_by(|(left, _), (right, _)| left.cmp(right));
-        for (name, kind) in custom_keys {
+    out.push_str("[keys]\n");
+    if !spec.keys.is_empty() {
+        let mut keys: Vec<_> = spec.keys.iter().collect();
+        keys.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (name, kind) in keys {
             out.push_str(name);
             out.push_str(" = ");
             match kind {
@@ -472,9 +478,7 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
     }
     out.push('\n');
 
-    out.push_str(
-        "# Example custom pallet config showing built-in, scalar, multi, and composite keys.\n",
-    );
+    out.push_str("# Example pallet config showing scalar, multi, and composite keys.\n");
     out.push_str("# [[pallets]]\n");
     out.push_str("# name = \"MyPallet\"\n");
     out.push_str("# events = [\n");
@@ -717,15 +721,19 @@ mod tests {
         };
         let variant = &variant_def.variants[0];
 
-        let mut custom_keys = HashMap::new();
-        let config = event_config(variant, &types, &mut custom_keys);
+        let mut keys = HashMap::new();
+        let config = event_config(variant, &types, &mut keys);
 
         assert_eq!(config.name, "Published");
         assert_eq!(config.params.len(), 2);
         assert_eq!(config.params[0].key, "account_id");
         assert_eq!(config.params[1].key, "revision");
         assert_eq!(
-            custom_keys.get("revision"),
+            keys.get("account_id"),
+            Some(&CustomKeyConfig::Scalar(ScalarKind::Bytes32))
+        );
+        assert_eq!(
+            keys.get("revision"),
             Some(&CustomKeyConfig::Scalar(ScalarKind::U64))
         );
     }
@@ -805,7 +813,11 @@ mod tests {
             spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
-            custom_keys: HashMap::from([
+            keys: HashMap::from([
+                (
+                    "account_id".into(),
+                    CustomKeyConfig::Scalar(ScalarKind::Bytes32),
+                ),
                 (
                     "item_id".into(),
                     CustomKeyConfig::Scalar(ScalarKind::Bytes32),
@@ -879,6 +891,8 @@ mod tests {
         assert!(toml.contains("spec_change_blocks = [0]"));
         assert!(toml.contains("index_variant = false"));
         assert!(toml.contains("store_events = false"));
+        assert!(toml.contains("[keys]"));
+        assert!(toml.contains("account_id = \"bytes32\""));
         assert!(toml.contains("item_id = \"bytes32\""));
         assert!(toml.contains("item_revision = { fields = [\"bytes32\", \"u32\"] }"));
         assert!(toml.contains("revision_id = \"u32\""));

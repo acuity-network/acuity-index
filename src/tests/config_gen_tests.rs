@@ -47,6 +47,18 @@ mod config_gen_tests {
         mentions: VecWrapper<AccountId32>,
     }
 
+    #[allow(dead_code)]
+    #[derive(TypeInfo)]
+    struct NamedButNotAccountEvent {
+        owner: u32,
+    }
+
+    #[allow(dead_code)]
+    #[derive(TypeInfo)]
+    struct NamedBytes32AccountEvent {
+        owner: [u8; 32],
+    }
+
     fn event_fields<T: TypeInfo + 'static>() -> (
         PortableRegistry,
         Vec<scale_info::Field<scale_info::form::PortableForm>>,
@@ -65,8 +77,44 @@ mod config_gen_tests {
     }
 
     #[test]
-    fn infer_param_uses_builtin_account_id_for_account_types() {
+    fn infer_param_uses_account_id_for_account_types() {
         let (types, fields) = event_fields::<PublishEvent>();
+        let param = infer_param(&fields[0], 0, &types).unwrap();
+        assert_eq!(
+            param,
+            (
+                ParamConfig {
+                    field: Some("owner".into()),
+                    fields: vec![],
+                    key: "account_id".into(),
+                    multi: false,
+                },
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn infer_param_requires_bytes32_shape_for_account_like_field_names() {
+        let (types, fields) = event_fields::<NamedButNotAccountEvent>();
+        let param = infer_param(&fields[0], 0, &types).unwrap();
+        assert_eq!(
+            param,
+            (
+                ParamConfig {
+                    field: Some("owner".into()),
+                    fields: vec![],
+                    key: "owner".into(),
+                    multi: false,
+                },
+                Some(ScalarKind::U32),
+            )
+        );
+    }
+
+    #[test]
+    fn infer_param_accepts_bytes32_shape_for_account_like_field_names() {
+        let (types, fields) = event_fields::<NamedBytes32AccountEvent>();
         let param = infer_param(&fields[0], 0, &types).unwrap();
         assert_eq!(
             param,
@@ -173,7 +221,10 @@ mod config_gen_tests {
             spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
-            custom_keys: HashMap::new(),
+            keys: HashMap::from([(
+                "account_id".into(),
+                crate::config::CustomKeyConfig::Scalar(ScalarKind::Bytes32),
+            )]),
             pallets: vec![PalletConfig {
                 name: "System".into(),
                 events: vec![EventConfig {
@@ -190,6 +241,7 @@ mod config_gen_tests {
 
         let toml = render_index_spec_toml(&spec).unwrap();
 
+        assert!(toml.contains("[keys]\n"));
         assert!(toml.contains("[[pallets]]\nname = \"System\"\nevents = ["));
         assert!(!toml.contains("sdk = true"));
     }

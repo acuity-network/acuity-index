@@ -222,7 +222,7 @@ The two main query surfaces are:
 - Variant queries via the `variant` tree.
 - All other keys via the `index` tree.
 
-`Key::Custom` covers both built-in semantic keys like `account_id` and user-defined keys from `[custom_keys]` in TOML. The distinction is logical, not stored in separate trees.
+`Key::Custom` covers every declared query key from `[keys]` in TOML. There is no separate built-in key model at config or index time.
 
 ## Indexing Flow
 
@@ -420,7 +420,7 @@ Top-level fields:
 - `index_variant`
 - `store_events`
 - `spec_change_blocks`
-- `custom_keys`
+- `keys`
 - `pallets`
 
 Runtime options (`url`, `db_path`, `db_mode`, `db_cache_capacity`, `queue_depth`,
@@ -437,12 +437,11 @@ Pallet configuration uses one mode: explicit event mappings in TOML.
 
 `ParamConfig::resolve(...)` turns TOML key names into runtime `ParamKey` values:
 
-- `ParamKey::BuiltIn(KeyTypeName)` for built-in semantic keys like `account_id` or `ref_index`
-- `ParamKey::Custom { name, kind }` for scalar user-defined keys declared in `[custom_keys]`
-- `ParamKey::CompositeCustom { name, fields }` for binary composite user-defined keys built from multiple event fields
+- `ParamKey::Scalar { name, kind }` for scalar keys declared in `[keys]`
+- `ParamKey::Composite { name, fields }` for binary composite keys built from multiple event fields and declared in `[keys]`
 
-Custom event params may use either `field = "..."` for scalar/built-in keys or
-`fields = ["...", "..."]` for composite custom keys. Composite keys are encoded
+Event params may use either `field = "..."` for scalar keys or
+`fields = ["...", "..."]` for composite keys. Composite keys are encoded
 as ordered binary tuples by the indexer and queried through the same `Key::Custom`
 API surface.
 
@@ -577,11 +576,14 @@ that explains the likely sync/runtime-upgrade cause.
 
 This is heuristic, not perfect. It tries to:
 
-- detect account-like fields
+- detect account-like fields using name/type shape only
 - infer scalar key types
 - recognize collection fields that should use `multi = true`
 
-Agents should treat generated configs as a starting point that may need cleanup for chain-specific semantics.
+Generated configs are intentionally structural. The generator may auto-declare
+`account_id = "bytes32"` when a field name/type clearly looks like an account
+identifier, but it does not infer semantic aliases from pallet or event context.
+Chain-specific semantic names such as `ref_index` must be declared by the spec author.
 
 ## Key Files For Common Changes
 
@@ -589,7 +591,7 @@ Agents should treat generated configs as a starting point that may need cleanup 
   `src/main.rs`
 - Change how spans resume or reindex:
   `src/indexer.rs`
-- Add a new built-in key type or custom key storage shape:
+- Add a new declared key storage shape or scalar kind:
   `src/config.rs`, `src/shared.rs`, `src/indexer.rs`
 - Change index-spec hot reload behavior or watcher integration:
   `src/main.rs`
@@ -607,7 +609,7 @@ Agents should treat generated configs as a starting point that may need cleanup 
 - Do not assume block indexing completes in numeric order. Both backfill and head processing can finish out of order and are stitched together afterward.
 - Do not bypass genesis-hash checks when reusing an existing database path.
 - Do not add chain-specific logic to the main loop if it can live in TOML instead.
-- `Key::Custom` is the main path for queryable keys, including many built-in semantic keys.
+- `Key::Custom` is the main path for declared queryable keys.
 - Recoverable RPC errors trigger reconnection, not process exit. If you need the process to stop on a specific error, classify it as fatal in `IndexError::is_recoverable()`.
 
 ## Mental Model

@@ -7,48 +7,6 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
-/// Key type identifiers used in TOML configs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KeyTypeName {
-    AccountId,
-    AccountIndex,
-    BountyIndex,
-    EraIndex,
-    MessageId,
-    PoolId,
-    PreimageHash,
-    ProposalHash,
-    ProposalIndex,
-    RefIndex,
-    RegistrarIndex,
-    SessionIndex,
-    SpendIndex,
-    TipHash,
-}
-
-impl KeyTypeName {
-    pub fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "account_id" => Self::AccountId,
-            "account_index" => Self::AccountIndex,
-            "bounty_index" => Self::BountyIndex,
-            "era_index" => Self::EraIndex,
-            "message_id" => Self::MessageId,
-            "pool_id" => Self::PoolId,
-            "preimage_hash" => Self::PreimageHash,
-            "proposal_hash" => Self::ProposalHash,
-            "proposal_index" => Self::ProposalIndex,
-            "ref_index" => Self::RefIndex,
-            "registrar_index" => Self::RegistrarIndex,
-            "session_index" => Self::SessionIndex,
-            "spend_index" => Self::SpendIndex,
-            "tip_hash" => Self::TipHash,
-            _ => return None,
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScalarKind {
@@ -74,12 +32,11 @@ pub struct CompositeKeyConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamKey {
-    BuiltIn(KeyTypeName),
-    Custom {
+    Scalar {
         name: String,
         kind: ScalarKind,
     },
-    CompositeCustom {
+    Composite {
         name: String,
         fields: Vec<ScalarKind>,
     },
@@ -110,7 +67,7 @@ pub struct ParamConfig {
 impl ParamConfig {
     pub fn resolve(
         &self,
-        custom_keys: &HashMap<String, CustomKeyConfig>,
+        keys: &HashMap<String, CustomKeyConfig>,
     ) -> Result<ResolvedParamConfig, String> {
         let fields = match (&self.field, self.fields.is_empty()) {
             (Some(field), true) => vec![field.clone()],
@@ -129,56 +86,45 @@ impl ParamConfig {
             }
         };
 
-        let key = match KeyTypeName::parse(&self.key) {
-            Some(key) => {
+        let key = match keys.get(&self.key) {
+            Some(CustomKeyConfig::Scalar(kind)) => {
                 if fields.len() != 1 {
                     return Err(format!(
-                        "built-in key '{}' for field(s) {:?} requires exactly one source field",
+                        "scalar key '{}' for field(s) {:?} requires exactly one source field",
                         self.key, fields
                     ));
                 }
-                ParamKey::BuiltIn(key)
+                ParamKey::Scalar {
+                    name: self.key.clone(),
+                    kind: kind.clone(),
+                }
             }
-            None => match custom_keys.get(&self.key) {
-                Some(CustomKeyConfig::Scalar(kind)) => {
-                    if fields.len() != 1 {
-                        return Err(format!(
-                            "scalar key '{}' for field(s) {:?} requires exactly one source field",
-                            self.key, fields
-                        ));
-                    }
-                    ParamKey::Custom {
-                        name: self.key.clone(),
-                        kind: kind.clone(),
-                    }
-                }
-                Some(CustomKeyConfig::Composite(config)) => {
-                    if self.multi {
-                        return Err(format!(
-                            "composite key '{}' does not support multi=true",
-                            self.key
-                        ));
-                    }
-                    if fields.len() != config.fields.len() {
-                        return Err(format!(
-                            "composite key '{}' expects {} fields, got {}",
-                            self.key,
-                            config.fields.len(),
-                            fields.len()
-                        ));
-                    }
-                    ParamKey::CompositeCustom {
-                        name: self.key.clone(),
-                        fields: config.fields.clone(),
-                    }
-                }
-                None => {
+            Some(CustomKeyConfig::Composite(config)) => {
+                if self.multi {
                     return Err(format!(
-                        "unknown key '{}' for field(s) {:?} (define it in custom_keys)",
-                        self.key, fields
+                        "composite key '{}' does not support multi=true",
+                        self.key
                     ));
                 }
-            },
+                if fields.len() != config.fields.len() {
+                    return Err(format!(
+                        "composite key '{}' expects {} fields, got {}",
+                        self.key,
+                        config.fields.len(),
+                        fields.len()
+                    ));
+                }
+                ParamKey::Composite {
+                    name: self.key.clone(),
+                    fields: config.fields.clone(),
+                }
+            }
+            None => {
+                return Err(format!(
+                    "unknown key '{}' for field(s) {:?} (define it in keys)",
+                    self.key, fields
+                ));
+            }
         };
 
         Ok(ResolvedParamConfig {
@@ -257,7 +203,7 @@ pub struct IndexSpec {
     #[serde(default)]
     pub store_events: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub custom_keys: HashMap<String, CustomKeyConfig>,
+    pub keys: HashMap<String, CustomKeyConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pallets: Vec<PalletConfig>,
 }
@@ -271,7 +217,7 @@ impl IndexSpec {
             for event in &pallet.events {
                 let mut params = Vec::with_capacity(event.params.len());
                 for param in &event.params {
-                    params.push(param.resolve(&self.custom_keys)?);
+                    params.push(param.resolve(&self.keys)?);
                 }
                 event_map.insert(event.name.clone(), params);
             }
@@ -310,29 +256,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_type_name_parse_covers_all_variants() {
-        for (name, expected) in [
-            ("account_id", KeyTypeName::AccountId),
-            ("account_index", KeyTypeName::AccountIndex),
-            ("bounty_index", KeyTypeName::BountyIndex),
-            ("era_index", KeyTypeName::EraIndex),
-            ("message_id", KeyTypeName::MessageId),
-            ("pool_id", KeyTypeName::PoolId),
-            ("preimage_hash", KeyTypeName::PreimageHash),
-            ("proposal_hash", KeyTypeName::ProposalHash),
-            ("proposal_index", KeyTypeName::ProposalIndex),
-            ("ref_index", KeyTypeName::RefIndex),
-            ("registrar_index", KeyTypeName::RegistrarIndex),
-            ("session_index", KeyTypeName::SessionIndex),
-            ("spend_index", KeyTypeName::SpendIndex),
-            ("tip_hash", KeyTypeName::TipHash),
-        ] {
-            assert_eq!(KeyTypeName::parse(name), Some(expected));
-        }
-        assert_eq!(KeyTypeName::parse("unknown"), None);
-    }
-
-    #[test]
     fn validate_returns_ok_for_valid_custom_config() {
         let spec = IndexSpec {
             name: "test".into(),
@@ -341,7 +264,7 @@ mod tests {
             spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
-            custom_keys: HashMap::from([(
+            keys: HashMap::from([(
                 "item_id".into(),
                 CustomKeyConfig::Scalar(ScalarKind::Bytes32),
             )]),
@@ -371,7 +294,7 @@ mod tests {
             spec_change_blocks: vec![],
             index_variant: false,
             store_events: false,
-            custom_keys: HashMap::new(),
+            keys: HashMap::new(),
             pallets: vec![],
         };
 
@@ -390,7 +313,7 @@ mod tests {
             spec_change_blocks: vec![10],
             index_variant: false,
             store_events: false,
-            custom_keys: HashMap::new(),
+            keys: HashMap::new(),
             pallets: vec![],
         };
 
@@ -409,7 +332,7 @@ mod tests {
             spec_change_blocks: vec![0, 10, 10],
             index_variant: false,
             store_events: false,
-            custom_keys: HashMap::new(),
+            keys: HashMap::new(),
             pallets: vec![],
         };
 

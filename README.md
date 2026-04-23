@@ -214,9 +214,11 @@ index_variant = false
 store_events = false
 spec_change_blocks = [0]
 
-# Custom keys must be declared once at schema level
-[custom_keys]
+# All query keys must be declared once at schema level
+[keys]
+account_id = "bytes32"
 item_id = "bytes32"
+revision_id = "u32"
 item_revision = { fields = ["bytes32", "u32"] }
 
 # Explicit pallet mappings
@@ -228,11 +230,11 @@ name = "SomeEvent"
 
 [[pallets.events.params]]
 field = "who"       # field name, or "0" for positional
-key = "account_id"  # built-in key
+key = "account_id"  # declared scalar key
 
 [[pallets.events.params]]
 field = "item_id"
-key = "item_id"     # custom query key name
+key = "item_id"     # declared query key name
 
 [[pallets.events.params]]
 fields = ["item_id", "revision_id"]
@@ -247,7 +249,7 @@ and the suffix starting at the earliest affected boundary is re-indexed.
 If you change `index_variant` or `store_events` and want historical data re-indexed
 under the new setting, add a new `spec_change_blocks` boundary.
 
-Changes to `default_url`, explicit pallet mappings, custom keys,
+Changes to `default_url`, explicit pallet mappings, declared keys,
 `index_variant`, `store_events`, or `spec_change_blocks` are applied by the
 hot-reload path when the watched spec file is updated.
 
@@ -274,29 +276,9 @@ All fields are optional — omit any field to keep its built-in default:
 Merge precedence: **CLI flags > `--options-config` file > built-in defaults**.
 `finalized` is enabled if either the CLI flag or the options config field is `true`.
 
-### Built-in Key Types
+### Scalar Keys
 
-| Key type | Description |
-|---|---|
-| `account_id` | 32-byte account identifier |
-| `account_index` | u32 account index |
-| `bounty_index` | u32 bounty/child-bounty index |
-| `era_index` | u32 era index |
-| `message_id` | 32-byte message identifier |
-| `pool_id` | u32 nomination pool identifier |
-| `preimage_hash` | 32-byte preimage hash |
-| `proposal_hash` | 32-byte proposal hash |
-| `proposal_index` | u32 proposal index |
-| `ref_index` | u32 referendum index |
-| `registrar_index` | u32 registrar index |
-| `session_index` | u32 session index |
-| `spend_index` | u32 treasury spend index |
-| `tip_hash` | 32-byte tip hash |
-
-### Generic Custom Keys
-
-Custom pallet fields no longer need Rust enum variants or dedicated sled trees.
-Use any key name with one of these scalar kinds:
+Every scalar key must be declared in `[keys]` with one of these kinds:
 
 | Kind | Stored/query value |
 |---|---|
@@ -310,7 +292,7 @@ Use any key name with one of these scalar kinds:
 Example:
 
 ```toml
-[custom_keys]
+[keys]
 para_id = "u32"
 candidate_hash = "bytes32"
 
@@ -323,16 +305,17 @@ field = "candidate_hash"
 key = "candidate_hash"
 ```
 
-### Composite Custom Keys
+### Composite Keys
 
-Composite custom keys let the indexer build one binary query key from multiple
-event fields. They are defined in `[custom_keys]` and referenced with
+Composite keys let the indexer build one binary query key from multiple
+event fields. They are defined in `[keys]` and referenced with
 `fields = ["...", "..."]` in event params.
 
 Example:
 
 ```toml
-[custom_keys]
+[keys]
+account_id = "bytes32"
 item_id = "bytes32"
 revision_id = "u32"
 item_revision = { fields = ["bytes32", "u32"] }
@@ -354,9 +337,14 @@ key = "account_id"
 
 Notes:
 
-- Use `field = "..."` for built-in keys and scalar custom keys.
-- Use `fields = [...]` only for composite custom keys.
+- Use `field = "..."` for declared scalar keys.
+- Use `fields = [...]` only for declared composite keys.
 - Composite key values are ordered and binary encoded, so field order matters.
+
+Generated specs may auto-declare structurally inferred keys such as
+`account_id = "bytes32"` when a field name/type clearly looks like an account
+identifier. Semantic aliases derived from pallet or event context, such as
+`ref_index`, are not inferred and must be declared explicitly by the spec author.
 
 ## WebSocket API
 

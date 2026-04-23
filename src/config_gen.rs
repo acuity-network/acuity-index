@@ -321,6 +321,7 @@ pub(crate) fn build_index_spec(
             let events = variants
                 .iter()
                 .map(|variant| event_config(variant, types, &mut keys))
+                .filter(|event| !event.params.is_empty())
                 .collect();
             Some(PalletConfig {
                 name: pallet.name().to_owned(),
@@ -617,6 +618,11 @@ mod tests {
     }
 
     #[derive(TypeInfo)]
+    enum EmptyEventOnly {
+        Empty,
+    }
+
+    #[derive(TypeInfo)]
     struct AccountId32([u8; 32]);
 
     #[derive(TypeInfo)]
@@ -905,6 +911,28 @@ mod tests {
         assert!(
             toml.contains("{ fields = [\"item_id\", \"revision_id\"], key = \"item_revision\" }")
         );
+    }
+
+    #[test]
+    fn filtered_generated_events_omit_empty_variants() {
+        let mut registry = Registry::new();
+        let type_id = registry.register_type(&MetaType::new::<EmptyEventOnly>()).id;
+        let types: PortableRegistry = registry.into();
+        let ty = types.resolve(type_id).unwrap();
+        let TypeDef::Variant(variant_def) = &ty.type_def else {
+            panic!("expected variant type");
+        };
+
+        let mut keys = HashMap::new();
+        let events: Vec<_> = variant_def
+            .variants
+            .iter()
+            .map(|variant| event_config(variant, &types, &mut keys))
+            .filter(|event| !event.params.is_empty())
+            .collect();
+
+        assert!(events.is_empty());
+        assert!(keys.is_empty());
     }
 
     #[test]

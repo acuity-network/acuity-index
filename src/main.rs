@@ -2,11 +2,14 @@ use byte_unit::Byte;
 use clap::{Parser, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use futures::StreamExt;
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use signal_hook::{consts::TERM_SIGNALS, flag};
 use signal_hook_tokio::Signals;
 use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
     io::ErrorKind,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::exit,
     sync::Arc,
     sync::atomic::{AtomicBool, Ordering},
@@ -20,7 +23,7 @@ use subxt::{
 use tokio::{
     net::TcpListener,
     select, spawn,
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
     time::sleep,
 };
 use tracing::{error, info, warn};
@@ -193,6 +196,24 @@ struct ResolvedArgs {
     ws_config: WsConfig,
 }
 
+#[derive(Clone, Debug)]
+struct ConfigSnapshot {
+    spec: IndexSpec,
+    source_hash: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpecUpdateAction {
+    RestartIndexer,
+    Unchanged,
+}
+
+#[derive(Clone, Debug)]
+struct SpecUpdate {
+    snapshot: ConfigSnapshot,
+    action: SpecUpdateAction,
+}
+
 fn parse_db_mode(s: &str) -> Result<DbMode, String> {
     match s {
         "low_space" | "low-space" => Ok(DbMode::LowSpace),
@@ -314,22 +335,40 @@ fn resolve_args(
     })
 }
 
+fn hash_content(content: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn load_index_spec_source(index_config_path: &str) -> Result<(String, u64), String> {
+    let toml_str = std::fs::read_to_string(index_config_path)
+        .map_err(|e| format!("Cannot read index spec {index_config_path}: {e}"))?;
+    let source_hash = hash_content(&toml_str);
+    Ok((toml_str, source_hash))
+}
+
+fn parse_index_spec(toml_str: &str) -> Result<IndexSpec, String> {
+    let spec: IndexSpec =
+        toml::from_str(toml_str).map_err(|e| format!("Invalid index spec: {e}"))?;
+    spec.validate()
+        .map_err(|e| format!("Invalid index spec: {e}"))?;
+    Ok(spec)
+}
+
+fn build_config_snapshot(index_config_path: &str) -> Result<ConfigSnapshot, String> {
+    let (toml_str, source_hash) = load_index_spec_source(index_config_path)?;
+    let spec = parse_index_spec(&toml_str)?;
+    Ok(ConfigSnapshot { spec, source_hash })
+}
+
 fn load_index_spec(index_config_path: &str) -> IndexSpec {
-    let toml_str = std::fs::read_to_string(index_config_path).unwrap_or_else(|e| {
-        error!("Cannot read index spec {index_config_path}: {e}");
-        exit(1);
-    });
-    let spec: IndexSpec = toml::from_str(&toml_str).unwrap_or_else(|e| {
-        error!("Invalid index spec: {e}");
-        exit(1);
-    });
-
-    spec.validate().unwrap_or_else(|e| {
-        error!("Invalid index spec: {e}");
-        exit(1);
-    });
-
-    spec
+    build_config_snapshot(index_config_path)
+        .map(|snapshot| snapshot.spec)
+        .unwrap_or_else(|e| {
+            error!("{e}");
+            exit(1);
+        })
 }
 
 fn load_options_config(path: &str) -> OptionsConfig {
@@ -341,6 +380,163 @@ fn load_options_config(path: &str) -> OptionsConfig {
         error!("Invalid options config: {e}");
         exit(1);
     })
+}
+
+fn effective_url(url_override: Option<&str>, spec: &IndexSpec) -> String {
+    url_override
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| spec.default_url.clone())
+}
+
+fn classify_spec_update(
+    current: &ConfigSnapshot,
+    candidate: &ConfigSnapshot,
+    url_override: Option<&str>,
+) -> Result<SpecUpdateAction, String> {
+    if current.spec.name != candidate.spec.name {
+        return Err("index spec name cannot change during hot reload".to_owned());
+    }
+
+    if current.spec.genesis_hash != candidate.spec.genesis_hash {
+        return Err("index spec genesis_hash cannot change during hot reload".to_owned());
+    }
+
+    if current.spec == candidate.spec {
+        return Ok(SpecUpdateAction::Unchanged);
+    }
+
+    let effective_url_changed =
+        url_override.is_none() && current.spec.default_url != candidate.spec.default_url;
+
+    let indexing_changed = current.spec.spec_change_blocks != candidate.spec.spec_change_blocks
+        || current.spec.index_variant != candidate.spec.index_variant
+        || current.spec.store_events != candidate.spec.store_events
+        || current.spec.custom_keys != candidate.spec.custom_keys
+        || current.spec.pallets != candidate.spec.pallets;
+
+    if effective_url_changed || indexing_changed {
+        Ok(SpecUpdateAction::RestartIndexer)
+    } else {
+        Ok(SpecUpdateAction::Unchanged)
+    }
+}
+
+fn event_targets_path(event: &Event, target_path: &Path) -> bool {
+    let Some(target_name) = target_path.file_name() else {
+        return false;
+    };
+
+    event.paths.iter().any(|path| {
+        path == target_path
+            || path
+                .file_name()
+                .is_some_and(|file_name| file_name == target_name)
+    })
+}
+
+async fn watch_index_spec(
+    index_config_path: PathBuf,
+    initial_snapshot: ConfigSnapshot,
+    url_override: Option<String>,
+    snapshot_tx: watch::Sender<SpecUpdate>,
+    ready_tx: Option<oneshot::Sender<()>>,
+    mut exit_rx: watch::Receiver<bool>,
+) -> Result<(), shared::IndexError> {
+    let watch_dir = index_config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |result| {
+            let _ = event_tx.send(result);
+        },
+        notify::Config::default(),
+    )
+    .map_err(|e| shared::internal_error(format!("failed to create index spec watcher: {e}")))?;
+    watcher
+        .watch(&watch_dir, RecursiveMode::NonRecursive)
+        .map_err(|e| {
+            shared::internal_error(format!("failed to watch {}: {e}", watch_dir.display()))
+        })?;
+    if let Some(ready_tx) = ready_tx {
+        let _ = ready_tx.send(());
+    }
+
+    let mut current_snapshot = initial_snapshot;
+    let mut last_seen_source_hash = Some(current_snapshot.source_hash);
+
+    loop {
+        tokio::select! {
+            _ = exit_rx.changed() => return Ok(()),
+            maybe_event = event_rx.recv() => {
+                let Some(result) = maybe_event else {
+                    return Err(shared::internal_error("index spec watcher channel closed"));
+                };
+
+                let event = match result {
+                    Ok(event) if event_targets_path(&event, &index_config_path) => event,
+                    Ok(_) => continue,
+                    Err(err) => {
+                        warn!("Index spec watcher error: {err}");
+                        continue;
+                    }
+                };
+
+                if !event_targets_path(&event, &index_config_path) {
+                    continue;
+                }
+
+                sleep(Duration::from_millis(200)).await;
+                while let Ok(result) = event_rx.try_recv() {
+                    match result {
+                        Ok(event) if event_targets_path(&event, &index_config_path) => {}
+                        Ok(_) => {}
+                        Err(err) => warn!("Index spec watcher error: {err}"),
+                    }
+                }
+
+                let (toml_str, source_hash) = match load_index_spec_source(index_config_path.to_str().ok_or_else(|| {
+                    shared::internal_error("index spec path is not valid UTF-8")
+                })?) {
+                    Ok(source) => source,
+                    Err(err) => {
+                        warn!("{err}");
+                        continue;
+                    }
+                };
+
+                if last_seen_source_hash == Some(source_hash) {
+                    continue;
+                }
+                last_seen_source_hash = Some(source_hash);
+
+                let candidate = match parse_index_spec(&toml_str) {
+                    Ok(spec) => ConfigSnapshot { spec, source_hash },
+                    Err(err) => {
+                        warn!("{err}");
+                        continue;
+                    }
+                };
+
+                match classify_spec_update(&current_snapshot, &candidate, url_override.as_deref()) {
+                    Ok(action) => {
+                        current_snapshot = candidate.clone();
+                        if action == SpecUpdateAction::RestartIndexer {
+                            info!("Accepted index spec change; restarting indexer loop.");
+                        }
+                        let _ = snapshot_tx.send(SpecUpdate {
+                            snapshot: candidate,
+                            action,
+                        });
+                    }
+                    Err(reason) => {
+                        warn!("Rejected index spec change: {reason}");
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
@@ -469,10 +665,15 @@ async fn run() -> Result<(), shared::IndexError> {
     }
 
     let run_args = &args.run;
-    let spec = load_index_spec(run_args.index_config.as_deref().unwrap_or_else(|| {
+    let index_config_path = run_args.index_config.as_deref().unwrap_or_else(|| {
         error!("--index-config is required");
         exit(1);
-    }));
+    });
+    let initial_snapshot = build_config_snapshot(index_config_path).unwrap_or_else(|e| {
+        error!("{e}");
+        exit(1);
+    });
+    let spec = initial_snapshot.spec.clone();
     let options = run_args
         .options_config
         .as_deref()
@@ -509,11 +710,6 @@ async fn run() -> Result<(), shared::IndexError> {
         )));
     }
 
-    let url = resolved
-        .url
-        .clone()
-        .unwrap_or_else(|| spec.default_url.clone());
-
     let term_now = Arc::new(AtomicBool::new(false));
     for sig in TERM_SIGNALS {
         flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term_now))?;
@@ -525,7 +721,11 @@ async fn run() -> Result<(), shared::IndexError> {
         resolved.ws_config.max_total_subscriptions,
         metrics.clone(),
     ));
-    let (exit_tx, exit_rx) = watch::channel(false);
+    let (process_exit_tx, process_exit_rx) = watch::channel(false);
+    let (spec_update_tx, mut spec_update_rx) = watch::channel(SpecUpdate {
+        snapshot: initial_snapshot.clone(),
+        action: SpecUpdateAction::Unchanged,
+    });
     let (sub_tx, mut sub_rx) =
         mpsc::channel(resolved.ws_config.subscription_control_buffer_size.max(1));
 
@@ -538,14 +738,14 @@ async fn run() -> Result<(), shared::IndexError> {
         }
     });
 
-    let ws_task = spawn(websockets_listen(
+    let mut ws_task = Some(spawn(websockets_listen(
         trees.clone(),
         runtime.clone(),
         resolved.port,
-        exit_rx.clone(),
+        process_exit_rx.clone(),
         sub_tx,
         resolved.ws_config.clone(),
-    ));
+    )));
     let mut metrics_task = match resolved.metrics_port {
         Some(metrics_port) => {
             let listener = TcpListener::bind(("0.0.0.0", metrics_port)).await?;
@@ -553,32 +753,84 @@ async fn run() -> Result<(), shared::IndexError> {
                 listener,
                 trees.clone(),
                 metrics.clone(),
-                exit_rx.clone(),
+                process_exit_rx.clone(),
             )))
         }
         None => None,
     };
+    let watcher_task = spawn(watch_index_spec(
+        PathBuf::from(index_config_path),
+        initial_snapshot.clone(),
+        resolved.url.clone(),
+        spec_update_tx,
+        None,
+        process_exit_rx.clone(),
+    ));
+    tokio::pin!(watcher_task);
 
     let mut backoff_secs = INITIAL_BACKOFF_SECS;
     let mut signals = Signals::new(TERM_SIGNALS)?;
+    let mut current_snapshot = initial_snapshot;
 
     loop {
         if term_now.load(Ordering::Relaxed) {
             runtime.set_rpc(None);
             metrics.set_rpc_connected(false);
-            let _ = exit_tx.send(true);
-            let _ = ws_task.await;
+            let _ = process_exit_tx.send(true);
+            if let Some(ws_task) = ws_task.take() {
+                let _ = ws_task.await;
+            }
             if let Some(metrics_task) = metrics_task.take() {
                 let _ = metrics_task.await;
             }
+            let _ = watcher_task.as_mut().await;
             let _ = trees.flush();
             info!("Shutdown requested; exiting.");
             return Ok(());
         }
 
+        let spec = current_snapshot.spec.clone();
+        let url = effective_url(resolved.url.as_deref(), &spec);
         info!("Connecting to {url}");
 
-        let (api, rpc) = match connect_rpc(&url).await {
+        let (api, rpc) = match select! {
+            _ = signals.next() => {
+                runtime.set_rpc(None);
+                metrics.set_rpc_connected(false);
+                let _ = process_exit_tx.send(true);
+                if let Some(ws_task) = ws_task.take() {
+                    let _ = ws_task.await;
+                }
+                if let Some(metrics_task) = metrics_task.take() {
+                    let _ = metrics_task.await;
+                }
+                let _ = watcher_task.as_mut().await;
+                let _ = trees.flush();
+                info!("Shutdown complete.");
+                return Ok(());
+            }
+            changed = spec_update_rx.changed() => {
+                if changed.is_ok() {
+                    current_snapshot = spec_update_rx.borrow_and_update().snapshot.clone();
+                    continue;
+                }
+                return Err(shared::internal_error("index spec update channel closed"));
+            }
+            watcher_result = &mut watcher_task => {
+                match watcher_result {
+                    Ok(Ok(())) => {
+                        return Err(shared::internal_error("index spec watcher stopped unexpectedly"));
+                    }
+                    Ok(Err(err)) => return Err(err),
+                    Err(join_err) => {
+                        return Err(shared::internal_error(format!(
+                            "index spec watcher task panicked: {join_err}"
+                        )));
+                    }
+                }
+            }
+            result = connect_rpc(&url) => result,
+        } {
             Ok(clients) => clients,
             Err(err) if err.is_recoverable() => {
                 runtime.set_rpc(None);
@@ -587,14 +839,37 @@ async fn run() -> Result<(), shared::IndexError> {
                 error!("RPC connection failed: {err}; retrying in {backoff_secs}s");
                 select! {
                     _ = signals.next() => {
-                        let _ = exit_tx.send(true);
-                        let _ = ws_task.await;
+                        let _ = process_exit_tx.send(true);
+                        if let Some(ws_task) = ws_task.take() {
+                            let _ = ws_task.await;
+                        }
                         if let Some(metrics_task) = metrics_task.take() {
                             let _ = metrics_task.await;
                         }
+                        let _ = watcher_task.as_mut().await;
                         let _ = trees.flush();
                         info!("Shutdown requested during reconnection backoff.");
                         return Ok(());
+                    }
+                    changed = spec_update_rx.changed() => {
+                        if changed.is_ok() {
+                            current_snapshot = spec_update_rx.borrow_and_update().snapshot.clone();
+                            continue;
+                        }
+                        return Err(shared::internal_error("index spec update channel closed"));
+                    }
+                    watcher_result = &mut watcher_task => {
+                        match watcher_result {
+                            Ok(Ok(())) => {
+                                return Err(shared::internal_error("index spec watcher stopped unexpectedly"));
+                            }
+                            Ok(Err(err)) => return Err(err),
+                            Err(join_err) => {
+                                return Err(shared::internal_error(format!(
+                                    "index spec watcher task panicked: {join_err}"
+                                )));
+                            }
+                        }
                     }
                     _ = sleep(Duration::from_secs(backoff_secs)) => {}
                 }
@@ -616,6 +891,7 @@ async fn run() -> Result<(), shared::IndexError> {
         backoff_secs = INITIAL_BACKOFF_SECS;
         runtime.set_rpc(Some(rpc.clone()));
         metrics.set_rpc_connected(true);
+        let (indexer_exit_tx, indexer_exit_rx) = watch::channel(false);
 
         let indexer_handle = spawn(run_indexer(
             trees.clone(),
@@ -624,87 +900,236 @@ async fn run() -> Result<(), shared::IndexError> {
             spec.clone(),
             resolved.finalized,
             resolved.queue_depth.into(),
-            exit_rx.clone(),
+            indexer_exit_rx,
             runtime.clone(),
         ));
         tokio::pin!(indexer_handle);
 
-        let indexer_result = select! {
+        enum LoopControl {
+            Shutdown,
+            Continue,
+            Restart,
+            Indexer(Result<Result<(), shared::IndexError>, tokio::task::JoinError>),
+        }
+
+        let loop_control = select! {
             _ = signals.next() => {
                 runtime.set_rpc(None);
                 metrics.set_rpc_connected(false);
-                let _ = exit_tx.send(true);
-                let _ = indexer_handle.await;
-                let _ = ws_task.await;
+                let _ = indexer_exit_tx.send(true);
+                let _ = process_exit_tx.send(true);
+                let _ = indexer_handle.as_mut().await;
+                if let Some(ws_task) = ws_task.take() {
+                    let _ = ws_task.await;
+                }
                 if let Some(metrics_task) = metrics_task.take() {
                     let _ = metrics_task.await;
                 }
+                let _ = watcher_task.as_mut().await;
                 let _ = trees.flush();
                 info!("Shutdown complete.");
-                return Ok(());
+                LoopControl::Shutdown
             }
-            result = &mut indexer_handle => result,
-        };
-
-        let _ = trees.flush();
-
-        match indexer_result {
-            Ok(Ok(())) => {
-                runtime.set_rpc(None);
-                metrics.set_rpc_connected(false);
-                let _ = exit_tx.send(true);
-                let _ = ws_task.await;
-                if let Some(metrics_task) = metrics_task.take() {
-                    let _ = metrics_task.await;
+            changed = spec_update_rx.changed() => {
+                if changed.is_ok() {
+                    let update = spec_update_rx.borrow_and_update().clone();
+                    current_snapshot = update.snapshot.clone();
+                    if update.action == SpecUpdateAction::RestartIndexer {
+                        runtime.set_rpc(None);
+                        metrics.set_rpc_connected(false);
+                        let _ = indexer_exit_tx.send(true);
+                        LoopControl::Restart
+                    } else {
+                        LoopControl::Continue
+                    }
+                } else {
+                    return Err(shared::internal_error("index spec update channel closed"));
                 }
-                info!("Indexer stopped cleanly.");
-                return Ok(());
             }
-            Ok(Err(err)) if err.is_recoverable() => {
-                runtime.set_rpc(None);
-                metrics.set_rpc_connected(false);
-                metrics.inc_reconnects();
-                warn!("Indexer error (recoverable): {err}; reconnecting in {backoff_secs}s");
-                select! {
-                    _ = signals.next() => {
-                        let _ = exit_tx.send(true);
-                        let _ = ws_task.await;
+            watcher_result = &mut watcher_task => {
+                match watcher_result {
+                    Ok(Ok(())) => {
+                        error!("Index spec watcher stopped unexpectedly.");
+                        runtime.set_rpc(None);
+                        metrics.set_rpc_connected(false);
+                        let _ = indexer_exit_tx.send(true);
+                        let _ = process_exit_tx.send(true);
+                        let _ = indexer_handle.as_mut().await;
+                        if let Some(ws_task) = ws_task.take() {
+                            let _ = ws_task.await;
+                        }
                         if let Some(metrics_task) = metrics_task.take() {
                             let _ = metrics_task.await;
                         }
                         let _ = trees.flush();
-                        info!("Shutdown requested during reconnection backoff.");
-                        return Ok(());
+                        return Err(shared::internal_error("index spec watcher stopped unexpectedly"));
                     }
-                    _ = sleep(Duration::from_secs(backoff_secs)) => {}
+                    Ok(Err(err)) => {
+                        runtime.set_rpc(None);
+                        metrics.set_rpc_connected(false);
+                        let _ = indexer_exit_tx.send(true);
+                        let _ = process_exit_tx.send(true);
+                        let _ = indexer_handle.as_mut().await;
+                        if let Some(ws_task) = ws_task.take() {
+                            let _ = ws_task.await;
+                        }
+                        if let Some(metrics_task) = metrics_task.take() {
+                            let _ = metrics_task.await;
+                        }
+                        let _ = trees.flush();
+                        return Err(err);
+                    }
+                    Err(join_err) => {
+                        runtime.set_rpc(None);
+                        metrics.set_rpc_connected(false);
+                        let _ = indexer_exit_tx.send(true);
+                        let _ = process_exit_tx.send(true);
+                        let _ = indexer_handle.as_mut().await;
+                        if let Some(ws_task) = ws_task.take() {
+                            let _ = ws_task.await;
+                        }
+                        if let Some(metrics_task) = metrics_task.take() {
+                            let _ = metrics_task.await;
+                        }
+                        let _ = trees.flush();
+                        return Err(shared::internal_error(format!(
+                            "index spec watcher task panicked: {join_err}"
+                        )));
+                    }
                 }
-                backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
-                continue;
             }
-            Ok(Err(err)) => {
-                runtime.set_rpc(None);
-                metrics.set_rpc_connected(false);
-                let _ = exit_tx.send(true);
-                let _ = ws_task.await;
-                if let Some(metrics_task) = metrics_task.take() {
-                    let _ = metrics_task.await;
+            result = &mut indexer_handle => LoopControl::Indexer(result),
+        };
+
+        let _ = trees.flush();
+
+        match loop_control {
+            LoopControl::Shutdown => return Ok(()),
+            LoopControl::Continue => continue,
+            LoopControl::Restart => match indexer_handle.as_mut().await {
+                Ok(Ok(())) => {
+                    info!("Indexer stopped for index spec reload.");
+                    continue;
                 }
-                error!("Indexer error (fatal): {err}");
-                return Err(err);
-            }
-            Err(join_err) => {
-                runtime.set_rpc(None);
-                metrics.set_rpc_connected(false);
-                let _ = exit_tx.send(true);
-                let _ = ws_task.await;
-                if let Some(metrics_task) = metrics_task.take() {
-                    let _ = metrics_task.await;
+                Ok(Err(err)) if err.is_recoverable() => {
+                    warn!("Indexer stopped during spec reload with recoverable error: {err}");
+                    continue;
                 }
-                error!("Indexer task failed: {join_err}");
-                return Err(shared::internal_error(format!(
-                    "indexer task panicked: {join_err}"
-                )));
-            }
+                Ok(Err(err)) => {
+                    let _ = process_exit_tx.send(true);
+                    if let Some(ws_task) = ws_task.take() {
+                        let _ = ws_task.await;
+                    }
+                    if let Some(metrics_task) = metrics_task.take() {
+                        let _ = metrics_task.await;
+                    }
+                    error!("Indexer error (fatal): {err}");
+                    return Err(err);
+                }
+                Err(join_err) => {
+                    let _ = process_exit_tx.send(true);
+                    if let Some(ws_task) = ws_task.take() {
+                        let _ = ws_task.await;
+                    }
+                    if let Some(metrics_task) = metrics_task.take() {
+                        let _ = metrics_task.await;
+                    }
+                    error!("Indexer task failed: {join_err}");
+                    return Err(shared::internal_error(format!(
+                        "indexer task panicked: {join_err}"
+                    )));
+                }
+            },
+            LoopControl::Indexer(indexer_result) => match indexer_result {
+                Ok(Ok(())) => {
+                    runtime.set_rpc(None);
+                    metrics.set_rpc_connected(false);
+                    let _ = process_exit_tx.send(true);
+                    if let Some(ws_task) = ws_task.take() {
+                        let _ = ws_task.await;
+                    }
+                    if let Some(metrics_task) = metrics_task.take() {
+                        let _ = metrics_task.await;
+                    }
+                    let _ = watcher_task.as_mut().await;
+                    info!("Indexer stopped cleanly.");
+                    return Ok(());
+                }
+                Ok(Err(err)) if err.is_recoverable() => {
+                    runtime.set_rpc(None);
+                    metrics.set_rpc_connected(false);
+                    metrics.inc_reconnects();
+                    warn!("Indexer error (recoverable): {err}; reconnecting in {backoff_secs}s");
+                    select! {
+                        _ = signals.next() => {
+                            let _ = process_exit_tx.send(true);
+                            if let Some(ws_task) = ws_task.take() {
+                                let _ = ws_task.await;
+                            }
+                            if let Some(metrics_task) = metrics_task.take() {
+                                let _ = metrics_task.await;
+                            }
+                            let _ = watcher_task.as_mut().await;
+                            let _ = trees.flush();
+                            info!("Shutdown requested during reconnection backoff.");
+                            return Ok(());
+                        }
+                        changed = spec_update_rx.changed() => {
+                            if changed.is_ok() {
+                                current_snapshot = spec_update_rx.borrow_and_update().snapshot.clone();
+                                continue;
+                            }
+                            return Err(shared::internal_error("index spec update channel closed"));
+                        }
+                        watcher_result = &mut watcher_task => {
+                            match watcher_result {
+                                Ok(Ok(())) => {
+                                    return Err(shared::internal_error("index spec watcher stopped unexpectedly"));
+                                }
+                                Ok(Err(err)) => return Err(err),
+                                Err(join_err) => {
+                                    return Err(shared::internal_error(format!(
+                                        "index spec watcher task panicked: {join_err}"
+                                    )));
+                                }
+                            }
+                        }
+                        _ = sleep(Duration::from_secs(backoff_secs)) => {}
+                    }
+                    backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                    continue;
+                }
+                Ok(Err(err)) => {
+                    runtime.set_rpc(None);
+                    metrics.set_rpc_connected(false);
+                    let _ = process_exit_tx.send(true);
+                    if let Some(ws_task) = ws_task.take() {
+                        let _ = ws_task.await;
+                    }
+                    if let Some(metrics_task) = metrics_task.take() {
+                        let _ = metrics_task.await;
+                    }
+                    let _ = watcher_task.as_mut().await;
+                    error!("Indexer error (fatal): {err}");
+                    return Err(err);
+                }
+                Err(join_err) => {
+                    runtime.set_rpc(None);
+                    metrics.set_rpc_connected(false);
+                    let _ = process_exit_tx.send(true);
+                    if let Some(ws_task) = ws_task.take() {
+                        let _ = ws_task.await;
+                    }
+                    if let Some(metrics_task) = metrics_task.take() {
+                        let _ = metrics_task.await;
+                    }
+                    let _ = watcher_task.as_mut().await;
+                    error!("Indexer task failed: {join_err}");
+                    return Err(shared::internal_error(format!(
+                        "indexer task panicked: {join_err}"
+                    )));
+                }
+            },
         }
     }
 }
@@ -723,6 +1148,7 @@ async fn main() {
 #[cfg(test)]
 mod main_tests {
     use super::*;
+    use tokio::time::timeout;
 
     const TEST_INDEX_CONFIG: &str = "/tmp/test-index.toml";
 
@@ -741,6 +1167,17 @@ mod main_tests {
 
     fn test_run_args() -> RunArgs {
         RunArgs::try_parse_from(["acuity-index", "--index-config", TEST_INDEX_CONFIG]).unwrap()
+    }
+
+    fn test_snapshot(spec: IndexSpec) -> ConfigSnapshot {
+        ConfigSnapshot {
+            spec,
+            source_hash: 1,
+        }
+    }
+
+    fn write_spec(path: &Path, spec: &IndexSpec) {
+        std::fs::write(path, toml::to_string(spec).unwrap()).unwrap();
     }
 
     #[test]
@@ -985,6 +1422,100 @@ mod main_tests {
     }
 
     #[test]
+    fn classify_spec_update_rejects_name_change() {
+        let current = test_snapshot(test_spec());
+        let mut next_spec = test_spec();
+        next_spec.name = "other".into();
+        let next = test_snapshot(next_spec);
+
+        let err = classify_spec_update(&current, &next, None).unwrap_err();
+
+        assert!(err.contains("name"));
+    }
+
+    #[test]
+    fn classify_spec_update_rejects_genesis_change() {
+        let current = test_snapshot(test_spec());
+        let mut next_spec = test_spec();
+        next_spec.genesis_hash = "11".repeat(32);
+        let next = test_snapshot(next_spec);
+
+        let err = classify_spec_update(&current, &next, None).unwrap_err();
+
+        assert!(err.contains("genesis_hash"));
+    }
+
+    #[test]
+    fn classify_spec_update_ignores_default_url_when_override_present() {
+        let current = test_snapshot(test_spec());
+        let mut next_spec = test_spec();
+        next_spec.default_url = "ws://127.0.0.1:9999".into();
+        let next = test_snapshot(next_spec);
+
+        let action = classify_spec_update(&current, &next, Some("ws://override:9944")).unwrap();
+
+        assert_eq!(action, SpecUpdateAction::Unchanged);
+    }
+
+    #[test]
+    fn classify_spec_update_restarts_for_indexing_changes() {
+        let current = test_snapshot(test_spec());
+        let mut next_spec = test_spec();
+        next_spec.index_variant = true;
+        let next = test_snapshot(next_spec);
+
+        let action = classify_spec_update(&current, &next, None).unwrap();
+
+        assert_eq!(action, SpecUpdateAction::RestartIndexer);
+    }
+
+    #[tokio::test]
+    async fn watch_index_spec_detects_replace_via_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_path = dir.path().join("index.toml");
+        let replacement_path = dir.path().join("index.tmp.toml");
+        let initial_spec = test_spec();
+        write_spec(&spec_path, &initial_spec);
+
+        let initial_snapshot = build_config_snapshot(spec_path.to_str().unwrap()).unwrap();
+        let (spec_tx, mut spec_rx) = watch::channel(SpecUpdate {
+            snapshot: initial_snapshot.clone(),
+            action: SpecUpdateAction::Unchanged,
+        });
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (exit_tx, exit_rx) = watch::channel(false);
+        let watcher = tokio::spawn(watch_index_spec(
+            spec_path.clone(),
+            initial_snapshot,
+            None,
+            spec_tx,
+            Some(ready_tx),
+            exit_rx,
+        ));
+        timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut updated_spec = test_spec();
+        updated_spec.index_variant = true;
+        write_spec(&replacement_path, &updated_spec);
+        std::fs::rename(&replacement_path, &spec_path).unwrap();
+
+        timeout(Duration::from_secs(5), spec_rx.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let update = spec_rx.borrow_and_update().clone();
+
+        assert_eq!(update.action, SpecUpdateAction::RestartIndexer);
+        assert!(update.snapshot.spec.index_variant);
+
+        let _ = exit_tx.send(true);
+        assert!(watcher.await.unwrap().is_ok());
+    }
+
+    #[test]
     fn load_options_config_parses_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("options.toml");
@@ -1025,20 +1556,24 @@ max_events_limit = 500
 
     #[test]
     fn args_reject_removed_indexing_flags() {
-        assert!(Args::try_parse_from([
-            "acuity-index",
-            "--index-config",
-            TEST_INDEX_CONFIG,
-            "--store-events",
-        ])
-        .is_err());
-        assert!(Args::try_parse_from([
-            "acuity-index",
-            "--index-config",
-            TEST_INDEX_CONFIG,
-            "--index-variant",
-        ])
-        .is_err());
+        assert!(
+            Args::try_parse_from([
+                "acuity-index",
+                "--index-config",
+                TEST_INDEX_CONFIG,
+                "--store-events",
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "acuity-index",
+                "--index-config",
+                TEST_INDEX_CONFIG,
+                "--index-variant",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

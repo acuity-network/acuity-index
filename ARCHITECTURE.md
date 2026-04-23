@@ -1,6 +1,6 @@
 ## Overview
 
-`acuity-index` is a config-driven event indexer for Substrate chains. It connects to a node over WebSocket RPC, decodes runtime events with `subxt`, derives query keys from built-in pallet rules or TOML config, stores index entries in `sled`, and exposes read/query access over its own WebSocket API.
+`acuity-index` is a config-driven event indexer for Substrate chains. It connects to a node over WebSocket RPC, decodes runtime events with `subxt`, derives query keys from explicit TOML config, stores index entries in `sled`, and exposes read/query access over its own WebSocket API.
 
 The design is intentionally schema-light:
 
@@ -13,15 +13,13 @@ This file is meant to help AI agents quickly find the right code and understand 
 ## Runtime Components
 
 - `src/main.rs`
-  Parses CLI args, loads index spec and options config, opens sled, verifies genesis hash, starts long-lived subscription/WebSocket tasks plus the optional metrics listener, and runs a reconnect loop that only recreates the RPC clients plus indexer task with exponential backoff on transient failures.
+  Parses CLI args, loads index spec and options config, opens sled, verifies genesis hash, starts long-lived subscription/WebSocket tasks plus the optional metrics listener, watches the index spec file for accepted changes, and runs a reconnect/supervisor loop that only recreates the RPC clients plus indexer task with exponential backoff on transient failures.
 - `src/metrics.rs`
   Owns the in-process `prometheus-client` registry, exposes the optional HTTP `/metrics` endpoint in OpenMetrics text format, and records process-level gauges, counters, and block-stage histograms.
 - `src/indexer.rs`
-  Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, decoded event storage, and notification fanout into shared subscriber state. Saves the current span before returning on any error so the reconnect loop can resume without data loss.
+  Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, decoded event storage, and notification fanout into shared subscriber state. Saves the current span before returning on any error so the supervisor loop can resume without data loss.
 - `src/config.rs`
   Defines the TOML schema and resolves configured event params into runtime key-mapping rules.
-- `src/pallets.rs`
-  Contains built-in indexing rules for supported Polkadot SDK pallets and helpers for extracting scalar values from schema-less event fields.
 - `src/websockets.rs`
   Implements the public WebSocket API, request/response handling, and connection lifecycle.
 - `src/shared.rs`
@@ -29,7 +27,7 @@ This file is meant to help AI agents quickly find the right code and understand 
 - `src/config_gen.rs`
   Builds starter index spec TOML files from live runtime metadata.
 - `src/synthetic_devnet.rs`
-  Shared support code for the in-repo synthetic devnet. It renders a synthetic index spec from a template, polls node/indexer readiness, provides small WebSocket API probe helpers, and defines the manifest/report types shared by the seeder, benchmark harness, and integration tests.
+  Shared support code for the in-repo synthetic devnet. It renders a synthetic index spec in Rust, polls node/indexer readiness, provides small WebSocket API probe helpers, and defines the manifest/report types shared by the seeder, benchmark harness, and integration tests.
 - `src/bin/seed_synthetic_runtime.rs`
   Deterministic chain seeder for the synthetic runtime. It submits known transactions in `smoke` or `bulk` mode and emits a `SeedManifest` describing the expected indexed queries that tests and benchmarks later validate through the public API.
 - `src/bin/benchmark_synthetic_indexing.rs`
@@ -180,7 +178,7 @@ These recipes are the supported developer entrypoints for the synthetic stack. T
 The normal startup path lives in `src/main.rs`:
 
 1. Parse CLI args.
-2. Load a built-in index spec TOML or a user-supplied `--index-config` index specification.
+2. Load the required `--index-config` index specification.
 3. Validate the spec and resolve runtime options (CLI > `--options-config` > defaults).
 4. Resolve the database path and open sled.
 5. Verify or initialize the stored `genesis_hash` in the root database.
@@ -188,12 +186,13 @@ The normal startup path lives in `src/main.rs`:
     a. Spawn a bounded subscription dispatcher task that applies subscribe/unsubscribe messages to shared in-memory registries.
     b. Spawn `websockets_listen(...)` once for the process lifetime.
     c. If `--metrics-port` is configured, bind a separate HTTP listener that serves `/metrics`.
-7. Enter the reconnect loop (see [RPC Reconnection](#rpc-reconnection) below). On each iteration:
+    d. Spawn an index-spec watcher task for `--index-config`.
+7. Enter the reconnect/supervisor loop (see [RPC Reconnection And Spec Reload](#rpc-reconnection-and-spec-reload) below). On each iteration:
    a. Connect to the target node with `subxt` (retry with exponential backoff on transient failures).
    b. Verify the connected chain genesis hash matches the config.
    c. Publish the current RPC handle into shared runtime state.
    d. Spawn `run_indexer(...)`.
-   e. Wait for either a termination signal or indexer completion, then act accordingly.
+   e. Wait for a termination signal, an accepted watched-spec update, or indexer completion, then act accordingly.
 
 Startup error handling is centralized in a fallible `run()` path in `src/main.rs`. Configuration, database, and signal-registration failures return structured errors that are logged once before the process exits.
 
@@ -349,11 +348,11 @@ the spec revision is advanced via `spec_change_blocks`.
 Important invariants:
 
 - The active in-memory `current_span` is not always persisted immediately. On shutdown or recoverable error, `save_current_span(...)` persists the current progress back into the `span` tree before the indexer task returns.
-- If the upstream `subxt` block stream closes because the node disconnects or exits, the indexer saves the current span and returns `BlockStreamClosed` so the reconnect loop in `src/main.rs` can re-establish the connection and resume indexing.
+- If the upstream `subxt` block stream closes because the node disconnects or exits, the indexer saves the current span and returns `BlockStreamClosed` so the supervisor loop in `src/main.rs` can re-establish the connection and resume indexing.
 
-## RPC Reconnection
+## RPC Reconnection And Spec Reload
 
-The indexer is wrapped in a reconnect loop in `src/main.rs` that handles transient RPC failures without data loss.
+The indexer is wrapped in a supervisor loop in `src/main.rs` that handles transient RPC failures and accepted index-spec reloads without data loss.
 
 ### Error classification
 
@@ -362,21 +361,40 @@ The indexer is wrapped in a reconnect loop in `src/main.rs` that handles transie
 - **Recoverable**: `Subxt`, `RpcError`, `BlocksError`, `BlockStreamClosed`, `EventsError`, `OnlineClientAtBlockError`, `OnlineClientError`, `BlockNotFound` — these indicate transient network or node issues and trigger reconnection.
 - **Fatal**: `Sled`, `Tungstenite`, `Hex`, `StatePruningMisconfigured`, `CodecError`, `MetadataError`, `Json`, `Io`, `TomlSer`, `Internal` — these indicate configuration or data integrity problems and cause the process to exit.
 
-### Reconnect loop behavior
+### Supervisor behavior
 
 On each iteration:
 
 1. Check if SIGTERM was received between loops (via `term_now` atomic flag).
-2. Attempt RPC connection via `connect_rpc()`. Transient failures log the error and sleep with exponential backoff before retrying. Fatal connection errors exit immediately.
-3. Verify genesis hash. A mismatch is fatal (exits with an error).
-4. Publish the fresh RPC handle into shared runtime state and spawn the indexer task.
-5. `select!` on the signal handler vs the indexer task handle.
-6. On SIGTERM: clear the shared RPC handle, send the exit signal, await the indexer and WebSocket listener tasks, flush sled, and return `Ok(())`.
-7. On indexer completion:
+2. Read the latest accepted `ConfigSnapshot` and derive the effective RPC URL.
+3. Attempt RPC connection via `connect_rpc()`. Transient failures log the error and sleep with exponential backoff before retrying. Fatal connection errors exit immediately.
+4. While waiting to connect, also listen for watcher-published spec updates so the next connection attempt uses the newest accepted spec immediately.
+5. Verify genesis hash. A mismatch is fatal (exits with an error).
+6. Publish the fresh RPC handle into shared runtime state and spawn the indexer task.
+7. `select!` on the signal handler, the spec update channel, the watcher task, and the indexer task handle.
+8. On SIGTERM: clear the shared RPC handle, send the process exit signal, await the indexer, watcher, WebSocket, and metrics tasks, flush sled, and return `Ok(())`.
+9. On accepted reloadable spec change: clear the shared RPC handle, signal only the current indexer to stop, let it persist the active span, and continue the loop immediately with the new spec.
+10. On indexer completion:
    - `Ok(())` — clean shutdown (e.g. exit signal received), return `Ok(())`.
    - Recoverable error — clear the shared RPC handle, log the error, sleep with backoff, and `continue` the loop to reconnect.
    - Fatal error — log and return `Err`.
    - `JoinError` (panic) — log and return a fatal `Internal` error.
+
+### Spec watcher behavior
+
+`watch_index_spec(...)` watches the parent directory of the configured
+`--index-config` path and filters filesystem events back down to the target file.
+
+Its behavior is:
+
+- watch for in-place writes and replace-via-rename editor save patterns
+- debounce short event bursts before re-reading the file
+- parse and validate the entire updated spec before publishing it
+- reject updates that change `name` or `genesis_hash`
+- classify accepted updates as either `RestartIndexer` or `Unchanged`
+
+The watcher never mutates the live indexer in place. It only publishes accepted
+snapshots to the supervisor loop, which decides whether to restart the indexer.
 
 ### Backoff timing
 
@@ -388,7 +406,7 @@ During backoff sleeps, SIGTERM is checked via `signals.next()` so the process ex
 
 ### Span state preservation
 
-Because `run_indexer` saves the current span before returning on any error path, the reconnect loop preserves all committed indexing progress. On reconnection, `load_spans` reconstructs the span state from sled, and any blocks not covered by a span are re-indexed. This makes the reconnection path idempotent.
+Because `run_indexer` saves the current span before returning on any error path, the supervisor loop preserves all committed indexing progress. On reconnection or accepted spec reload, `load_spans` reconstructs the span state from sled, and any blocks not covered by a span are re-indexed. This makes the restart path idempotent.
 
 ## Index Spec Model
 
@@ -432,17 +450,16 @@ Important invariant:
 
 - Unknown TOML key names are rejected at config validation time, not lazily during indexing.
 
-## Built-in Pallet Rules
+## Event Key Extraction
 
-`src/pallets.rs` is a library of schema-less extractors and pallet-specific indexing rules.
+Schema-less field extraction helpers live in `src/indexer.rs` and are driven by
+the explicit TOML mappings compiled by `IndexSpec::build_event_index()`.
 
 The pattern is:
 
 - Decode event fields into generic `scale_value::Value` trees.
 - Extract common scalar shapes such as account IDs, u32/u64/u128 values, booleans, strings, byte arrays, or vectors.
-- Emit `Key` values for the event.
-
-If you need to add first-class support for another Polkadot SDK pallet, this is the place to start.
+- Emit `Key` values for the event according to the configured built-in or custom key mapping.
 
 ## Event Encoding
 
@@ -574,8 +591,8 @@ Agents should treat generated configs as a starting point that may need cleanup 
   `src/indexer.rs`
 - Add a new built-in key type or custom key storage shape:
   `src/config.rs`, `src/shared.rs`, `src/indexer.rs`
-- Add built-in support for another SDK pallet:
-  `src/pallets.rs`
+- Change index-spec hot reload behavior or watcher integration:
+  `src/main.rs`
 - Change how operational/WebSocket parameters are resolved and merged, or add new CLI flags:
   `src/main.rs`, `src/config.rs`, `src/shared.rs` (for `WsConfig`)
 - Change WebSocket request/response shapes or connection limits:
@@ -589,7 +606,7 @@ Agents should treat generated configs as a starting point that may need cleanup 
 - Do not assume every decoded field is named. Some event fields are positional and TOML may reference them by stringified index like `"0"`.
 - Do not assume block indexing completes in numeric order. Both backfill and head processing can finish out of order and are stitched together afterward.
 - Do not bypass genesis-hash checks when reusing an existing database path.
-- Do not add chain-specific logic to the main loop if it can live in TOML or `src/pallets.rs` instead.
+- Do not add chain-specific logic to the main loop if it can live in TOML instead.
 - `Key::Custom` is the main path for queryable keys, including many built-in semantic keys.
 - Recoverable RPC errors trigger reconnection, not process exit. If you need the process to stop on a specific error, classify it as fatal in `IndexError::is_recoverable()`.
 
@@ -600,7 +617,7 @@ The simplest correct mental model is:
 1. Chain config says which event fields matter.
 2. The indexer walks blocks and turns matching event fields into binary index entries.
 3. Spans record which block ranges are already trustworthy for the current indexing mode.
-4. The reconnect loop in `src/main.rs` recreates RPC clients and the indexer task; transient RPC failures trigger reconnection with exponential backoff, preserving all span state through sled.
+4. The supervisor loop in `src/main.rs` recreates RPC clients and the indexer task; transient RPC failures trigger reconnection, and accepted watched-spec updates trigger an indexer-only restart, preserving all span state through sled.
 5. The WebSocket server is a thin query/subscription layer on top of sled plus shared subscriber lists that survive reconnects.
 
 If you are changing behavior, first decide which layer owns it:

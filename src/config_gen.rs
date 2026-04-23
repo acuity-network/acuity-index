@@ -416,9 +416,7 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
     out.push_str("default_url = ");
     out.push_str(&inline_string(&spec.default_url)?);
     out.push('\n');
-    out.push_str(
-        "# Block heights where a new index spec revision starts; must begin with 0.\n",
-    );
+    out.push_str("# Block heights where a new index spec revision starts; must begin with 0.\n");
     out.push_str("# Example: [0, 1250000, 2485000]\n");
     out.push_str(
         "# Adding a new boundary in past history causes the indexer to keep earlier data\n",
@@ -474,7 +472,9 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
     }
     out.push('\n');
 
-    out.push_str("# Example custom pallet config showing built-in, scalar, multi, and composite keys.\n");
+    out.push_str(
+        "# Example custom pallet config showing built-in, scalar, multi, and composite keys.\n",
+    );
     out.push_str("# [[pallets]]\n");
     out.push_str("# name = \"MyPallet\"\n");
     out.push_str("# events = [\n");

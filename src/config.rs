@@ -190,7 +190,7 @@ impl ParamConfig {
 }
 
 /// Configuration for a single event variant.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct EventConfig {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -198,7 +198,7 @@ pub struct EventConfig {
 }
 
 /// Configuration for a single pallet.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PalletConfig {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -241,7 +241,7 @@ pub struct OptionsConfig {
 }
 
 /// Index specification loaded from a TOML file.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IndexSpec {
     pub name: String,
     pub genesis_hash: String,

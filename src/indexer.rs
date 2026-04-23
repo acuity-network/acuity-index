@@ -1253,12 +1253,7 @@ fn process_queued_head_result(
                 let Some((events, keys)) = head_orphans.remove(&next_block) else {
                     break;
                 };
-                advance_span_end(
-                    trees,
-                    current_span,
-                    next_block,
-                    spec_change_blocks_len,
-                )?;
+                advance_span_end(trees, current_span, next_block, spec_change_blocks_len)?;
                 info!(
                     "✨ Indexed head #{}: {} events, {} keys",
                     next_block.to_formatted_string(&Locale::en),

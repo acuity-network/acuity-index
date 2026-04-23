@@ -16,6 +16,7 @@ service, see [SECURITY.md](./SECURITY.md).
 - **Config-driven** — indexing rules are defined in TOML files; no recompilation needed for new chains
 - **Explicit pallet rules** — every indexed event mapping lives in TOML, including SDK pallets
 - **Resume-safe** — tracks indexed block spans and resumes after restart
+- **Index-spec hot reload** — watches `--index-config` and restarts only the RPC/indexer loop on accepted spec changes
 - **Safe shutdown** — persists progress and exits cleanly on termination signals or when the upstream node disconnects
 - **Backward indexing** — indexes from the chain tip backwards while simultaneously tracking new blocks
 - **WebSocket API** — query events by key, subscribe to live updates, and inspect chain metadata
@@ -63,6 +64,11 @@ acuity-index [OPTIONS]
 
 Runtime option precedence: **CLI flags > `--options-config` file > built-in defaults**.
 `index_variant` and `store_events` are top-level index spec fields, not runtime options.
+
+When `--index-config` points to a file, `acuity-index` watches that file for changes.
+Accepted spec edits restart only the RPC/indexer loop; the WebSocket and metrics
+servers stay up. Changes to `name` or `genesis_hash` are rejected and the current
+spec keeps running.
 
 ### Subcommands
 
@@ -169,6 +175,11 @@ Clean shutdown happens in two cases:
 
 If the upstream node closes the live block stream or the RPC connection drops, `acuity-index` saves the active span, keeps the WebSocket server running for sled-backed reads and existing subscriptions, and reconnects with exponential backoff instead of exiting. RPC-backed requests such as `Variants` return a temporary-unavailable error until the node comes back.
 
+If the watched index spec changes, `acuity-index` validates the new file before
+switching. Accepted changes stop the current indexer cleanly, persist the active
+span, and immediately restart indexing with the new spec. Invalid edits, or edits
+that change `name` or `genesis_hash`, are rejected without killing the process.
+
 On actual shutdown, the process logs the shutdown reason, stops the WebSocket server, flushes sled, and exits cleanly instead of panicking.
 
 Startup failures such as invalid cache-size configuration, genesis-hash mismatches, database open errors, RPC initialization failures, and signal-registration failures are also reported as structured errors and logged before the process exits.
@@ -227,6 +238,10 @@ and the suffix starting at the earliest affected boundary is re-indexed.
 
 If you change `index_variant` or `store_events` and want historical data re-indexed
 under the new setting, add a new `spec_change_blocks` boundary.
+
+Changes to `default_url`, explicit pallet mappings, custom keys,
+`index_variant`, `store_events`, or `spec_change_blocks` are applied by the
+hot-reload path when the watched spec file is updated.
 
 ### Runtime Options Config
 

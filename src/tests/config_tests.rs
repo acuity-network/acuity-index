@@ -100,7 +100,10 @@ events = [
         let claimed_params = claims.get("Claimed").unwrap();
         assert_eq!(claimed_params.len(), 2);
         assert_eq!(claimed_params[0].fields, vec!["who".to_owned()]);
-        assert_eq!(claimed_params[0].key, ParamKey::BuiltIn(KeyTypeName::AccountId));
+        assert_eq!(
+            claimed_params[0].key,
+            ParamKey::BuiltIn(KeyTypeName::AccountId)
+        );
         assert_eq!(
             claimed_params[1].key,
             ParamKey::Custom {

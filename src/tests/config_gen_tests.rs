@@ -5,8 +5,8 @@ mod config_gen_tests {
         config_gen::{infer_param, render_index_spec_toml},
         shared::{metadata_version, unsupported_metadata_error},
     };
-    use std::collections::HashMap;
     use scale_info::{MetaType, PortableRegistry, Registry, TypeDef, TypeInfo};
+    use std::collections::HashMap;
 
     #[allow(dead_code)]
     #[derive(TypeInfo)]

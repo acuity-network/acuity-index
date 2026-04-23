@@ -1,12 +1,12 @@
 use crate::{
     config::{CustomKeyConfig, EventConfig, IndexSpec, PalletConfig, ParamConfig, ScalarKind},
     pallets::is_supported_sdk_pallet,
-    shared::{IndexError, metadata_version, unsupported_metadata_error},
+    shared::{IndexError, internal_error, metadata_version, unsupported_metadata_error},
 };
 use scale_info::{
     Field, PortableRegistry, Type, TypeDef, TypeDefPrimitive, Variant, form::PortableForm,
 };
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, fs, io::Write, path::Path};
 use subxt::{
     Metadata, OnlineClient, PolkadotConfig,
     config::RpcConfigFor,
@@ -517,9 +517,42 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
     Ok(out)
 }
 
+fn write_generated_index_spec_file(
+    output_path: &Path,
+    toml: &str,
+    force: bool,
+) -> Result<(), IndexError> {
+    if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+
+    if force {
+        fs::write(output_path, toml)?;
+        return Ok(());
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output_path)
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                internal_error(format!(
+                    "output file already exists: {} (use --force to overwrite)",
+                    output_path.display()
+                ))
+            } else {
+                err.into()
+            }
+        })?;
+    file.write_all(toml.as_bytes())?;
+    Ok(())
+}
+
 pub async fn write_generated_index_spec(
     url: &str,
     output_path: &Path,
+    force: bool,
 ) -> Result<IndexSpec, IndexError> {
     let rpc_client = RpcClient::from_url(url).await?;
     let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone()).await?;
@@ -555,10 +588,7 @@ pub async fn write_generated_index_spec(
     let spec = build_index_spec(&chain_name, &genesis_hash, url, &metadata);
     let toml = render_index_spec_toml(&spec)?;
 
-    if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(output_path, toml)?;
+    write_generated_index_spec_file(output_path, &toml, force)?;
 
     Ok(spec)
 }
@@ -568,6 +598,7 @@ pub async fn write_generated_index_spec(
 mod tests {
     use super::*;
     use scale_info::{MetaType, Registry, TypeInfo};
+    use std::fs;
 
     #[derive(TypeInfo)]
     struct WrapperU64(u64);
@@ -874,5 +905,34 @@ mod tests {
         assert!(
             toml.contains("{ fields = [\"item_id\", \"revision_id\"], key = \"item_revision\" }")
         );
+    }
+
+    #[test]
+    fn write_generated_index_spec_file_rejects_existing_file_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.toml");
+        fs::write(&path, "old = true\n").unwrap();
+
+        let err = write_generated_index_spec_file(&path, "new = true\n", false).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "internal error: output file already exists: {} (use --force to overwrite)",
+                path.display()
+            )
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old = true\n");
+    }
+
+    #[test]
+    fn write_generated_index_spec_file_overwrites_existing_file_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.toml");
+        fs::write(&path, "old = true\n").unwrap();
+
+        write_generated_index_spec_file(&path, "new = true\n", true).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new = true\n");
     }
 }

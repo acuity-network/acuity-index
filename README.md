@@ -79,7 +79,7 @@ Runtime option precedence: **CLI flags > `--options-config` file > built-in defa
 
 | Subcommand | Description |
 |---|---|
-| `generate-index-spec --url <URL> <OUTPUT>` | Inspect live metadata and write a starter index specification TOML file |
+| `generate-index-spec [--force|-f] --url <URL> <OUTPUT>` | Inspect live metadata and write a starter index specification TOML file |
 | `purge-index [OPTIONS]` | Delete the index database for a built-in chain or custom index spec |
 
 ### Examples
@@ -107,6 +107,8 @@ Generate a starter index specification from a live node:
 ```bash
 acuity-index generate-index-spec --url wss://mynode:443 ./chains/mychain.toml
 ```
+
+If the output file already exists, `generate-index-spec` fails unless `--force` or `-f` is supplied.
 
 ## Local Synthetic Devnet
 

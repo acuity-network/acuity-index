@@ -112,6 +112,9 @@ pub enum Command {
         /// URL of Substrate node to connect to
         #[arg(short, long)]
         url: String,
+        /// Overwrite the output file if it already exists
+        #[arg(short, long, default_value_t = false)]
+        force: bool,
         /// Path to write the generated index spec TOML file
         output: String,
     },
@@ -478,8 +481,8 @@ async fn run() -> Result<(), shared::IndexError> {
 
     match &args.command {
         Some(Command::PurgeIndex { args: purge_args }) => purge_index(purge_args),
-        Some(Command::GenerateIndexSpec { url, output }) => {
-            match write_generated_index_spec(url, PathBuf::from(output).as_path()).await {
+        Some(Command::GenerateIndexSpec { url, force, output }) => {
+            match write_generated_index_spec(url, PathBuf::from(output).as_path(), *force).await {
                 Ok(spec) => {
                     info!("Generated index spec for {} at {}", spec.name, output);
                     exit(0);
@@ -1108,6 +1111,48 @@ max_events_limit = 500
                 assert_eq!(purge_args.db_path.as_deref(), Some("/tmp/test-db"));
             }
             _ => panic!("expected purge-index command"),
+        }
+    }
+
+    #[test]
+    fn args_parse_generate_index_spec_short_force() {
+        let args = Args::try_parse_from([
+            "acuity-index",
+            "generate-index-spec",
+            "--url",
+            "wss://rpc.example.com:443",
+            "-f",
+            "./chains/test.toml",
+        ])
+        .unwrap();
+
+        match args.command {
+            Some(Command::GenerateIndexSpec { url, force, output }) => {
+                assert_eq!(url, "wss://rpc.example.com:443");
+                assert!(force);
+                assert_eq!(output, "./chains/test.toml");
+            }
+            _ => panic!("expected generate-index-spec command"),
+        }
+    }
+
+    #[test]
+    fn args_parse_generate_index_spec_long_force() {
+        let args = Args::try_parse_from([
+            "acuity-index",
+            "generate-index-spec",
+            "--url",
+            "wss://rpc.example.com:443",
+            "--force",
+            "./chains/test.toml",
+        ])
+        .unwrap();
+
+        match args.command {
+            Some(Command::GenerateIndexSpec { force, .. }) => {
+                assert!(force);
+            }
+            _ => panic!("expected generate-index-spec command"),
         }
     }
 

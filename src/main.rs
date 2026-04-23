@@ -118,7 +118,7 @@ pub enum Command {
 
 #[derive(Parser, Debug)]
 pub struct RunArgs {
-    /// Path to an index specification TOML file
+    /// Path to a hot-reloading index specification TOML file
     pub index_spec: String,
     /// Path to an options TOML file
     #[arg(long)]

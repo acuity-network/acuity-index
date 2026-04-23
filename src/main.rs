@@ -147,12 +147,6 @@ pub struct RunArgs {
     /// Only index finalized blocks
     #[arg(short, long, default_value_t = false)]
     pub finalized: bool,
-    /// Index event variants
-    #[arg(short, long, default_value_t = false)]
-    pub index_variant: bool,
-    /// Store decoded events for immediate retrieval
-    #[arg(short, long, default_value_t = false)]
-    pub store_events: bool,
     /// WebSocket port [default: 8172]
     #[arg(short, long)]
     pub port: Option<u16>,
@@ -208,8 +202,6 @@ struct ResolvedArgs {
     url: Option<String>,
     queue_depth: u8,
     finalized: bool,
-    index_variant: bool,
-    store_events: bool,
     port: u16,
     metrics_port: Option<u16>,
     ws_config: WsConfig,
@@ -254,7 +246,7 @@ fn validate_ws_config(ws_config: &WsConfig) -> Result<(), String> {
 
 fn resolve_args(
     cli: &RunArgs,
-    spec: &IndexSpec,
+    _spec: &IndexSpec,
     options: Option<&OptionsConfig>,
 ) -> Result<ResolvedArgs, String> {
     let opts = options.as_ref();
@@ -279,8 +271,6 @@ fn resolve_args(
         .unwrap_or(DEFAULT_QUEUE_DEPTH);
 
     let finalized = cli.finalized || opts.and_then(|o| o.finalized).unwrap_or(false);
-    let index_variant = cli.index_variant || spec.index_variant;
-    let store_events = cli.store_events || spec.store_events;
 
     let port = cli
         .port
@@ -332,8 +322,6 @@ fn resolve_args(
         url: cli.url.clone().or_else(|| opts.and_then(|o| o.url.clone())),
         queue_depth,
         finalized,
-        index_variant,
-        store_events,
         port,
         metrics_port,
         ws_config,
@@ -378,12 +366,6 @@ fn load_options_config(path: &str) -> OptionsConfig {
         error!("Invalid options config: {e}");
         exit(1);
     })
-}
-
-fn apply_resolved_indexing_flags(mut spec: IndexSpec, resolved: &ResolvedArgs) -> IndexSpec {
-    spec.index_variant = resolved.index_variant;
-    spec.store_events = resolved.store_events;
-    spec
 }
 
 fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
@@ -521,7 +503,6 @@ async fn run() -> Result<(), shared::IndexError> {
         error!("{e}");
         exit(1);
     });
-    let spec = apply_resolved_indexing_flags(spec, &resolved);
 
     info!("Indexing chain: {}", spec.name);
 
@@ -809,8 +790,6 @@ mod main_tests {
         assert!(args.run.db_cache_capacity.is_none());
         assert!(args.run.queue_depth.is_none());
         assert!(!args.run.finalized);
-        assert!(!args.run.index_variant);
-        assert!(!args.run.store_events);
         assert!(args.run.port.is_none());
         assert!(args.run.metrics_port.is_none());
     }
@@ -824,8 +803,6 @@ mod main_tests {
         assert_eq!(resolved.db_cache_capacity, "1024.00 MiB");
         assert_eq!(resolved.queue_depth, 1);
         assert!(!resolved.finalized);
-        assert!(!resolved.index_variant);
-        assert!(!resolved.store_events);
         assert_eq!(resolved.port, 8172);
         assert_eq!(resolved.metrics_port, None);
 
@@ -863,16 +840,7 @@ mod main_tests {
     #[test]
     fn resolve_args_config_overrides_defaults() {
         let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
-        let spec = IndexSpec {
-            name: "test".into(),
-            genesis_hash: "00".repeat(32),
-            default_url: "ws://127.0.0.1:9944".into(),
-            spec_change_blocks: vec![0],
-            index_variant: true,
-            store_events: true,
-            custom_keys: Default::default(),
-            pallets: vec![],
-        };
+        let spec = test_spec();
         let opts = OptionsConfig {
             url: Some("ws://custom:9944".into()),
             db_path: Some("/data/db".into()),
@@ -895,8 +863,6 @@ mod main_tests {
         assert_eq!(resolved.db_cache_capacity, "2 GiB");
         assert_eq!(resolved.queue_depth, 4);
         assert!(resolved.finalized);
-        assert!(resolved.index_variant);
-        assert!(resolved.store_events);
         assert_eq!(resolved.port, 9999);
         assert_eq!(resolved.metrics_port, Some(9998));
         assert_eq!(resolved.url.as_deref(), Some("ws://custom:9944"));
@@ -918,7 +884,6 @@ mod main_tests {
             "--finalized",
             "--db-mode",
             "high-throughput",
-            "--store-events",
         ])
         .unwrap();
         let spec = test_spec();
@@ -943,8 +908,6 @@ mod main_tests {
         assert!(matches!(resolved.db_mode, DbMode::HighThroughput));
         assert_eq!(resolved.queue_depth, 8);
         assert!(resolved.finalized);
-        assert!(!resolved.index_variant);
-        assert!(resolved.store_events);
         assert_eq!(resolved.port, 1234);
         assert_eq!(resolved.metrics_port, Some(4321));
     }
@@ -1029,44 +992,12 @@ mod main_tests {
     }
 
     #[test]
-    fn resolve_args_spec_index_variant_or_with_cli() {
+    fn resolve_args_ignores_spec_indexing_flags() {
         let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
         let mut spec = test_spec();
         spec.index_variant = true;
         spec.store_events = true;
-        let resolved = resolve_args(&args, &spec, None).unwrap();
-        assert!(resolved.index_variant);
-        assert!(resolved.store_events);
-    }
-
-    #[test]
-    fn resolve_args_spec_and_cli_both_true() {
-        let args =
-            RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot", "--index-variant"])
-                .unwrap();
-        let mut spec = test_spec();
-        spec.index_variant = true;
-        let resolved = resolve_args(&args, &spec, None).unwrap();
-        assert!(resolved.index_variant);
-        assert!(!resolved.store_events);
-    }
-
-    #[test]
-    fn apply_resolved_indexing_flags_preserves_cli_overrides() {
-        let args = RunArgs::try_parse_from([
-            "acuity-index",
-            "--chain",
-            "polkadot",
-            "--index-variant",
-            "--store-events",
-        ])
-        .unwrap();
-        let spec = test_spec();
-        let resolved = resolve_args(&args, &spec, None).unwrap();
-        let spec = apply_resolved_indexing_flags(spec, &resolved);
-
-        assert!(spec.index_variant);
-        assert!(spec.store_events);
+        let _resolved = resolve_args(&args, &spec, None).unwrap();
     }
 
     #[test]
@@ -1109,11 +1040,11 @@ max_events_limit = 500
     }
 
     #[test]
-    fn args_parse_store_events_flag() {
-        let args = Args::try_parse_from(["acuity-index", "--chain", "polkadot", "--store-events"])
-            .unwrap();
-
-        assert!(args.run.store_events);
+    fn args_reject_removed_indexing_flags() {
+        assert!(Args::try_parse_from(["acuity-index", "--chain", "polkadot", "--store-events"])
+            .is_err());
+        assert!(Args::try_parse_from(["acuity-index", "--chain", "polkadot", "--index-variant"])
+            .is_err());
     }
 
     #[test]

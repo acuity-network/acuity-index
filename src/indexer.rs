@@ -888,12 +888,7 @@ fn update_subscription_metrics(runtime: &RuntimeState) {
 
 // ─── Span helpers ─────────────────────────────────────────────────────────────
 
-pub fn load_spans(
-    span_db: &Tree,
-    spec_change_blocks: &[u32],
-    index_variant: bool,
-    store_events: bool,
-) -> Result<Vec<Span>, IndexError> {
+pub fn load_spans(span_db: &Tree, spec_change_blocks: &[u32]) -> Result<Vec<Span>, IndexError> {
     let mut spans: Vec<Span> = vec![];
     'span: for (key, value) in span_db.into_iter().flatten() {
         let Some(span_value) = read_span_db_value(&value) else {
@@ -905,24 +900,6 @@ pub fn load_spans(
             error!("Skipping malformed span key during span load");
             continue;
         };
-        if index_variant && span_value.index_variant != 1 {
-            span_db.remove(&key)?;
-            info!(
-                "📚 Re-indexing #{} to #{}: event variants not indexed.",
-                start.to_formatted_string(&Locale::en),
-                end.to_formatted_string(&Locale::en)
-            );
-            continue;
-        }
-        if store_events && span_value.store_events != 1 {
-            span_db.remove(&key)?;
-            info!(
-                "📚 Re-indexing #{} to #{}: events not stored.",
-                start.to_formatted_string(&Locale::en),
-                end.to_formatted_string(&Locale::en)
-            );
-            continue;
-        }
         let span_version: u16 = span_value.version.into();
         for (version, block_number) in spec_change_blocks.iter().enumerate() {
             let version_u16: u16 = version
@@ -1017,18 +994,10 @@ pub fn check_next_batch_block(spans: &[Span], next: &mut Option<u32>) {
     }
 }
 
-fn save_span(
-    span_db: &Tree,
-    span: &Span,
-    spec_change_blocks_len: usize,
-    index_variant: bool,
-    store_events: bool,
-) -> Result<(), IndexError> {
+fn save_span(span_db: &Tree, span: &Span, spec_change_blocks_len: usize) -> Result<(), IndexError> {
     let value = SpanDbValue {
         start: span.start.into(),
         version: ((spec_change_blocks_len.saturating_sub(1)) as u16).into(),
-        index_variant: u8::from(index_variant),
-        store_events: u8::from(store_events),
     };
     span_db.insert(span.end.to_be_bytes(), value.as_bytes())?;
     Ok(())
@@ -1038,8 +1007,6 @@ fn save_current_span(
     trees: &Trees,
     current_span: &Span,
     spec_change_blocks_len: usize,
-    index_variant: bool,
-    store_events: bool,
 ) -> Result<(), IndexError> {
     if current_span.start != current_span.end {
         let persisted_start = current_span.start.max(1);
@@ -1047,13 +1014,7 @@ fn save_current_span(
             start: persisted_start,
             end: current_span.end,
         };
-        save_span(
-            &trees.span,
-            &persisted_span,
-            spec_change_blocks_len,
-            index_variant,
-            store_events,
-        )?;
+        save_span(&trees.span, &persisted_span, spec_change_blocks_len)?;
         info!(
             "📚 Saved span #{} to #{}",
             persisted_span.start.to_formatted_string(&Locale::en),
@@ -1072,16 +1033,12 @@ fn advance_span_end(
     current_span: &mut Span,
     next_block: u32,
     spec_change_blocks_len: usize,
-    index_variant: bool,
-    store_events: bool,
 ) -> Result<(), IndexError> {
     let old_key = current_span.end.to_be_bytes();
     current_span.end = next_block;
     let value = SpanDbValue {
         start: current_span.start.into(),
         version: ((spec_change_blocks_len.saturating_sub(1)) as u16).into(),
-        index_variant: u8::from(index_variant),
-        store_events: u8::from(store_events),
     };
     let mut batch = Batch::default();
     batch.remove(&old_key);
@@ -1168,8 +1125,6 @@ fn process_queued_head_result(
     trees: &Trees,
     current_span: &mut Span,
     spec_change_blocks_len: usize,
-    index_variant: bool,
-    store_events: bool,
     indexer: &Indexer,
     head_orphans: &mut AHashMap<u32, (u32, u32)>,
     result: Result<(u32, u32, u32), IndexError>,
@@ -1187,8 +1142,6 @@ fn process_queued_head_result(
                     current_span,
                     next_block,
                     spec_change_blocks_len,
-                    index_variant,
-                    store_events,
                 )?;
                 info!(
                     "✨ Indexed head #{}: {} events, {} keys",
@@ -1267,12 +1220,7 @@ pub async fn run_indexer(
         api.stream_best_blocks().await
     }?;
 
-    let mut spans = load_spans(
-        &trees.span,
-        &spec.spec_change_blocks,
-        index_variant,
-        store_events,
-    )?;
+    let mut spans = load_spans(&trees.span, &spec.spec_change_blocks)?;
 
     let indexer = Indexer::new(trees.clone(), api, rpc, &spec, runtime);
 
@@ -1361,8 +1309,6 @@ pub async fn run_indexer(
                             &trees,
                             &current_span,
                             spec_change_blocks_len,
-                            index_variant,
-                            store_events,
                         )?;
                         return Ok(());
                     }
@@ -1376,8 +1322,6 @@ pub async fn run_indexer(
                                 &trees,
                                 &current_span,
                                 spec_change_blocks_len,
-                                index_variant,
-                                store_events,
                             )?;
                             return Err(IndexError::BlockStreamClosed);
                         }
@@ -1387,8 +1331,6 @@ pub async fn run_indexer(
                                 &trees,
                                 &current_span,
                                 spec_change_blocks_len,
-                                index_variant,
-                                store_events,
                             )?;
                             return Err(err);
                         }
@@ -1411,8 +1353,6 @@ pub async fn run_indexer(
                             &trees,
                             &mut current_span,
                             spec_change_blocks_len,
-                            index_variant,
-                            store_events,
                             &indexer,
                             &mut head_orphans,
                             result,
@@ -1421,8 +1361,6 @@ pub async fn run_indexer(
                                 &trees,
                                 &current_span,
                                 spec_change_blocks_len,
-                                index_variant,
-                                store_events,
                             )?;
                             return Err(err);
                         }
@@ -1507,8 +1445,6 @@ pub async fn run_indexer(
                                     &trees,
                                     &current_span,
                                     spec_change_blocks_len,
-                                    index_variant,
-                                    store_events,
                                 )?;
                                 return Err(IndexError::StatePruningMisconfigured { block_number });
                             }
@@ -1820,18 +1756,16 @@ mod tests {
     }
 
     #[test]
-    fn save_span_persists_flags_and_version() {
+    fn save_span_persists_start_and_version() {
         let trees = temp_trees();
         let span = Span { start: 10, end: 25 };
 
-        save_span(&trees.span, &span, 3, true, false).unwrap();
+        save_span(&trees.span, &span, 3).unwrap();
 
         let bytes = trees.span.get(25u32.to_be_bytes()).unwrap().unwrap();
         let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
         assert_eq!(u32::from(saved.start), 10);
         assert_eq!(u16::from(saved.version), 2);
-        assert_eq!(saved.index_variant, 1);
-        assert_eq!(saved.store_events, 0);
     }
 
     #[test]
@@ -1839,7 +1773,7 @@ mod tests {
         let trees = temp_trees();
         let current = Span { start: 0, end: 25 };
 
-        save_current_span(&trees, &current, 2, true, true).unwrap();
+        save_current_span(&trees, &current, 2).unwrap();
 
         let bytes = trees.span.get(25u32.to_be_bytes()).unwrap().unwrap();
         let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
@@ -1851,8 +1785,8 @@ mod tests {
         let trees = temp_trees();
         let mut current = Span { start: 10, end: 25 };
 
-        save_span(&trees.span, &current, 2, true, true).unwrap();
-        advance_span_end(&trees, &mut current, 26, 2, true, true).unwrap();
+        save_span(&trees.span, &current, 2).unwrap();
+        advance_span_end(&trees, &mut current, 26, 2).unwrap();
 
         assert_eq!(current.end, 26);
         assert!(trees.span.get(25u32.to_be_bytes()).unwrap().is_none());
@@ -1861,8 +1795,6 @@ mod tests {
         let saved = SpanDbValue::read_from_bytes(&bytes).unwrap();
         assert_eq!(u32::from(saved.start), 10);
         assert_eq!(u16::from(saved.version), 1);
-        assert_eq!(saved.index_variant, 1);
-        assert_eq!(saved.store_events, 1);
     }
 
     #[test]
@@ -1880,7 +1812,7 @@ mod tests {
         let trees = temp_trees();
         let indexer = test_indexer(trees.clone(), true);
         let initial = Span { start: 10, end: 10 };
-        save_span(&trees.span, &initial, 1, true, true).unwrap();
+        save_span(&trees.span, &initial, 1).unwrap();
 
         let mut current_span = initial;
         let mut head_orphans = AHashMap::new();
@@ -1888,8 +1820,6 @@ mod tests {
             &trees,
             &mut current_span,
             1,
-            true,
-            true,
             &indexer,
             &mut head_orphans,
             Ok((11, 2, 3)),
@@ -1909,7 +1839,7 @@ mod tests {
         let trees = temp_trees();
         let indexer = test_indexer(trees.clone(), true);
         let initial = Span { start: 20, end: 20 };
-        save_span(&trees.span, &initial, 1, true, true).unwrap();
+        save_span(&trees.span, &initial, 1).unwrap();
 
         let mut current_span = initial;
         let mut head_orphans = AHashMap::new();
@@ -1918,8 +1848,6 @@ mod tests {
             &trees,
             &mut current_span,
             1,
-            true,
-            true,
             &indexer,
             &mut head_orphans,
             Ok((22, 1, 1)),
@@ -1933,8 +1861,6 @@ mod tests {
             &trees,
             &mut current_span,
             1,
-            true,
-            true,
             &indexer,
             &mut head_orphans,
             Ok((21, 5, 8)),
@@ -1954,7 +1880,7 @@ mod tests {
         let trees = temp_trees();
         let indexer = test_indexer(trees.clone(), true);
         let initial = Span { start: 30, end: 30 };
-        save_span(&trees.span, &initial, 1, true, true).unwrap();
+        save_span(&trees.span, &initial, 1).unwrap();
 
         let mut current_span = initial;
         let mut head_orphans = AHashMap::new();
@@ -1962,8 +1888,6 @@ mod tests {
             &trees,
             &mut current_span,
             1,
-            true,
-            true,
             &indexer,
             &mut head_orphans,
             Err(IndexError::StatePruningMisconfigured { block_number: 31 }),
@@ -2283,20 +2207,18 @@ mod tests {
     }
 
     #[test]
-    fn load_spans_keeps_span_when_event_storage_remains_disabled() {
+    fn load_spans_keeps_span_when_flags_change_without_version_bump() {
         let trees = temp_trees();
         let sv = SpanDbValue {
             start: 5u32.into(),
             version: 0u16.into(),
-            index_variant: 1,
-            store_events: 0,
         };
         trees
             .span
             .insert(15u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
-        let spans = load_spans(&trees.span, &[0], true, false).unwrap();
+        let spans = load_spans(&trees.span, &[0]).unwrap();
         assert_eq!(spans, vec![Span { start: 5, end: 15 }]);
         assert!(trees.span.get(15u32.to_be_bytes()).unwrap().is_some());
     }

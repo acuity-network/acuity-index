@@ -570,14 +570,14 @@ Composite keys are encoded recursively and must satisfy these protocol-level lim
 
 ## Storage Notes
 
-When `--store-events` is enabled, decoded events are stored individually under `(block_number, event_index)`.
+When `store_events = true` in the active index spec, decoded events are stored individually under `(block_number, event_index)`.
 
 That allows:
 
 - `GetEvents` to return only decoded events that match the query key
 - `eventNotification` to include `decodedEvent` when the event payload was persisted
 
-When `--store-events` is disabled, `decodedEvents` and `decodedEvent` will be empty or `null`.
+When `store_events = false`, `decodedEvents` and `decodedEvent` will be empty or `null`.
 
 ## Delivery and Backpressure
 

@@ -481,7 +481,7 @@ async fn subscriptions_deliver_status_and_event_notifications() -> Result<(), Bo
 
 #[tokio::test]
 #[ignore = "requires polkadot-omni-node and a release runtime build"]
-async fn variant_queries_and_store_events_flag_follow_config() -> Result<(), Box<dyn Error>> {
+async fn variant_queries_and_store_events_follow_config() -> Result<(), Box<dyn Error>> {
     let stack = SyntheticStack::start(
         ConfigOverrides {
             store_events: Some(false),

@@ -167,8 +167,6 @@ pub struct EventKey {
 pub struct SpanDbValue {
     pub start: U32<BigEndian>,
     pub version: U16<BigEndian>,
-    pub index_variant: u8,
-    pub store_events: u8,
 }
 
 // ─── Bytes32 helper ──────────────────────────────────────────────────────────

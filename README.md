@@ -68,14 +68,12 @@ acuity-index [OPTIONS]
 | `-u, --url <URL>` | Chain default | WebSocket URL of the Substrate node |
 | `--queue-depth <N>` | `1` | Concurrent block requests during backfill and HEAD catch-up |
 | `-f, --finalized` | `false` | Only index finalized blocks |
-| `-i, --index-variant` | `false` | Also index events by pallet/variant index |
-| `-s, --store-events` | `false` | Store decoded events per `(block_number, event_index)` for retrieval |
 | `-p, --port <PORT>` | `8172` | WebSocket API port |
 | `--metrics-port <PORT>` | — | Optional HTTP `/metrics` port for OpenMetrics scraping |
 | `-v / -q` | — | Increase / decrease log verbosity |
 
 Runtime option precedence: **CLI flags > `--options-config` file > built-in defaults**.
-`--index-variant` and `--store-events` are enabled if either the CLI flag or the index spec field is `true`.
+`index_variant` and `store_events` are top-level index spec fields, not runtime options.
 
 ### Subcommands
 
@@ -92,10 +90,10 @@ Index Polkadot with default settings:
 acuity-index
 ```
 
-Index Kusama with event storage and 8 concurrent requests:
+Index Kusama with a deeper backfill queue:
 
 ```bash
-acuity-index --chain kusama --store-events --queue-depth 8
+acuity-index --chain kusama --queue-depth 8
 ```
 
 Use a custom index specification:
@@ -254,6 +252,9 @@ key = "item_revision" # binary composite query key
 It must start with `0` and be strictly increasing. When a new boundary is added in
 the past, existing indexed spans are kept through the block before that boundary,
 and the suffix starting at the earliest affected boundary is re-indexed.
+
+If you change `index_variant` or `store_events` and want historical data re-indexed
+under the new setting, add a new `spec_change_blocks` boundary.
 
 ### Runtime Options Config
 

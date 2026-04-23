@@ -592,8 +592,6 @@ item_revision = { fields = ["bytes32", "u32"] }
         let sv = SpanDbValue {
             start: 10u32.into(),
             version: 0u16.into(),
-            index_variant: 1,
-            store_events: 1,
         };
         trees
             .span
@@ -643,15 +641,13 @@ item_revision = { fields = ["bytes32", "u32"] }
         let sv = SpanDbValue {
             start: 5u32.into(),
             version: 0u16.into(),
-            index_variant: 1,
-            store_events: 1,
         };
         trees
             .span
             .insert(15u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
-        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0]).unwrap();
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].start, 5);
         assert_eq!(spans[0].end, 15);
@@ -664,8 +660,6 @@ item_revision = { fields = ["bytes32", "u32"] }
             let sv = SpanDbValue {
                 start: start.into(),
                 version: 0u16.into(),
-                index_variant: 1,
-                store_events: 1,
             };
             trees
                 .span
@@ -673,7 +667,7 @@ item_revision = { fields = ["bytes32", "u32"] }
                 .unwrap();
         }
 
-        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0]).unwrap();
         assert_eq!(spans, vec![Span { start: 5, end: 24 }]);
     }
 
@@ -684,8 +678,6 @@ item_revision = { fields = ["bytes32", "u32"] }
             let sv = SpanDbValue {
                 start: start.into(),
                 version: 0u16.into(),
-                index_variant: 1,
-                store_events: 1,
             };
             trees
                 .span
@@ -693,7 +685,7 @@ item_revision = { fields = ["bytes32", "u32"] }
                 .unwrap();
         }
 
-        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0]).unwrap();
         assert_eq!(spans, vec![Span { start: 5, end: 20 }]);
     }
 
@@ -704,8 +696,6 @@ item_revision = { fields = ["bytes32", "u32"] }
             let sv = SpanDbValue {
                 start: start.into(),
                 version: 0u16.into(),
-                index_variant: 1,
-                store_events: 1,
             };
             trees
                 .span
@@ -713,7 +703,7 @@ item_revision = { fields = ["bytes32", "u32"] }
                 .unwrap();
         }
 
-        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0]).unwrap();
         assert_eq!(
             spans,
             vec![Span { start: 5, end: 15 }, Span { start: 17, end: 20 }]
@@ -721,41 +711,20 @@ item_revision = { fields = ["bytes32", "u32"] }
     }
 
     #[test]
-    fn load_spans_drops_when_variant_indexing_enabled() {
+    fn load_spans_keeps_span_when_indexing_flags_change_without_version_bump() {
         let trees = temp_trees();
         let sv = SpanDbValue {
             start: 5u32.into(),
             version: 0u16.into(),
-            index_variant: 0,
-            store_events: 1,
         };
         trees
             .span
             .insert(15u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
-        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
-        assert!(spans.is_empty());
-        assert!(trees.span.get(15u32.to_be_bytes()).unwrap().is_none());
-    }
-
-    #[test]
-    fn load_spans_drops_when_event_storage_enabled() {
-        let trees = temp_trees();
-        let sv = SpanDbValue {
-            start: 5u32.into(),
-            version: 0u16.into(),
-            index_variant: 1,
-            store_events: 0,
-        };
-        trees
-            .span
-            .insert(15u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
-            .unwrap();
-
-        let spans = load_spans(&trees.span, &[0], true, true).unwrap();
-        assert!(spans.is_empty());
-        assert!(trees.span.get(15u32.to_be_bytes()).unwrap().is_none());
+        let spans = load_spans(&trees.span, &[0]).unwrap();
+        assert_eq!(spans, vec![Span { start: 5, end: 15 }]);
+        assert!(trees.span.get(15u32.to_be_bytes()).unwrap().is_some());
     }
 
     #[test]
@@ -764,15 +733,13 @@ item_revision = { fields = ["bytes32", "u32"] }
         let sv = SpanDbValue {
             start: 120u32.into(),
             version: 0u16.into(),
-            index_variant: 1,
-            store_events: 1,
         };
         trees
             .span
             .insert(160u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
-        let spans = load_spans(&trees.span, &[0, 100], true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0, 100]).unwrap();
         assert!(spans.is_empty());
         assert!(trees.span.get(160u32.to_be_bytes()).unwrap().is_none());
     }
@@ -783,15 +750,13 @@ item_revision = { fields = ["bytes32", "u32"] }
         let sv = SpanDbValue {
             start: 80u32.into(),
             version: 0u16.into(),
-            index_variant: 1,
-            store_events: 1,
         };
         trees
             .span
             .insert(160u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
-        let spans = load_spans(&trees.span, &[0, 100], true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0, 100]).unwrap();
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].start, 80);
         assert_eq!(spans[0].end, 99);
@@ -805,15 +770,13 @@ item_revision = { fields = ["bytes32", "u32"] }
         let sv = SpanDbValue {
             start: 10u32.into(),
             version: 0u16.into(),
-            index_variant: 1,
-            store_events: 1,
         };
         trees
             .span
             .insert(90u32.to_be_bytes(), zerocopy::IntoBytes::as_bytes(&sv))
             .unwrap();
 
-        let spans = load_spans(&trees.span, &[0, 100], true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0, 100]).unwrap();
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].start, 10);
         assert_eq!(spans[0].end, 90);
@@ -826,8 +789,6 @@ item_revision = { fields = ["bytes32", "u32"] }
         let sv = SpanDbValue {
             start: 50u32.into(),
             version: 0u16.into(),
-            index_variant: 1,
-            store_events: 1,
         };
         trees
             .span
@@ -836,7 +797,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         // Version 0 spans should reindex from block 100 onward (not 200),
         // because 100 is the earliest boundary newer than span_version.
-        let spans = load_spans(&trees.span, &[0, 100, 200], true, true).unwrap();
+        let spans = load_spans(&trees.span, &[0, 100, 200]).unwrap();
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].start, 50);
         assert_eq!(spans[0].end, 99);

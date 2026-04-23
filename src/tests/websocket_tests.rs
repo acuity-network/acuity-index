@@ -26,8 +26,6 @@ mod websocket_tests {
         let sv = SpanDbValue {
             start: 100u32.into(),
             version: 0u16.into(),
-            index_variant: 1,
-            store_events: 1,
         };
         trees
             .span

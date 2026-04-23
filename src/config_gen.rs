@@ -431,12 +431,10 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
         out.push_str(&block_number.to_string());
     }
     out.push(']');
-    if spec.index_variant {
-        out.push_str("\nindex_variant = true");
-    }
-    if spec.store_events {
-        out.push_str("\nstore_events = true");
-    }
+    out.push_str("\nindex_variant = ");
+    out.push_str(if spec.index_variant { "true" } else { "false" });
+    out.push_str("\nstore_events = ");
+    out.push_str(if spec.store_events { "true" } else { "false" });
     out.push_str("\n\n");
 
     if !spec.custom_keys.is_empty() {
@@ -830,6 +828,8 @@ mod tests {
         let toml = render_index_spec_toml(&spec).unwrap();
 
         assert!(toml.contains("spec_change_blocks = [0]"));
+        assert!(toml.contains("index_variant = false"));
+        assert!(toml.contains("store_events = false"));
         assert!(toml.contains("item_id = \"bytes32\""));
         assert!(toml.contains("item_revision = { fields = [\"bytes32\", \"u32\"] }"));
         assert!(toml.contains("revision_id = \"u32\""));

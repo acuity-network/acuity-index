@@ -182,7 +182,7 @@ The normal startup path lives in `src/main.rs`:
 
 1. Parse CLI args.
 2. Load a built-in index spec TOML or a user-supplied `--index-config` index specification.
-3. Validate the spec and resolve runtime options (CLI > `--options-config` > defaults) plus indexing flags (CLI OR spec).
+3. Validate the spec and resolve runtime options (CLI > `--options-config` > defaults).
 4. Resolve the database path and open sled.
 5. Verify or initialize the stored `genesis_hash` in the root database.
 6. Create shared runtime state plus long-lived tasks:
@@ -338,19 +338,18 @@ While the live-head queue is catching up, the backfill queue descends from the s
 
 Resume behavior is implemented by the span helpers in `src/indexer.rs`.
 
-Each stored span means: blocks `start..=end` have been indexed with a specific indexing configuration.
+Each stored span means: blocks `start..=end` have been indexed for a specific
+index-spec revision.
 
-Span values also persist:
-
-- config version boundary info derived from `IndexSpec.spec_change_blocks`
-- whether `index_variant` was enabled
-- whether `store_events` was enabled
+Span values persist only the config version boundary info derived from
+`IndexSpec.spec_change_blocks`.
 
 When loading spans, the indexer may discard or trim them if they are stale relative to the current run:
 
-- If variant indexing is now enabled but was previously disabled, affected spans are removed for reindexing.
-- If decoded event storage is now enabled but was previously disabled, affected spans are removed for reindexing.
 - If `spec.spec_change_blocks` indicates the index spec changed starting at some block, affected spans are removed or split so that only the stale portion is reindexed.
+
+Changes to `index_variant` or `store_events` only trigger historical reindexing if
+the spec revision is advanced via `spec_change_blocks`.
 
 Important invariants:
 
@@ -419,8 +418,7 @@ are loaded from a separate `OptionsConfig` TOML file via the
 `--options-config` CLI flag. At startup, `resolve_args()` merges those values with
 **CLI flags > `--options-config` file > built-in defaults** precedence. `finalized`
 uses OR logic: `cli_flag || options_flag.unwrap_or(false)`. `index_variant` and
-`store_events` come from `IndexSpec` and are enabled when either the CLI flag or
-the spec field is `true`.
+`store_events` come only from `IndexSpec`.
 
 Pallet configuration supports two modes:
 
@@ -598,7 +596,7 @@ Agents should treat generated configs as a starting point that may need cleanup 
 
 ## Gotchas
 
-- Do not assume every event is stored in `events`. That only happens when `--store-events` is enabled and the event was considered indexable or variant-indexed.
+- Do not assume every event is stored in `events`. That only happens when `store_events = true` in the active index spec and the event was considered indexable or variant-indexed.
 - Do not assume every decoded field is named. Some event fields are positional and TOML may reference them by stringified index like `"0"`.
 - Do not assume block indexing completes in numeric order. Both backfill and head processing can finish out of order and are stitched together afterward.
 - Do not bypass genesis-hash checks when reusing an existing database path.

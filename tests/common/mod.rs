@@ -193,7 +193,7 @@ pub fn start_indexer(
     let bin = env::var("CARGO_BIN_EXE_acuity-index")?;
     let mut command = Command::new(bin);
     command
-        .arg("--index-spec")
+        .arg("run")
         .arg(config_path)
         .arg("--url")
         .arg(node_url)

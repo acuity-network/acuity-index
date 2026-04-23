@@ -79,23 +79,25 @@ fn clap_styles() -> clap::builder::Styles {
     version,
     about,
     disable_help_subcommand = true,
-    args_conflicts_with_subcommands = true,
-    subcommand_negates_reqs = true,
+    subcommand_required = true,
     next_line_help = true,
     color = clap::ColorChoice::Always,
     styles = clap_styles()
 )]
 pub struct Args {
-    #[command(flatten)]
-    pub run: RunArgs,
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Command,
     #[command(flatten)]
     verbose: Verbosity<InfoLevel>,
 }
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Command {
+    /// Run the indexer for the specified chain
+    Run {
+        #[command(flatten)]
+        args: RunArgs,
+    },
     /// Delete the index database for the specified chain
     PurgeIndex {
         #[command(flatten)]
@@ -103,22 +105,21 @@ pub enum Command {
     },
     /// Generate a starter index spec TOML from live node metadata
     GenerateIndexSpec {
+        /// Path to write the generated index spec TOML file
+        index_spec: String,
         /// URL of Substrate node to connect to
         #[arg(short, long)]
         url: String,
         /// Overwrite the output file if it already exists
         #[arg(short, long, default_value_t = false)]
         force: bool,
-        /// Path to write the generated index spec TOML file
-        output: String,
     },
 }
 
 #[derive(Parser, Debug)]
 pub struct RunArgs {
     /// Path to an index specification TOML file
-    #[arg(long = "index-spec")]
-    pub index_spec: Option<String>,
+    pub index_spec: String,
     /// Path to an options TOML file
     #[arg(long)]
     pub options_config: Option<String>,
@@ -172,7 +173,6 @@ pub struct RunArgs {
 #[derive(Parser, Debug)]
 pub struct PurgeIndexArgs {
     /// Path to an index specification TOML file
-    #[arg(long = "index-spec")]
     pub index_spec: String,
     /// Database path
     #[arg(short, long)]
@@ -557,7 +557,7 @@ fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
     }
 }
 
-fn purge_index(args: &PurgeIndexArgs) {
+fn purge_index(args: &PurgeIndexArgs) -> ! {
     let spec = load_index_spec(&args.index_spec);
     let db_path = resolve_db_path(&spec.name, args.db_path.as_deref());
 
@@ -647,12 +647,18 @@ async fn run() -> Result<(), shared::IndexError> {
     let log_level = args.verbose.log_level_filter().as_trace();
     tracing_subscriber::fmt().with_max_level(log_level).init();
 
-    match &args.command {
-        Some(Command::PurgeIndex { args: purge_args }) => purge_index(purge_args),
-        Some(Command::GenerateIndexSpec { url, force, output }) => {
-            match write_generated_index_spec(url, PathBuf::from(output).as_path(), *force).await {
+    let run_args = match &args.command {
+        Command::Run { args: run_args } => run_args,
+        Command::PurgeIndex { args: purge_args } => purge_index(purge_args),
+        Command::GenerateIndexSpec {
+            index_spec,
+            url,
+            force,
+        } => {
+            match write_generated_index_spec(url, PathBuf::from(index_spec).as_path(), *force).await
+            {
                 Ok(spec) => {
-                    info!("Generated index spec for {} at {}", spec.name, output);
+                    info!("Generated index spec for {} at {}", spec.name, index_spec);
                     exit(0);
                 }
                 Err(err) => {
@@ -661,15 +667,9 @@ async fn run() -> Result<(), shared::IndexError> {
                 }
             }
         }
-        None => {}
-    }
+    };
 
-    let run_args = &args.run;
-    let index_spec_path = run_args.index_spec.as_deref().unwrap_or_else(|| {
-        error!("--index-spec is required");
-        exit(1);
-    });
-    let initial_snapshot = build_config_snapshot(index_spec_path).unwrap_or_else(|e| {
+    let initial_snapshot = build_config_snapshot(&run_args.index_spec).unwrap_or_else(|e| {
         error!("{e}");
         exit(1);
     });
@@ -759,7 +759,7 @@ async fn run() -> Result<(), shared::IndexError> {
         None => None,
     };
     let watcher_task = spawn(watch_index_spec(
-        PathBuf::from(index_spec_path),
+        PathBuf::from(&run_args.index_spec),
         initial_snapshot.clone(),
         resolved.url.clone(),
         spec_update_tx,
@@ -1166,7 +1166,7 @@ mod main_tests {
     }
 
     fn test_run_args() -> RunArgs {
-        RunArgs::try_parse_from(["acuity-index", "--index-spec", TEST_INDEX_CONFIG]).unwrap()
+        RunArgs::try_parse_from(["acuity-index", TEST_INDEX_CONFIG]).unwrap()
     }
 
     fn test_snapshot(spec: IndexSpec) -> ConfigSnapshot {
@@ -1198,21 +1198,25 @@ mod main_tests {
     }
 
     #[test]
-    fn args_parse_defaults() {
+    fn args_parse_run_defaults() {
         let args = Args::try_parse_from(normalize_args([
             "acuity-index".to_string(),
-            "--index-spec".to_string(),
+            "run".to_string(),
             TEST_INDEX_CONFIG.to_string(),
         ]))
         .unwrap();
-        assert!(args.command.is_none());
-        assert_eq!(args.run.index_spec.as_deref(), Some(TEST_INDEX_CONFIG));
-        assert!(args.run.db_mode.is_none());
-        assert!(args.run.db_cache_capacity.is_none());
-        assert!(args.run.queue_depth.is_none());
-        assert!(!args.run.finalized);
-        assert!(args.run.port.is_none());
-        assert!(args.run.metrics_port.is_none());
+        match args.command {
+            Command::Run { args: run_args } => {
+                assert_eq!(run_args.index_spec, TEST_INDEX_CONFIG);
+                assert!(run_args.db_mode.is_none());
+                assert!(run_args.db_cache_capacity.is_none());
+                assert!(run_args.queue_depth.is_none());
+                assert!(!run_args.finalized);
+                assert!(run_args.port.is_none());
+                assert!(run_args.metrics_port.is_none());
+            }
+            _ => panic!("expected run command"),
+        }
     }
 
     #[test]
@@ -1294,7 +1298,6 @@ mod main_tests {
     fn resolve_args_cli_overrides_config() {
         let args = RunArgs::try_parse_from([
             "acuity-index",
-            "--index-spec",
             TEST_INDEX_CONFIG,
             "--port",
             "1234",
@@ -1557,22 +1560,12 @@ max_events_limit = 500
     #[test]
     fn args_reject_removed_indexing_flags() {
         assert!(
-            Args::try_parse_from([
-                "acuity-index",
-                "--index-spec",
-                TEST_INDEX_CONFIG,
-                "--store-events",
-            ])
-            .is_err()
+            Args::try_parse_from(["acuity-index", "run", TEST_INDEX_CONFIG, "--store-events",])
+                .is_err()
         );
         assert!(
-            Args::try_parse_from([
-                "acuity-index",
-                "--index-spec",
-                TEST_INDEX_CONFIG,
-                "--index-variant",
-            ])
-            .is_err()
+            Args::try_parse_from(["acuity-index", "run", TEST_INDEX_CONFIG, "--index-variant",])
+                .is_err()
         );
     }
 
@@ -1608,16 +1601,11 @@ max_events_limit = 500
 
     #[test]
     fn args_parse_purge_index_index_spec() {
-        let args = Args::try_parse_from([
-            "acuity-index",
-            "purge-index",
-            "--index-spec",
-            TEST_INDEX_CONFIG,
-        ])
-        .unwrap();
+        let args =
+            Args::try_parse_from(["acuity-index", "purge-index", TEST_INDEX_CONFIG]).unwrap();
 
         match args.command {
-            Some(Command::PurgeIndex { args: purge_args }) => {
+            Command::PurgeIndex { args: purge_args } => {
                 assert_eq!(purge_args.index_spec, TEST_INDEX_CONFIG);
                 assert!(purge_args.db_path.is_none());
             }
@@ -1630,7 +1618,6 @@ max_events_limit = 500
         let args = Args::try_parse_from([
             "acuity-index",
             "purge-index",
-            "--index-spec",
             TEST_INDEX_CONFIG,
             "--db-path",
             "/tmp/test-db",
@@ -1638,7 +1625,7 @@ max_events_limit = 500
         .unwrap();
 
         match args.command {
-            Some(Command::PurgeIndex { args: purge_args }) => {
+            Command::PurgeIndex { args: purge_args } => {
                 assert_eq!(purge_args.db_path.as_deref(), Some("/tmp/test-db"));
             }
             _ => panic!("expected purge-index command"),
@@ -1650,18 +1637,22 @@ max_events_limit = 500
         let args = Args::try_parse_from([
             "acuity-index",
             "generate-index-spec",
+            "/tmp/test.toml",
             "--url",
             "wss://rpc.example.com:443",
             "-f",
-            "/tmp/test.toml",
         ])
         .unwrap();
 
         match args.command {
-            Some(Command::GenerateIndexSpec { url, force, output }) => {
+            Command::GenerateIndexSpec {
+                index_spec,
+                url,
+                force,
+            } => {
+                assert_eq!(index_spec, "/tmp/test.toml");
                 assert_eq!(url, "wss://rpc.example.com:443");
                 assert!(force);
-                assert_eq!(output, "/tmp/test.toml");
             }
             _ => panic!("expected generate-index-spec command"),
         }
@@ -1672,19 +1663,46 @@ max_events_limit = 500
         let args = Args::try_parse_from([
             "acuity-index",
             "generate-index-spec",
+            "/tmp/test.toml",
             "--url",
             "wss://rpc.example.com:443",
             "--force",
-            "/tmp/test.toml",
         ])
         .unwrap();
 
         match args.command {
-            Some(Command::GenerateIndexSpec { force, .. }) => {
+            Command::GenerateIndexSpec { force, .. } => {
                 assert!(force);
             }
             _ => panic!("expected generate-index-spec command"),
         }
+    }
+
+    #[test]
+    fn args_require_run_index_spec() {
+        let err = Args::try_parse_from(["acuity-index", "run"]).unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn args_require_purge_index_spec() {
+        let err = Args::try_parse_from(["acuity-index", "purge-index"]).unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn args_require_generate_index_spec_path() {
+        let err = Args::try_parse_from([
+            "acuity-index",
+            "generate-index-spec",
+            "--url",
+            "ws://127.0.0.1:9944",
+        ])
+        .unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
     #[test]

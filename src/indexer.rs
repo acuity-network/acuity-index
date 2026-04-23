@@ -872,7 +872,11 @@ pub fn composite_to_json(c: &Composite<()>) -> serde_json::Value {
 
 // ─── Subscription message handler ────────────────────────────────────────────
 
-pub fn process_sub_msg(runtime: &RuntimeState, msg: SubscriptionMessage) -> Result<(), IndexError> {
+pub fn process_sub_msg(
+    runtime: &RuntimeState,
+    ws_config: &LiveWsConfig,
+    msg: SubscriptionMessage,
+) -> Result<(), IndexError> {
     match msg {
         SubscriptionMessage::SubscribeStatus { tx, response_tx } => {
             let mut status_subs = lock_or_recover(&runtime.status_subs, "status_subs");
@@ -880,10 +884,10 @@ pub fn process_sub_msg(runtime: &RuntimeState, msg: SubscriptionMessage) -> Resu
                 .values()
                 .map(Vec::len)
                 .sum();
-            if status_subs.len() + events_count >= runtime.max_total_subscriptions {
+            if status_subs.len() + events_count >= ws_config.max_total_subscriptions {
                 let message = format!(
                     "total subscription limit exceeded: max {}",
-                    runtime.max_total_subscriptions
+                    ws_config.max_total_subscriptions
                 );
                 if let Some(response_tx) = response_tx {
                     let _ = response_tx.send(Err(message.clone()));
@@ -912,10 +916,10 @@ pub fn process_sub_msg(runtime: &RuntimeState, msg: SubscriptionMessage) -> Resu
             let mut subs = lock_or_recover(&runtime.events_subs, "events_subs");
             let status_count = lock_or_recover(&runtime.status_subs, "status_subs").len();
             let current_events_count: usize = subs.values().map(Vec::len).sum();
-            if status_count + current_events_count >= runtime.max_total_subscriptions {
+            if status_count + current_events_count >= ws_config.max_total_subscriptions {
                 let message = format!(
                     "total subscription limit exceeded: max {}",
-                    runtime.max_total_subscriptions
+                    ws_config.max_total_subscriptions
                 );
                 if let Some(response_tx) = response_tx {
                     let _ = response_tx.send(Err(message.clone()));
@@ -1598,6 +1602,17 @@ events = [
         Arc::new(RuntimeState::new(max_total_subscriptions))
     }
 
+    fn live_ws_config(max_total_subscriptions: usize) -> LiveWsConfig {
+        LiveWsConfig {
+            max_connections: WsConfig::default().max_connections,
+            max_total_subscriptions,
+            max_subscriptions_per_connection: WsConfig::default().max_subscriptions_per_connection,
+            subscription_buffer_size: WsConfig::default().subscription_buffer_size,
+            idle_timeout_secs: WsConfig::default().idle_timeout_secs,
+            max_events_limit: WsConfig::default().max_events_limit,
+        }
+    }
+
     fn test_indexer_with_runtime(
         trees: Trees,
         store_events: bool,
@@ -2102,6 +2117,7 @@ events = [
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime.as_ref(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
@@ -2138,6 +2154,7 @@ events = [
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime.as_ref(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
@@ -2179,6 +2196,7 @@ events = [
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             first_indexer.runtime.as_ref(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
@@ -2273,6 +2291,7 @@ spec_change_blocks = [0]
 
         process_sub_msg(
             indexer.runtime.as_ref(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::UnsubscribeEvents {
                 key: Key::Custom(CustomKey {
                     name: "ref_index".into(),

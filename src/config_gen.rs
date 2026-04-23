@@ -916,7 +916,9 @@ mod tests {
     #[test]
     fn filtered_generated_events_omit_empty_variants() {
         let mut registry = Registry::new();
-        let type_id = registry.register_type(&MetaType::new::<EmptyEventOnly>()).id;
+        let type_id = registry
+            .register_type(&MetaType::new::<EmptyEventOnly>())
+            .id;
         let types: PortableRegistry = registry.into();
         let ty = types.resolve(type_id).unwrap();
         let TypeDef::Variant(variant_def) = &ty.type_def else {

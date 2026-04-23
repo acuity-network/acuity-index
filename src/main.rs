@@ -6,7 +6,7 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use signal_hook::{consts::TERM_SIGNALS, flag};
 use signal_hook_tokio::Signals;
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -40,7 +40,7 @@ use config::{IndexSpec, OptionsConfig};
 use config_gen::write_generated_index_spec;
 use indexer::{process_sub_msg, run_indexer};
 use metrics::{Metrics, metrics_listen};
-use shared::{RuntimeState, Trees, WsConfig};
+use shared::{LiveWsConfig, RuntimeState, Trees, WsConfig};
 use websockets::websockets_listen;
 
 #[cfg(test)]
@@ -48,7 +48,7 @@ mod tests;
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, ValueEnum, Debug)]
+#[derive(Clone, ValueEnum, Debug, PartialEq, Eq)]
 pub enum DbMode {
     LowSpace,
     HighThroughput,
@@ -120,7 +120,7 @@ pub enum Command {
 pub struct RunArgs {
     /// Path to a hot-reloading index specification TOML file
     pub index_spec: String,
-    /// Path to an options TOML file
+    /// Path to a hot-reloading options TOML file
     #[arg(long)]
     pub options_config: Option<String>,
     /// Database path
@@ -184,6 +184,7 @@ const DEFAULT_DB_CACHE_CAPACITY: &str = "1024.00 MiB";
 const DEFAULT_QUEUE_DEPTH: u8 = 1;
 const DEFAULT_PORT: u16 = 8172;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ResolvedArgs {
     db_path: Option<String>,
     db_mode: DbMode,
@@ -202,6 +203,12 @@ struct ConfigSnapshot {
     source_hash: u64,
 }
 
+#[derive(Clone, Debug)]
+struct OptionsSnapshot {
+    options: OptionsConfig,
+    source_hash: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SpecUpdateAction {
     RestartIndexer,
@@ -212,6 +219,19 @@ enum SpecUpdateAction {
 struct SpecUpdate {
     snapshot: ConfigSnapshot,
     action: SpecUpdateAction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OptionsUpdateAction {
+    RestartIndexer,
+    Unchanged,
+}
+
+#[derive(Clone, Debug)]
+struct OptionsRuntimeUpdate {
+    resolved: ResolvedArgs,
+    action: OptionsUpdateAction,
+    ignored_fields: Vec<&'static str>,
 }
 
 fn parse_db_mode(s: &str) -> Result<DbMode, String> {
@@ -341,11 +361,19 @@ fn hash_content(content: &str) -> u64 {
     hasher.finish()
 }
 
-fn load_index_spec_source(index_spec_path: &str) -> Result<(String, u64), String> {
-    let toml_str = std::fs::read_to_string(index_spec_path)
-        .map_err(|e| format!("Cannot read index spec {index_spec_path}: {e}"))?;
+fn load_config_source(path: &str, kind: &str) -> Result<(String, u64), String> {
+    let toml_str =
+        std::fs::read_to_string(path).map_err(|e| format!("Cannot read {kind} {path}: {e}"))?;
     let source_hash = hash_content(&toml_str);
     Ok((toml_str, source_hash))
+}
+
+fn load_index_spec_source(index_spec_path: &str) -> Result<(String, u64), String> {
+    load_config_source(index_spec_path, "index spec")
+}
+
+fn load_options_config_source(path: &str) -> Result<(String, u64), String> {
+    load_config_source(path, "options config")
 }
 
 fn parse_index_spec(toml_str: &str) -> Result<IndexSpec, String> {
@@ -362,6 +390,19 @@ fn build_config_snapshot(index_spec_path: &str) -> Result<ConfigSnapshot, String
     Ok(ConfigSnapshot { spec, source_hash })
 }
 
+fn parse_options_config(toml_str: &str) -> Result<OptionsConfig, String> {
+    toml::from_str(toml_str).map_err(|e| format!("Invalid options config: {e}"))
+}
+
+fn build_options_snapshot(path: &str) -> Result<OptionsSnapshot, String> {
+    let (toml_str, source_hash) = load_options_config_source(path)?;
+    let options = parse_options_config(&toml_str)?;
+    Ok(OptionsSnapshot {
+        options,
+        source_hash,
+    })
+}
+
 fn load_index_spec(index_spec_path: &str) -> IndexSpec {
     build_config_snapshot(index_spec_path)
         .map(|snapshot| snapshot.spec)
@@ -371,15 +412,14 @@ fn load_index_spec(index_spec_path: &str) -> IndexSpec {
         })
 }
 
+#[cfg(test)]
 fn load_options_config(path: &str) -> OptionsConfig {
-    let toml_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        error!("Cannot read options config {path}: {e}");
-        exit(1);
-    });
-    toml::from_str(&toml_str).unwrap_or_else(|e| {
-        error!("Invalid options config: {e}");
-        exit(1);
-    })
+    build_options_snapshot(path)
+        .map(|snapshot| snapshot.options)
+        .unwrap_or_else(|e| {
+            error!("{e}");
+            exit(1);
+        })
 }
 
 fn effective_url(url_override: Option<&str>, spec: &IndexSpec) -> String {
@@ -421,6 +461,88 @@ fn classify_spec_update(
     }
 }
 
+fn classify_options_update(
+    current: &ResolvedArgs,
+    candidate: &ResolvedArgs,
+) -> OptionsRuntimeUpdate {
+    let mut resolved = current.clone();
+    let mut action = OptionsUpdateAction::Unchanged;
+    let mut ignored_fields = Vec::new();
+
+    if current.url != candidate.url {
+        resolved.url = candidate.url.clone();
+        action = OptionsUpdateAction::RestartIndexer;
+    }
+
+    if current.queue_depth != candidate.queue_depth {
+        resolved.queue_depth = candidate.queue_depth;
+        action = OptionsUpdateAction::RestartIndexer;
+    }
+
+    if current.finalized != candidate.finalized {
+        resolved.finalized = candidate.finalized;
+        action = OptionsUpdateAction::RestartIndexer;
+    }
+
+    resolved.ws_config.max_connections = candidate.ws_config.max_connections;
+    resolved.ws_config.max_total_subscriptions = candidate.ws_config.max_total_subscriptions;
+    resolved.ws_config.max_subscriptions_per_connection =
+        candidate.ws_config.max_subscriptions_per_connection;
+    resolved.ws_config.subscription_buffer_size = candidate.ws_config.subscription_buffer_size;
+    resolved.ws_config.idle_timeout_secs = candidate.ws_config.idle_timeout_secs;
+    resolved.ws_config.max_events_limit = candidate.ws_config.max_events_limit;
+
+    for (field, changed) in [
+        ("db_path", current.db_path != candidate.db_path),
+        ("db_mode", current.db_mode != candidate.db_mode),
+        (
+            "db_cache_capacity",
+            current.db_cache_capacity != candidate.db_cache_capacity,
+        ),
+        (
+            "subscription_control_buffer_size",
+            current.ws_config.subscription_control_buffer_size
+                != candidate.ws_config.subscription_control_buffer_size,
+        ),
+        ("port", current.port != candidate.port),
+        (
+            "metrics_port",
+            current.metrics_port != candidate.metrics_port,
+        ),
+    ] {
+        if changed {
+            ignored_fields.push(field);
+        }
+    }
+
+    OptionsRuntimeUpdate {
+        resolved,
+        action,
+        ignored_fields,
+    }
+}
+
+fn resolve_options_runtime_update(
+    run_args: &RunArgs,
+    current_spec: &ConfigSnapshot,
+    current_resolved: &ResolvedArgs,
+    snapshot: &OptionsSnapshot,
+) -> Result<OptionsRuntimeUpdate, String> {
+    let candidate = resolve_args(run_args, &current_spec.spec, Some(&snapshot.options))?;
+    Ok(classify_options_update(current_resolved, &candidate))
+}
+
+fn log_ignored_options_fields(fields: &[&'static str]) {
+    if fields.is_empty() {
+        return;
+    }
+
+    warn!(
+        "Ignoring hot-reloaded options changes for startup-only fields: {}",
+        fields.join(", ")
+    );
+}
+
 fn event_targets_path(event: &Event, target_path: &Path) -> bool {
     let Some(target_name) = target_path.file_name() else {
         return false;
@@ -434,18 +556,32 @@ fn event_targets_path(event: &Event, target_path: &Path) -> bool {
     })
 }
 
-async fn watch_index_spec(
+async fn watch_runtime_config(
     index_spec_path: PathBuf,
-    initial_snapshot: ConfigSnapshot,
+    initial_spec_snapshot: ConfigSnapshot,
+    options_config_path: Option<PathBuf>,
+    initial_options_snapshot: Option<OptionsSnapshot>,
     url_override: Option<String>,
-    snapshot_tx: watch::Sender<SpecUpdate>,
+    spec_snapshot_tx: watch::Sender<SpecUpdate>,
+    options_snapshot_tx: watch::Sender<Option<OptionsSnapshot>>,
     ready_tx: Option<oneshot::Sender<()>>,
     mut exit_rx: watch::Receiver<bool>,
 ) -> Result<(), shared::IndexError> {
-    let watch_dir = index_spec_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let mut watch_dirs = HashSet::new();
+    watch_dirs.insert(
+        index_spec_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(".")),
+    );
+    if let Some(options_config_path) = options_config_path.as_ref() {
+        watch_dirs.insert(
+            options_config_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".")),
+        );
+    }
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let mut watcher = RecommendedWatcher::new(
         move |result| {
@@ -453,85 +589,119 @@ async fn watch_index_spec(
         },
         notify::Config::default(),
     )
-    .map_err(|e| shared::internal_error(format!("failed to create index spec watcher: {e}")))?;
-    watcher
-        .watch(&watch_dir, RecursiveMode::NonRecursive)
-        .map_err(|e| {
-            shared::internal_error(format!("failed to watch {}: {e}", watch_dir.display()))
-        })?;
+    .map_err(|e| shared::internal_error(format!("failed to create config watcher: {e}")))?;
+    for watch_dir in &watch_dirs {
+        watcher
+            .watch(watch_dir, RecursiveMode::NonRecursive)
+            .map_err(|e| {
+                shared::internal_error(format!("failed to watch {}: {e}", watch_dir.display()))
+            })?;
+    }
     if let Some(ready_tx) = ready_tx {
         let _ = ready_tx.send(());
     }
 
-    let mut current_snapshot = initial_snapshot;
-    let mut last_seen_source_hash = Some(current_snapshot.source_hash);
+    let mut current_spec_snapshot = initial_spec_snapshot;
+    let mut last_seen_spec_source_hash = Some(current_spec_snapshot.source_hash);
+    let mut last_seen_options_source_hash = initial_options_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.source_hash);
 
     loop {
         tokio::select! {
             _ = exit_rx.changed() => return Ok(()),
             maybe_event = event_rx.recv() => {
                 let Some(result) = maybe_event else {
-                    return Err(shared::internal_error("index spec watcher channel closed"));
+                    return Err(shared::internal_error("config watcher channel closed"));
                 };
 
                 let event = match result {
-                    Ok(event) if event_targets_path(&event, &index_spec_path) => event,
-                    Ok(_) => continue,
+                    Ok(event) => event,
                     Err(err) => {
-                        warn!("Index spec watcher error: {err}");
+                        warn!("Config watcher error: {err}");
                         continue;
                     }
                 };
 
-                if !event_targets_path(&event, &index_spec_path) {
+                let mut spec_event_seen = event_targets_path(&event, &index_spec_path);
+                let mut options_event_seen = options_config_path
+                    .as_ref()
+                    .is_some_and(|path| event_targets_path(&event, path));
+
+                if !spec_event_seen && !options_event_seen {
                     continue;
                 }
 
                 sleep(Duration::from_millis(200)).await;
                 while let Ok(result) = event_rx.try_recv() {
                     match result {
-                        Ok(event) if event_targets_path(&event, &index_spec_path) => {}
-                        Ok(_) => {}
-                        Err(err) => warn!("Index spec watcher error: {err}"),
-                    }
-                }
-
-                let (toml_str, source_hash) = match load_index_spec_source(index_spec_path.to_str().ok_or_else(|| {
-                    shared::internal_error("index spec path is not valid UTF-8")
-                })?) {
-                    Ok(source) => source,
-                    Err(err) => {
-                        warn!("{err}");
-                        continue;
-                    }
-                };
-
-                if last_seen_source_hash == Some(source_hash) {
-                    continue;
-                }
-                last_seen_source_hash = Some(source_hash);
-
-                let candidate = match parse_index_spec(&toml_str) {
-                    Ok(spec) => ConfigSnapshot { spec, source_hash },
-                    Err(err) => {
-                        warn!("{err}");
-                        continue;
-                    }
-                };
-
-                match classify_spec_update(&current_snapshot, &candidate, url_override.as_deref()) {
-                    Ok(action) => {
-                        current_snapshot = candidate.clone();
-                        if action == SpecUpdateAction::RestartIndexer {
-                            info!("Accepted index spec change; restarting indexer loop.");
+                        Ok(event) => {
+                            spec_event_seen |= event_targets_path(&event, &index_spec_path);
+                            options_event_seen |= options_config_path
+                                .as_ref()
+                                .is_some_and(|path| event_targets_path(&event, path));
                         }
-                        let _ = snapshot_tx.send(SpecUpdate {
-                            snapshot: candidate,
-                            action,
-                        });
+                        Err(err) => warn!("Config watcher error: {err}"),
                     }
-                    Err(reason) => {
-                        warn!("Rejected index spec change: {reason}");
+                }
+
+                if spec_event_seen {
+                    let (toml_str, source_hash) = match load_index_spec_source(index_spec_path.to_str().ok_or_else(|| {
+                        shared::internal_error("index spec path is not valid UTF-8")
+                    })?) {
+                        Ok(source) => source,
+                        Err(err) => {
+                            warn!("{err}");
+                            continue;
+                        }
+                    };
+
+                    if last_seen_spec_source_hash != Some(source_hash) {
+                        last_seen_spec_source_hash = Some(source_hash);
+
+                        let candidate = match parse_index_spec(&toml_str) {
+                            Ok(spec) => ConfigSnapshot { spec, source_hash },
+                            Err(err) => {
+                                warn!("{err}");
+                                continue;
+                            }
+                        };
+
+                        match classify_spec_update(&current_spec_snapshot, &candidate, url_override.as_deref()) {
+                            Ok(action) => {
+                                current_spec_snapshot = candidate.clone();
+                                if action == SpecUpdateAction::RestartIndexer {
+                                    info!("Accepted index spec change; restarting indexer loop.");
+                                }
+                                let _ = spec_snapshot_tx.send(SpecUpdate {
+                                    snapshot: candidate,
+                                    action,
+                                });
+                            }
+                            Err(reason) => {
+                                warn!("Rejected index spec change: {reason}");
+                            }
+                        }
+                    }
+                }
+
+                if options_event_seen {
+                    let Some(options_config_path) = options_config_path.as_ref() else {
+                        continue;
+                    };
+                    let snapshot = match build_options_snapshot(options_config_path.to_str().ok_or_else(|| {
+                        shared::internal_error("options config path is not valid UTF-8")
+                    })?) {
+                        Ok(snapshot) => snapshot,
+                        Err(err) => {
+                            warn!("{err}");
+                            continue;
+                        }
+                    };
+
+                    if last_seen_options_source_hash != Some(snapshot.source_hash) {
+                        last_seen_options_source_hash = Some(snapshot.source_hash);
+                        let _ = options_snapshot_tx.send(Some(snapshot));
                     }
                 }
             }
@@ -674,11 +844,20 @@ async fn run() -> Result<(), shared::IndexError> {
         exit(1);
     });
     let spec = initial_snapshot.spec.clone();
-    let options = run_args
-        .options_config
-        .as_deref()
-        .map(|p| load_options_config(p));
-    let resolved = resolve_args(run_args, &spec, options.as_ref()).unwrap_or_else(|e| {
+    let initial_options_snapshot = run_args.options_config.as_deref().map(|p| {
+        build_options_snapshot(p).unwrap_or_else(|e| {
+            error!("{e}");
+            exit(1);
+        })
+    });
+    let mut resolved = resolve_args(
+        run_args,
+        &spec,
+        initial_options_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.options),
+    )
+    .unwrap_or_else(|e| {
         error!("{e}");
         exit(1);
     });
@@ -717,6 +896,9 @@ async fn run() -> Result<(), shared::IndexError> {
     }
 
     let metrics = Arc::new(Metrics::new());
+    let live_ws_config = LiveWsConfig::from(&resolved.ws_config);
+    let (live_ws_config_tx, live_ws_config_rx) = watch::channel(live_ws_config);
+    let mut current_live_ws_config = live_ws_config;
     let runtime = Arc::new(RuntimeState::with_metrics(
         resolved.ws_config.max_total_subscriptions,
         metrics.clone(),
@@ -726,13 +908,20 @@ async fn run() -> Result<(), shared::IndexError> {
         snapshot: initial_snapshot.clone(),
         action: SpecUpdateAction::Unchanged,
     });
+    let (options_update_tx, mut options_update_rx) =
+        watch::channel(initial_options_snapshot.clone());
     let (sub_tx, mut sub_rx) =
         mpsc::channel(resolved.ws_config.subscription_control_buffer_size.max(1));
 
     let subscriptions_runtime = runtime.clone();
+    let subscriptions_ws_config = live_ws_config_rx.clone();
     let _subscription_task = spawn(async move {
         while let Some(msg) = sub_rx.recv().await {
-            if let Err(err) = process_sub_msg(subscriptions_runtime.as_ref(), msg) {
+            if let Err(err) = process_sub_msg(
+                subscriptions_runtime.as_ref(),
+                &*subscriptions_ws_config.borrow(),
+                msg,
+            ) {
                 error!("Subscription rejected: {err}");
             }
         }
@@ -744,7 +933,7 @@ async fn run() -> Result<(), shared::IndexError> {
         resolved.port,
         process_exit_rx.clone(),
         sub_tx,
-        resolved.ws_config.clone(),
+        live_ws_config_rx.clone(),
     )));
     let mut metrics_task = match resolved.metrics_port {
         Some(metrics_port) => {
@@ -758,11 +947,14 @@ async fn run() -> Result<(), shared::IndexError> {
         }
         None => None,
     };
-    let watcher_task = spawn(watch_index_spec(
+    let watcher_task = spawn(watch_runtime_config(
         PathBuf::from(&run_args.index_spec),
         initial_snapshot.clone(),
+        run_args.options_config.as_ref().map(PathBuf::from),
+        initial_options_snapshot.clone(),
         resolved.url.clone(),
         spec_update_tx,
+        options_update_tx,
         None,
         process_exit_rx.clone(),
     ));
@@ -771,6 +963,7 @@ async fn run() -> Result<(), shared::IndexError> {
     let mut backoff_secs = INITIAL_BACKOFF_SECS;
     let mut signals = Signals::new(TERM_SIGNALS)?;
     let mut current_snapshot = initial_snapshot;
+    let options_hot_reload_enabled = initial_options_snapshot.is_some();
 
     loop {
         if term_now.load(Ordering::Relaxed) {
@@ -816,15 +1009,39 @@ async fn run() -> Result<(), shared::IndexError> {
                 }
                 return Err(shared::internal_error("index spec update channel closed"));
             }
+            changed = options_update_rx.changed(), if options_hot_reload_enabled => {
+                if changed.is_ok() {
+                    let Some(snapshot) = options_update_rx.borrow_and_update().clone() else {
+                        continue;
+                    };
+                    match resolve_options_runtime_update(run_args, &current_snapshot, &resolved, &snapshot) {
+                        Ok(update) => {
+                            log_ignored_options_fields(&update.ignored_fields);
+                            resolved = update.resolved;
+                            let next_live_ws_config = LiveWsConfig::from(&resolved.ws_config);
+                            if next_live_ws_config != current_live_ws_config {
+                                current_live_ws_config = next_live_ws_config;
+                                let _ = live_ws_config_tx.send(next_live_ws_config);
+                            }
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!("Rejected options config change: {err}");
+                            continue;
+                        }
+                    }
+                }
+                return Err(shared::internal_error("options config update channel closed"));
+            }
             watcher_result = &mut watcher_task => {
                 match watcher_result {
                     Ok(Ok(())) => {
-                        return Err(shared::internal_error("index spec watcher stopped unexpectedly"));
+                        return Err(shared::internal_error("config watcher stopped unexpectedly"));
                     }
                     Ok(Err(err)) => return Err(err),
                     Err(join_err) => {
                         return Err(shared::internal_error(format!(
-                            "index spec watcher task panicked: {join_err}"
+                            "config watcher task panicked: {join_err}"
                         )));
                     }
                 }
@@ -858,15 +1075,39 @@ async fn run() -> Result<(), shared::IndexError> {
                         }
                         return Err(shared::internal_error("index spec update channel closed"));
                     }
+                    changed = options_update_rx.changed(), if options_hot_reload_enabled => {
+                        if changed.is_ok() {
+                            let Some(snapshot) = options_update_rx.borrow_and_update().clone() else {
+                                continue;
+                            };
+                            match resolve_options_runtime_update(run_args, &current_snapshot, &resolved, &snapshot) {
+                                Ok(update) => {
+                                    log_ignored_options_fields(&update.ignored_fields);
+                                    resolved = update.resolved;
+                                    let next_live_ws_config = LiveWsConfig::from(&resolved.ws_config);
+                                    if next_live_ws_config != current_live_ws_config {
+                                        current_live_ws_config = next_live_ws_config;
+                                        let _ = live_ws_config_tx.send(next_live_ws_config);
+                                    }
+                                    continue;
+                                }
+                                Err(err) => {
+                                    warn!("Rejected options config change: {err}");
+                                    continue;
+                                }
+                            }
+                        }
+                        return Err(shared::internal_error("options config update channel closed"));
+                    }
                     watcher_result = &mut watcher_task => {
                         match watcher_result {
                             Ok(Ok(())) => {
-                                return Err(shared::internal_error("index spec watcher stopped unexpectedly"));
+                                return Err(shared::internal_error("config watcher stopped unexpectedly"));
                             }
                             Ok(Err(err)) => return Err(err),
                             Err(join_err) => {
                                 return Err(shared::internal_error(format!(
-                                    "index spec watcher task panicked: {join_err}"
+                                    "config watcher task panicked: {join_err}"
                                 )));
                             }
                         }
@@ -946,10 +1187,48 @@ async fn run() -> Result<(), shared::IndexError> {
                     return Err(shared::internal_error("index spec update channel closed"));
                 }
             }
+            changed = options_update_rx.changed(), if options_hot_reload_enabled => {
+                if changed.is_ok() {
+                    if let Some(snapshot) = options_update_rx.borrow_and_update().clone() {
+                        match resolve_options_runtime_update(
+                            run_args,
+                            &current_snapshot,
+                            &resolved,
+                            &snapshot,
+                        ) {
+                            Ok(update) => {
+                                log_ignored_options_fields(&update.ignored_fields);
+                                resolved = update.resolved;
+                                let next_live_ws_config = LiveWsConfig::from(&resolved.ws_config);
+                                if next_live_ws_config != current_live_ws_config {
+                                    current_live_ws_config = next_live_ws_config;
+                                    let _ = live_ws_config_tx.send(next_live_ws_config);
+                                }
+                                if update.action == OptionsUpdateAction::RestartIndexer {
+                                    runtime.set_rpc(None);
+                                    metrics.set_rpc_connected(false);
+                                    let _ = indexer_exit_tx.send(true);
+                                    LoopControl::Restart
+                                } else {
+                                    LoopControl::Continue
+                                }
+                            }
+                            Err(err) => {
+                                warn!("Rejected options config change: {err}");
+                                LoopControl::Continue
+                            }
+                        }
+                    } else {
+                        LoopControl::Continue
+                    }
+                } else {
+                    return Err(shared::internal_error("options config update channel closed"));
+                }
+            }
             watcher_result = &mut watcher_task => {
                 match watcher_result {
                     Ok(Ok(())) => {
-                        error!("Index spec watcher stopped unexpectedly.");
+                        error!("Config watcher stopped unexpectedly.");
                         runtime.set_rpc(None);
                         metrics.set_rpc_connected(false);
                         let _ = indexer_exit_tx.send(true);
@@ -962,7 +1241,7 @@ async fn run() -> Result<(), shared::IndexError> {
                             let _ = metrics_task.await;
                         }
                         let _ = trees.flush();
-                        return Err(shared::internal_error("index spec watcher stopped unexpectedly"));
+                        return Err(shared::internal_error("config watcher stopped unexpectedly"));
                     }
                     Ok(Err(err)) => {
                         runtime.set_rpc(None);
@@ -993,7 +1272,7 @@ async fn run() -> Result<(), shared::IndexError> {
                         }
                         let _ = trees.flush();
                         return Err(shared::internal_error(format!(
-                            "index spec watcher task panicked: {join_err}"
+                            "config watcher task panicked: {join_err}"
                         )));
                     }
                 }
@@ -1081,15 +1360,39 @@ async fn run() -> Result<(), shared::IndexError> {
                             }
                             return Err(shared::internal_error("index spec update channel closed"));
                         }
+                        changed = options_update_rx.changed(), if options_hot_reload_enabled => {
+                            if changed.is_ok() {
+                                let Some(snapshot) = options_update_rx.borrow_and_update().clone() else {
+                                    continue;
+                                };
+                                match resolve_options_runtime_update(run_args, &current_snapshot, &resolved, &snapshot) {
+                                    Ok(update) => {
+                                        log_ignored_options_fields(&update.ignored_fields);
+                                        resolved = update.resolved;
+                                        let next_live_ws_config = LiveWsConfig::from(&resolved.ws_config);
+                                        if next_live_ws_config != current_live_ws_config {
+                                            current_live_ws_config = next_live_ws_config;
+                                            let _ = live_ws_config_tx.send(next_live_ws_config);
+                                        }
+                                        continue;
+                                    }
+                                    Err(err) => {
+                                        warn!("Rejected options config change: {err}");
+                                        continue;
+                                    }
+                                }
+                            }
+                            return Err(shared::internal_error("options config update channel closed"));
+                        }
                         watcher_result = &mut watcher_task => {
                             match watcher_result {
                                 Ok(Ok(())) => {
-                                    return Err(shared::internal_error("index spec watcher stopped unexpectedly"));
+                                    return Err(shared::internal_error("config watcher stopped unexpectedly"));
                                 }
                                 Ok(Err(err)) => return Err(err),
                                 Err(join_err) => {
                                     return Err(shared::internal_error(format!(
-                                        "index spec watcher task panicked: {join_err}"
+                                        "config watcher task panicked: {join_err}"
                                     )));
                                 }
                             }
@@ -1178,6 +1481,10 @@ mod main_tests {
 
     fn write_spec(path: &Path, spec: &IndexSpec) {
         std::fs::write(path, toml::to_string(spec).unwrap()).unwrap();
+    }
+
+    fn write_options(path: &Path, options: &str) {
+        std::fs::write(path, options).unwrap();
     }
 
     #[test]
@@ -1472,8 +1779,69 @@ mod main_tests {
         assert_eq!(action, SpecUpdateAction::RestartIndexer);
     }
 
+    #[test]
+    fn classify_options_update_restarts_for_indexer_settings() {
+        let spec = test_spec();
+        let current = resolve_args(&test_run_args(), &spec, None).unwrap();
+        let candidate = resolve_args(
+            &test_run_args(),
+            &spec,
+            Some(&OptionsConfig {
+                url: Some("ws://override:9944".into()),
+                queue_depth: Some(4),
+                finalized: Some(true),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        let update = classify_options_update(&current, &candidate);
+
+        assert_eq!(update.action, OptionsUpdateAction::RestartIndexer);
+        assert_eq!(update.resolved.url.as_deref(), Some("ws://override:9944"));
+        assert_eq!(update.resolved.queue_depth, 4);
+        assert!(update.resolved.finalized);
+        assert!(update.ignored_fields.is_empty());
+    }
+
+    #[test]
+    fn classify_options_update_logs_and_ignores_startup_only_fields() {
+        let spec = test_spec();
+        let current = resolve_args(&test_run_args(), &spec, None).unwrap();
+        let candidate = resolve_args(
+            &test_run_args(),
+            &spec,
+            Some(&OptionsConfig {
+                db_path: Some("/tmp/other-db".into()),
+                db_mode: Some("high_throughput".into()),
+                db_cache_capacity: Some("2 GiB".into()),
+                port: Some(9999),
+                metrics_port: Some(9998),
+                subscription_control_buffer_size: Some(2048),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        let update = classify_options_update(&current, &candidate);
+
+        assert_eq!(update.action, OptionsUpdateAction::Unchanged);
+        assert_eq!(update.resolved, current);
+        assert_eq!(
+            update.ignored_fields,
+            vec![
+                "db_path",
+                "db_mode",
+                "db_cache_capacity",
+                "subscription_control_buffer_size",
+                "port",
+                "metrics_port",
+            ]
+        );
+    }
+
     #[tokio::test]
-    async fn watch_index_spec_detects_replace_via_rename() {
+    async fn watch_runtime_config_detects_spec_replace_via_rename() {
         let dir = tempfile::tempdir().unwrap();
         let spec_path = dir.path().join("index.toml");
         let replacement_path = dir.path().join("index.tmp.toml");
@@ -1485,13 +1853,17 @@ mod main_tests {
             snapshot: initial_snapshot.clone(),
             action: SpecUpdateAction::Unchanged,
         });
+        let (options_tx, _options_rx) = watch::channel(None::<OptionsSnapshot>);
         let (ready_tx, ready_rx) = oneshot::channel();
         let (exit_tx, exit_rx) = watch::channel(false);
-        let watcher = tokio::spawn(watch_index_spec(
+        let watcher = tokio::spawn(watch_runtime_config(
             spec_path.clone(),
             initial_snapshot,
             None,
+            None,
+            None,
             spec_tx,
+            options_tx,
             Some(ready_tx),
             exit_rx,
         ));
@@ -1513,6 +1885,57 @@ mod main_tests {
 
         assert_eq!(update.action, SpecUpdateAction::RestartIndexer);
         assert!(update.snapshot.spec.index_variant);
+
+        let _ = exit_tx.send(true);
+        assert!(watcher.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn watch_runtime_config_detects_options_replace_via_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_path = dir.path().join("index.toml");
+        let options_path = dir.path().join("options.toml");
+        let replacement_path = dir.path().join("options.tmp.toml");
+        let initial_spec = test_spec();
+        write_spec(&spec_path, &initial_spec);
+        write_options(&options_path, "queue_depth = 1\n");
+
+        let initial_snapshot = build_config_snapshot(spec_path.to_str().unwrap()).unwrap();
+        let initial_options = build_options_snapshot(options_path.to_str().unwrap()).unwrap();
+        let (spec_tx, _spec_rx) = watch::channel(SpecUpdate {
+            snapshot: initial_snapshot.clone(),
+            action: SpecUpdateAction::Unchanged,
+        });
+        let (options_tx, mut options_rx) = watch::channel(Some(initial_options.clone()));
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (exit_tx, exit_rx) = watch::channel(false);
+        let watcher = tokio::spawn(watch_runtime_config(
+            spec_path,
+            initial_snapshot,
+            Some(options_path.clone()),
+            Some(initial_options),
+            None,
+            spec_tx,
+            options_tx,
+            Some(ready_tx),
+            exit_rx,
+        ));
+        timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        write_options(&replacement_path, "queue_depth = 4\nmax_connections = 32\n");
+        std::fs::rename(&replacement_path, &options_path).unwrap();
+
+        timeout(Duration::from_secs(5), options_rx.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let update = options_rx.borrow_and_update().clone().unwrap();
+
+        assert_eq!(update.options.queue_depth, Some(4));
+        assert_eq!(update.options.max_connections, Some(32));
 
         let _ = exit_tx.send(true);
         assert!(watcher.await.unwrap().is_ok());

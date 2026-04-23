@@ -713,7 +713,7 @@ pub enum NotificationBody {
 
 // ─── WebSocket configuration ─────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WsConfig {
     pub max_connections: usize,
     pub max_total_subscriptions: usize,
@@ -722,6 +722,29 @@ pub struct WsConfig {
     pub subscription_control_buffer_size: usize,
     pub idle_timeout_secs: u64,
     pub max_events_limit: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveWsConfig {
+    pub max_connections: usize,
+    pub max_total_subscriptions: usize,
+    pub max_subscriptions_per_connection: usize,
+    pub subscription_buffer_size: usize,
+    pub idle_timeout_secs: u64,
+    pub max_events_limit: usize,
+}
+
+impl From<&WsConfig> for LiveWsConfig {
+    fn from(config: &WsConfig) -> Self {
+        Self {
+            max_connections: config.max_connections,
+            max_total_subscriptions: config.max_total_subscriptions,
+            max_subscriptions_per_connection: config.max_subscriptions_per_connection,
+            subscription_buffer_size: config.subscription_buffer_size,
+            idle_timeout_secs: config.idle_timeout_secs,
+            max_events_limit: config.max_events_limit,
+        }
+    }
 }
 
 impl Default for WsConfig {
@@ -762,7 +785,6 @@ pub enum SubscriptionMessage {
 }
 
 pub struct RuntimeState {
-    pub(crate) max_total_subscriptions: usize,
     pub(crate) status_subs: Mutex<Vec<mpsc::Sender<NotificationMessage>>>,
     pub(crate) events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<NotificationMessage>>>>,
     pub(crate) metrics: Arc<Metrics>,
@@ -771,13 +793,12 @@ pub struct RuntimeState {
 
 impl RuntimeState {
     #[cfg(test)]
-    pub fn new(max_total_subscriptions: usize) -> Self {
-        Self::with_metrics(max_total_subscriptions, Arc::new(Metrics::new()))
+    pub fn new(_max_total_subscriptions: usize) -> Self {
+        Self::with_metrics(_max_total_subscriptions, Arc::new(Metrics::new()))
     }
 
-    pub fn with_metrics(max_total_subscriptions: usize, metrics: Arc<Metrics>) -> Self {
+    pub fn with_metrics(_max_total_subscriptions: usize, metrics: Arc<Metrics>) -> Self {
         Self {
-            max_total_subscriptions,
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             metrics,

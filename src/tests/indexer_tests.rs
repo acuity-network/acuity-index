@@ -6,6 +6,17 @@ mod indexer_tests {
     use scale_value::{Composite, Primitive, Value, ValueDef};
     use tokio::sync::mpsc;
 
+    fn live_ws_config(max_total_subscriptions: usize) -> LiveWsConfig {
+        LiveWsConfig {
+            max_connections: WsConfig::default().max_connections,
+            max_total_subscriptions,
+            max_subscriptions_per_connection: WsConfig::default().max_subscriptions_per_connection,
+            subscription_buffer_size: WsConfig::default().subscription_buffer_size,
+            idle_timeout_secs: WsConfig::default().idle_timeout_secs,
+            max_events_limit: WsConfig::default().max_events_limit,
+        }
+    }
+
     fn u128_val(n: u128) -> Value<()> {
         Value {
             value: ValueDef::Primitive(Primitive::U128(n)),
@@ -861,6 +872,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::SubscribeStatus {
                 tx: tx.clone(),
                 response_tx: None,
@@ -872,6 +884,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::UnsubscribeStatus {
                 tx,
                 response_tx: None,
@@ -893,6 +906,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx: tx.clone(),
@@ -911,6 +925,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::UnsubscribeEvents {
                 key,
                 tx,
@@ -934,6 +949,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::SubscribeStatus {
                 tx,
                 response_tx: None,
@@ -962,6 +978,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx, mut rx) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(WsConfig::default().max_total_subscriptions),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx,
@@ -1018,6 +1035,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(3),
             SubscriptionMessage::SubscribeStatus {
                 tx: tx1,
                 response_tx: None,
@@ -1027,6 +1045,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(3),
             SubscriptionMessage::SubscribeStatus {
                 tx: tx2,
                 response_tx: None,
@@ -1038,6 +1057,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx3, _rx3) = mpsc::channel(1);
         process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(3),
             SubscriptionMessage::SubscribeEvents {
                 key: key.clone(),
                 tx: tx3,
@@ -1049,6 +1069,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx4, mut rx4) = mpsc::channel(1);
         let result = process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(3),
             SubscriptionMessage::SubscribeStatus {
                 tx: tx4.clone(),
                 response_tx: None,
@@ -1064,6 +1085,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         let (tx5, mut rx5) = mpsc::channel(1);
         let result = process_sub_msg(
             indexer.runtime_state(),
+            &live_ws_config(3),
             SubscriptionMessage::SubscribeEvents {
                 key: u32_key("ref_index", 2),
                 tx: tx5.clone(),

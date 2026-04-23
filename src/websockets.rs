@@ -3,15 +3,21 @@
 use crate::shared::*;
 use futures::{SinkExt, StreamExt};
 use sled::Tree;
-use std::{collections::HashSet, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashSet,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 use subxt::{
     Metadata, PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{
-    OwnedSemaphorePermit, Semaphore,
     mpsc::{self, Sender},
-    oneshot,
+    oneshot, watch,
     watch::Receiver,
 };
 use tokio::time::{self, Duration};
@@ -85,6 +91,13 @@ fn event_is_before(event: &EventRef, cursor: &EventRef) -> bool {
 
 fn clamp_events_limit(limit: u16, max_events_limit: usize) -> usize {
     usize::from(limit).clamp(1, max_events_limit.max(1))
+}
+
+fn idle_deadline_for(
+    last_activity: time::Instant,
+    idle_timeout_secs: u64,
+) -> Option<time::Instant> {
+    (idle_timeout_secs != 0).then(|| last_activity + Duration::from_secs(idle_timeout_secs))
 }
 
 fn request_id_response(id: u64, body: ResponseBody) -> ResponseMessage {
@@ -630,6 +643,22 @@ impl ConnectionMetricGuard {
     }
 }
 
+struct ConnectionSlotGuard {
+    connection_count: Arc<AtomicUsize>,
+}
+
+impl ConnectionSlotGuard {
+    fn new(connection_count: Arc<AtomicUsize>) -> Self {
+        Self { connection_count }
+    }
+}
+
+impl Drop for ConnectionSlotGuard {
+    fn drop(&mut self) {
+        self.connection_count.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 impl Drop for ConnectionMetricGuard {
     fn drop(&mut self) {
         self.runtime.metrics.dec_ws_connections();
@@ -644,8 +673,9 @@ async fn handle_connection(
     addr: SocketAddr,
     trees: Trees,
     sub_tx: Sender<SubscriptionMessage>,
-    _connection_permit: OwnedSemaphorePermit,
-    ws_config: WsConfig,
+    _connection_slot: ConnectionSlotGuard,
+    subscription_buffer_size: usize,
+    mut live_ws_config_rx: watch::Receiver<LiveWsConfig>,
 ) -> Result<(), IndexError> {
     info!("TCP connection from {addr}");
     let ws_stream =
@@ -654,13 +684,12 @@ async fn handle_connection(
     let _connection_metrics = ConnectionMetricGuard::new(runtime.clone());
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-    let (sub_events_tx, mut sub_events_rx) =
-        mpsc::channel(ws_config.subscription_buffer_size.max(1));
+    let (sub_events_tx, mut sub_events_rx) = mpsc::channel(subscription_buffer_size.max(1));
     let mut status_subscribed = false;
     let mut event_subscriptions = HashSet::new();
-    let idle_timeout = (ws_config.idle_timeout_secs != 0)
-        .then(|| Duration::from_secs(ws_config.idle_timeout_secs));
-    let mut idle_deadline = idle_timeout.map(|timeout| time::Instant::now() + timeout);
+    let mut live_ws_config = *live_ws_config_rx.borrow();
+    let mut last_activity = time::Instant::now();
+    let mut idle_deadline = idle_deadline_for(last_activity, live_ws_config.idle_timeout_secs);
 
     loop {
         tokio::select! {
@@ -671,19 +700,24 @@ async fn handle_connection(
                     std::future::pending::<()>().await;
                 }
             } => return Err(disconnect_error("connection idle timeout exceeded")),
+            changed = live_ws_config_rx.changed() => {
+                if changed.is_ok() {
+                    live_ws_config = *live_ws_config_rx.borrow_and_update();
+                    idle_deadline = idle_deadline_for(last_activity, live_ws_config.idle_timeout_secs);
+                }
+            }
             incoming = ws_receiver.next() => {
                 match incoming {
                     Some(Ok(msg)) if msg.is_text() || msg.is_binary() => {
-                        if let Some(timeout) = idle_timeout {
-                            idle_deadline = Some(time::Instant::now() + timeout);
-                        }
+                        last_activity = time::Instant::now();
+                        idle_deadline = idle_deadline_for(last_activity, live_ws_config.idle_timeout_secs);
                         match serde_json::from_str::<RequestMessage>(msg.to_text()?) {
                             Ok(request) => {
                                 if let Err(err) = validate_subscription_request(
                                     status_subscribed,
                                     &event_subscriptions,
                                     &request.body,
-                                    ws_config.max_subscriptions_per_connection,
+                                    live_ws_config.max_subscriptions_per_connection,
                                 ) {
                                     let response = subscription_limit_response(request.id, err.to_string());
                                     send_json_message(&mut ws_sender, &response).await?;
@@ -695,7 +729,7 @@ async fn handle_connection(
                                     request.clone(),
                                     &sub_tx,
                                     &sub_events_tx,
-                                    ws_config.max_events_limit,
+                                    live_ws_config.max_events_limit,
                                 ).await {
                                     Ok(response) => response,
                                     Err(err) => error_response(request.id, "internal_error", err.to_string()),
@@ -724,9 +758,8 @@ async fn handle_connection(
             notification = sub_events_rx.recv() => {
                 match notification {
                     Some(msg) => {
-                        if let Some(timeout) = idle_timeout {
-                            idle_deadline = Some(time::Instant::now() + timeout);
-                        }
+                        last_activity = time::Instant::now();
+                        idle_deadline = idle_deadline_for(last_activity, live_ws_config.idle_timeout_secs);
                         send_json_message(&mut ws_sender, &msg).await?
                     }
                     None => return Err(disconnect_error("subscription dispatcher closed")),
@@ -784,34 +817,42 @@ pub async fn websockets_listen(
     port: u16,
     mut exit_rx: Receiver<bool>,
     sub_tx: Sender<SubscriptionMessage>,
-    ws_config: WsConfig,
+    mut live_ws_config_rx: watch::Receiver<LiveWsConfig>,
 ) {
-    let connection_limit = Arc::new(Semaphore::new(ws_config.max_connections));
     let addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&addr)
         .await
         .expect("Failed to bind WebSocket port");
     info!("Listening on {addr}");
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let mut live_ws_config = *live_ws_config_rx.borrow();
 
     loop {
         tokio::select! {
             biased;
             _ = exit_rx.changed() => break,
+            changed = live_ws_config_rx.changed() => {
+                if changed.is_ok() {
+                    live_ws_config = *live_ws_config_rx.borrow_and_update();
+                }
+            }
             Ok((stream, addr)) = listener.accept() => {
-                let Ok(connection_permit) = connection_limit.clone().try_acquire_owned() else {
+                if active_connections.load(Ordering::Relaxed) >= live_ws_config.max_connections {
                     error!("Rejecting {addr}: connection limit reached");
                     tokio::spawn(reject_connection_limit_exceeded(stream));
                     continue;
-                };
-                let cfg = ws_config.clone();
+                }
+                active_connections.fetch_add(1, Ordering::Relaxed);
+                let connection_slot = ConnectionSlotGuard::new(active_connections.clone());
                 tokio::spawn(handle_connection(
                     runtime.clone(),
                     stream,
                     addr,
                     trees.clone(),
                     sub_tx.clone(),
-                    connection_permit,
-                    cfg,
+                    connection_slot,
+                    live_ws_config.subscription_buffer_size,
+                    live_ws_config_rx.clone(),
                 ));
             }
         }
@@ -825,10 +866,7 @@ mod tests {
     use futures::{SinkExt, StreamExt};
     use std::sync::Arc;
     use subxt::rpcs::client::{RawRpcFuture, RawRpcSubscription, RawValue, RpcClient, RpcClientT};
-    use tokio::{
-        sync::Semaphore,
-        time::{Duration, sleep, timeout},
-    };
+    use tokio::time::{Duration, sleep, timeout};
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     const DEFAULT_WS_CONFIG: WsConfig = WsConfig {
@@ -839,6 +877,15 @@ mod tests {
         subscription_control_buffer_size: 1024,
         idle_timeout_secs: 300,
         max_events_limit: 1000,
+    };
+
+    const DEFAULT_LIVE_WS_CONFIG: LiveWsConfig = LiveWsConfig {
+        max_connections: DEFAULT_WS_CONFIG.max_connections,
+        max_total_subscriptions: DEFAULT_WS_CONFIG.max_total_subscriptions,
+        max_subscriptions_per_connection: DEFAULT_WS_CONFIG.max_subscriptions_per_connection,
+        subscription_buffer_size: DEFAULT_WS_CONFIG.subscription_buffer_size,
+        idle_timeout_secs: DEFAULT_WS_CONFIG.idle_timeout_secs,
+        max_events_limit: DEFAULT_WS_CONFIG.max_events_limit,
     };
 
     fn temp_trees() -> Trees {
@@ -884,10 +931,12 @@ mod tests {
     fn spawn_subscription_dispatcher(
         runtime: Arc<RuntimeState>,
         mut sub_rx: mpsc::Receiver<SubscriptionMessage>,
+        live_ws_config_rx: watch::Receiver<LiveWsConfig>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
+            let live_ws_config_rx = live_ws_config_rx;
             while let Some(msg) = sub_rx.recv().await {
-                let _ = process_sub_msg(runtime.as_ref(), msg);
+                let _ = process_sub_msg(runtime.as_ref(), &*live_ws_config_rx.borrow(), msg);
             }
         })
     }
@@ -1319,6 +1368,10 @@ mod tests {
         let (existing_tx, _existing_rx) = mpsc::channel(1);
         process_sub_msg(
             runtime.as_ref(),
+            &LiveWsConfig {
+                max_total_subscriptions: 1,
+                ..DEFAULT_LIVE_WS_CONFIG
+            },
             SubscriptionMessage::SubscribeStatus {
                 tx: existing_tx,
                 response_tx: None,
@@ -1327,7 +1380,11 @@ mod tests {
         .unwrap();
 
         let (sub_tx, sub_rx) = mpsc::channel(4);
-        let dispatcher = spawn_subscription_dispatcher(runtime.clone(), sub_rx);
+        let (_live_ws_tx, live_ws_rx) = watch::channel(LiveWsConfig {
+            max_total_subscriptions: 1,
+            ..DEFAULT_LIVE_WS_CONFIG
+        });
+        let dispatcher = spawn_subscription_dispatcher(runtime.clone(), sub_rx, live_ws_rx);
         let (response_tx, mut response_rx) = mpsc::channel(1);
 
         let response = process_msg(
@@ -1621,8 +1678,9 @@ mod tests {
         let (sub_tx, _sub_rx) = mpsc::channel(4);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
         let runtime = runtime_with_rpc();
+        let (_live_ws_tx, live_ws_rx) = watch::channel(DEFAULT_LIVE_WS_CONFIG);
+        let connection_count = Arc::new(AtomicUsize::new(1));
         let server = tokio::spawn(async move {
             let (stream, peer_addr) = listener.accept().await.unwrap();
             handle_connection(
@@ -1631,8 +1689,9 @@ mod tests {
                 peer_addr,
                 trees,
                 sub_tx,
-                permit,
-                DEFAULT_WS_CONFIG,
+                ConnectionSlotGuard::new(connection_count),
+                DEFAULT_LIVE_WS_CONFIG.subscription_buffer_size,
+                live_ws_rx,
             )
             .await
         });
@@ -1673,6 +1732,10 @@ mod tests {
         let (existing_tx, _existing_rx) = mpsc::channel(1);
         process_sub_msg(
             runtime.as_ref(),
+            &LiveWsConfig {
+                max_total_subscriptions: 1,
+                ..DEFAULT_LIVE_WS_CONFIG
+            },
             SubscriptionMessage::SubscribeStatus {
                 tx: existing_tx.clone(),
                 response_tx: None,
@@ -1681,23 +1744,38 @@ mod tests {
         .unwrap();
 
         let (sub_tx, sub_rx) = mpsc::channel(4);
-        let dispatcher = spawn_subscription_dispatcher(runtime.clone(), sub_rx);
+        let (_dispatcher_live_ws_tx, dispatcher_live_ws_rx) = watch::channel(LiveWsConfig {
+            max_total_subscriptions: 1,
+            ..DEFAULT_LIVE_WS_CONFIG
+        });
+        let dispatcher =
+            spawn_subscription_dispatcher(runtime.clone(), sub_rx, dispatcher_live_ws_rx);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
-        let ws_config = WsConfig {
+        let ws_config = LiveWsConfig {
             max_subscriptions_per_connection: 1,
             idle_timeout_secs: 0,
-            ..DEFAULT_WS_CONFIG
+            ..DEFAULT_LIVE_WS_CONFIG
         };
+        let (_live_ws_tx, live_ws_rx) = watch::channel(ws_config);
+        let connection_count = Arc::new(AtomicUsize::new(1));
         let server = tokio::spawn({
             let runtime = runtime.clone();
             let trees = trees.clone();
             let sub_tx = sub_tx.clone();
             async move {
                 let (stream, peer_addr) = listener.accept().await.unwrap();
-                handle_connection(runtime, stream, peer_addr, trees, sub_tx, permit, ws_config)
-                    .await
+                handle_connection(
+                    runtime,
+                    stream,
+                    peer_addr,
+                    trees,
+                    sub_tx,
+                    ConnectionSlotGuard::new(connection_count),
+                    ws_config.subscription_buffer_size,
+                    live_ws_rx,
+                )
+                .await
             }
         });
 
@@ -1726,6 +1804,10 @@ mod tests {
 
         process_sub_msg(
             runtime.as_ref(),
+            &LiveWsConfig {
+                max_total_subscriptions: 1,
+                ..DEFAULT_LIVE_WS_CONFIG
+            },
             SubscriptionMessage::UnsubscribeStatus {
                 tx: existing_tx,
                 response_tx: None,
@@ -1762,15 +1844,26 @@ mod tests {
         let (sub_tx, _sub_rx) = mpsc::channel(4);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
         let runtime = disconnected_runtime();
-        let ws_config = WsConfig {
+        let ws_config = LiveWsConfig {
             idle_timeout_secs: 0,
-            ..DEFAULT_WS_CONFIG
+            ..DEFAULT_LIVE_WS_CONFIG
         };
+        let (_live_ws_tx, live_ws_rx) = watch::channel(ws_config);
+        let connection_count = Arc::new(AtomicUsize::new(1));
         let server = tokio::spawn(async move {
             let (stream, peer_addr) = listener.accept().await.unwrap();
-            handle_connection(runtime, stream, peer_addr, trees, sub_tx, permit, ws_config).await
+            handle_connection(
+                runtime,
+                stream,
+                peer_addr,
+                trees,
+                sub_tx,
+                ConnectionSlotGuard::new(connection_count),
+                ws_config.subscription_buffer_size,
+                live_ws_rx,
+            )
+            .await
         });
 
         let (mut client, _) = connect_async(format!("ws://{addr}")).await.unwrap();
@@ -1794,6 +1887,161 @@ mod tests {
             serde_json::from_str(response.to_text().unwrap()).unwrap();
         assert_eq!(response["id"], 20);
         assert_eq!(response["type"], "status");
+
+        client.close(None).await.unwrap();
+        assert!(server.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn existing_connection_observes_live_subscription_limit_changes() {
+        let trees = temp_trees();
+        let runtime = disconnected_runtime();
+        let (sub_tx, sub_rx) = mpsc::channel(4);
+        let (live_ws_tx, live_ws_rx) = watch::channel(DEFAULT_LIVE_WS_CONFIG);
+        let dispatcher = spawn_subscription_dispatcher(runtime.clone(), sub_rx, live_ws_rx);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let initial_ws_config = LiveWsConfig {
+            max_subscriptions_per_connection: 2,
+            idle_timeout_secs: 0,
+            ..DEFAULT_LIVE_WS_CONFIG
+        };
+        live_ws_tx.send(initial_ws_config).unwrap();
+        let live_ws_rx = live_ws_tx.subscribe();
+        let connection_count = Arc::new(AtomicUsize::new(1));
+        let server = tokio::spawn({
+            let runtime = runtime.clone();
+            let trees = trees.clone();
+            let sub_tx = sub_tx.clone();
+            async move {
+                let (stream, peer_addr) = listener.accept().await.unwrap();
+                handle_connection(
+                    runtime,
+                    stream,
+                    peer_addr,
+                    trees,
+                    sub_tx,
+                    ConnectionSlotGuard::new(connection_count),
+                    initial_ws_config.subscription_buffer_size,
+                    live_ws_rx,
+                )
+                .await
+            }
+        });
+
+        let (mut client, _) = connect_async(format!("ws://{addr}")).await.unwrap();
+        let first_request = serde_json::json!({
+            "id": 21,
+            "type": "SubscribeEvents",
+            "key": {"type": "Custom", "value": {"name": "pool_id", "kind": "u32", "value": 1}}
+        });
+        client
+            .send(Message::Text(first_request.to_string().into()))
+            .await
+            .unwrap();
+
+        let response = client.next().await.unwrap().unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
+        assert_eq!(response["id"], 21);
+        assert_eq!(response["type"], "subscriptionStatus");
+
+        live_ws_tx
+            .send(LiveWsConfig {
+                max_subscriptions_per_connection: 1,
+                ..initial_ws_config
+            })
+            .unwrap();
+        sleep(Duration::from_millis(25)).await;
+
+        let second_request = serde_json::json!({
+            "id": 22,
+            "type": "SubscribeStatus"
+        });
+        client
+            .send(Message::Text(second_request.to_string().into()))
+            .await
+            .unwrap();
+
+        let response = client.next().await.unwrap().unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
+        assert_eq!(response["id"], 22);
+        assert_eq!(response["type"], "error");
+        assert_eq!(response["data"]["code"], "subscription_limit");
+
+        client.close(None).await.unwrap();
+        assert!(server.await.unwrap().is_ok());
+        drop(sub_tx);
+        dispatcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn existing_connection_observes_live_max_events_limit_changes() {
+        let trees = temp_trees();
+        let runtime = disconnected_runtime();
+        let key = Key::Custom(CustomKey {
+            name: "ref_index".into(),
+            value: CustomValue::U32(7),
+        });
+        key.write_db_key(&trees, 10, 1).unwrap();
+        key.write_db_key(&trees, 11, 1).unwrap();
+
+        let (sub_tx, _sub_rx) = mpsc::channel(4);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let initial_ws_config = LiveWsConfig {
+            idle_timeout_secs: 0,
+            max_events_limit: 100,
+            ..DEFAULT_LIVE_WS_CONFIG
+        };
+        let (live_ws_tx, live_ws_rx) = watch::channel(initial_ws_config);
+        let connection_count = Arc::new(AtomicUsize::new(1));
+        let server = tokio::spawn({
+            let runtime = runtime.clone();
+            let trees = trees.clone();
+            async move {
+                let (stream, peer_addr) = listener.accept().await.unwrap();
+                handle_connection(
+                    runtime,
+                    stream,
+                    peer_addr,
+                    trees,
+                    sub_tx,
+                    ConnectionSlotGuard::new(connection_count),
+                    initial_ws_config.subscription_buffer_size,
+                    live_ws_rx,
+                )
+                .await
+            }
+        });
+
+        let (mut client, _) = connect_async(format!("ws://{addr}")).await.unwrap();
+        live_ws_tx
+            .send(LiveWsConfig {
+                max_events_limit: 1,
+                ..initial_ws_config
+            })
+            .unwrap();
+        sleep(Duration::from_millis(25)).await;
+
+        let request = serde_json::json!({
+            "id": 23,
+            "type": "GetEvents",
+            "key": {"type": "Custom", "value": {"name": "ref_index", "kind": "u32", "value": 7}},
+            "limit": 100
+        });
+        client
+            .send(Message::Text(request.to_string().into()))
+            .await
+            .unwrap();
+
+        let response = client.next().await.unwrap().unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
+        assert_eq!(response["id"], 23);
+        assert_eq!(response["type"], "events");
+        assert_eq!(response["data"]["events"].as_array().unwrap().len(), 1);
 
         client.close(None).await.unwrap();
         assert!(server.await.unwrap().is_ok());

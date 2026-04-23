@@ -201,9 +201,6 @@ pub struct EventConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PalletConfig {
     pub name: String,
-    /// If true, use built-in Polkadot SDK indexing rules for this pallet.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub sdk: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<EventConfig>,
 }
@@ -267,12 +264,9 @@ pub struct IndexSpec {
 
 impl IndexSpec {
     /// Build a fast lookup: pallet_name → event_name → Vec<ParamConfig>.
-    pub fn build_custom_index(&self) -> Result<CustomIndex, String> {
+    pub fn build_event_index(&self) -> Result<CustomIndex, String> {
         let mut map: CustomIndex = HashMap::new();
         for pallet in &self.pallets {
-            if pallet.sdk {
-                continue;
-            }
             let event_map = map.entry(pallet.name.clone()).or_default();
             for event in &pallet.events {
                 let mut params = Vec::with_capacity(event.params.len());
@@ -299,17 +293,8 @@ impl IndexSpec {
                 );
             }
         }
-        let _ = self.build_custom_index()?;
+        let _ = self.build_event_index()?;
         Ok(())
-    }
-
-    /// Returns the set of pallet names that use built-in SDK indexing.
-    pub fn sdk_pallets(&self) -> std::collections::HashSet<String> {
-        self.pallets
-            .iter()
-            .filter(|p| p.sdk)
-            .map(|p| p.name.clone())
-            .collect()
     }
 
     pub fn genesis_hash_bytes(&self) -> Result<[u8; 32], hex::FromHexError> {
@@ -319,11 +304,6 @@ impl IndexSpec {
             .map_err(|_| hex::FromHexError::InvalidStringLength)
     }
 }
-
-pub const POLKADOT_TOML: &str = include_str!("../chains/polkadot.toml");
-pub const KUSAMA_TOML: &str = include_str!("../chains/kusama.toml");
-pub const WESTEND_TOML: &str = include_str!("../chains/westend.toml");
-pub const PASEO_TOML: &str = include_str!("../chains/paseo.toml");
 
 #[cfg(test)]
 mod tests {
@@ -367,7 +347,6 @@ mod tests {
             )]),
             pallets: vec![PalletConfig {
                 name: "Content".into(),
-                sdk: false,
                 events: vec![EventConfig {
                     name: "Published".into(),
                     params: vec![ParamConfig {
@@ -441,10 +420,9 @@ mod tests {
     }
 
     #[test]
-    fn serializing_non_sdk_pallet_omits_sdk_flag() {
+    fn serializing_pallet_omits_sdk_flag() {
         let pallet = PalletConfig {
             name: "Content".into(),
-            sdk: false,
             events: vec![],
         };
 

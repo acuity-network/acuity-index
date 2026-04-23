@@ -13,8 +13,6 @@ use subxt::{OnlineClient, PolkadotConfig};
 use tokio::time::sleep;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-pub const SYNTHETIC_TEMPLATE: &str = include_str!("../chains/synthetic.toml");
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryExpectation {
@@ -132,10 +130,51 @@ pub fn render_synthetic_index_spec(
     url: &str,
     genesis_hash: &str,
 ) -> Result<String, Box<dyn Error>> {
-    let mut value: toml::Value = toml::from_str(SYNTHETIC_TEMPLATE)?;
-    value["genesis_hash"] = toml::Value::String(genesis_hash.to_owned());
-    value["default_url"] = toml::Value::String(url.to_owned());
-    Ok(toml::to_string(&value)?)
+    Ok(format!(
+        concat!(
+            "name = \"synthetic-runtime\"\n",
+            "genesis_hash = \"{}\"\n",
+            "default_url = \"{}\"\n",
+            "store_events = true\n",
+            "spec_change_blocks = [0]\n\n",
+            "[custom_keys]\n",
+            "record_id = \"u32\"\n",
+            "topic = \"u32\"\n",
+            "digest = \"bytes32\"\n",
+            "batch_id = \"u32\"\n",
+            "seq = \"u32\"\n\n",
+            "[[pallets]]\n",
+            "name = \"Balances\"\n",
+            "events = [\n",
+            "  {{ name = \"Transfer\", params = [\n",
+            "    {{ field = \"from\", key = \"account_id\" }},\n",
+            "    {{ field = \"to\", key = \"account_id\" }},\n",
+            "  ] }},\n",
+            "]\n\n",
+            "[[pallets]]\n",
+            "name = \"Synthetic\"\n",
+            "events = [\n",
+            "  {{ name = \"RecordStored\", params = [\n",
+            "    {{ field = \"record_id\", key = \"record_id\" }},\n",
+            "    {{ field = \"owner\", key = \"account_id\" }},\n",
+            "    {{ field = \"digest\", key = \"digest\" }},\n",
+            "    {{ field = \"topics\", key = \"topic\", multi = true }},\n",
+            "  ] }},\n",
+            "  {{ name = \"LinksStored\", params = [\n",
+            "    {{ field = \"record_id\", key = \"record_id\" }},\n",
+            "    {{ field = \"related_ids\", key = \"record_id\", multi = true }},\n",
+            "    {{ field = \"related_digests\", key = \"digest\", multi = true }},\n",
+            "  ] }},\n",
+            "  {{ name = \"BurstEmitted\", params = [\n",
+            "    {{ field = \"batch_id\", key = \"batch_id\" }},\n",
+            "    {{ field = \"seq\", key = \"seq\" }},\n",
+            "    {{ field = \"owner\", key = \"account_id\" }},\n",
+            "    {{ field = \"digest\", key = \"digest\" }},\n",
+            "  ] }},\n",
+            "]\n"
+        ),
+        genesis_hash, url
+    ))
 }
 
 pub fn write_synthetic_index_spec(

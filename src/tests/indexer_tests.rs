@@ -77,7 +77,52 @@ mod indexer_tests {
     }
 
     fn test_config() -> IndexSpec {
-        toml::from_str(crate::config::POLKADOT_TOML).unwrap()
+        toml::from_str(
+            r#"
+name = "test-runtime"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+spec_change_blocks = [0]
+
+[custom_keys]
+para_id = "u32"
+id = "bytes32"
+
+[[pallets]]
+name = "System"
+events = [
+  { name = "NewAccount", params = [
+    { field = "account", key = "account_id" },
+  ]},
+]
+
+[[pallets]]
+name = "Claims"
+events = [
+  { name = "Claimed", params = [
+    { field = "who", key = "account_id" },
+  ]},
+]
+
+[[pallets]]
+name = "Paras"
+events = [
+  { name = "CurrentCodeUpdated", params = [
+    { field = "0", key = "id" },
+  ]},
+]
+
+[[pallets]]
+name = "Registrar"
+events = [
+  { name = "Registered", params = [
+    { field = "para_id", key = "para_id" },
+    { field = "manager", key = "account_id" },
+  ]},
+]
+"#,
+        )
+        .unwrap()
     }
 
     fn acuity_config() -> IndexSpec {

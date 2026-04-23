@@ -1,10 +1,11 @@
 #[cfg(test)]
 mod config_gen_tests {
     use crate::{
-        config::{ParamConfig, ScalarKind},
-        config_gen::infer_param,
+        config::{EventConfig, IndexSpec, PalletConfig, ParamConfig, ScalarKind},
+        config_gen::{infer_param, render_index_spec_toml},
         shared::{metadata_version, unsupported_metadata_error},
     };
+    use std::collections::HashMap;
     use scale_info::{MetaType, PortableRegistry, Registry, TypeDef, TypeInfo};
 
     #[allow(dead_code)]
@@ -164,32 +165,33 @@ mod config_gen_tests {
     }
 
     #[test]
-    fn stable2603_umbrella_pallets_are_classified_as_sdk() {
-        for pallet_name in [
-            "System",
-            "Scheduler",
-            "Preimage",
-            "Balances",
-            "Session",
-            "Grandpa",
-            "Paras",
-            "Registrar",
-            "Hrmp",
-            "Auctions",
-            "Crowdloan",
-            "ParaInclusion",
-            "ParasDisputes",
-            "Coretime",
-            "Timestamp",
-            "Utility",
-            "TransactionPayment",
-            "Sudo",
-        ] {
-            assert!(
-                crate::pallets::is_supported_sdk_pallet(pallet_name),
-                "missing sdk pallet {pallet_name}"
-            );
-        }
+    fn render_index_spec_toml_writes_explicit_pallet_events() {
+        let spec = IndexSpec {
+            name: "test".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            spec_change_blocks: vec![0],
+            index_variant: false,
+            store_events: false,
+            custom_keys: HashMap::new(),
+            pallets: vec![PalletConfig {
+                name: "System".into(),
+                events: vec![EventConfig {
+                    name: "NewAccount".into(),
+                    params: vec![ParamConfig {
+                        field: Some("account".into()),
+                        fields: vec![],
+                        key: "account_id".into(),
+                        multi: false,
+                    }],
+                }],
+            }],
+        };
+
+        let toml = render_index_spec_toml(&spec).unwrap();
+
+        assert!(toml.contains("[[pallets]]\nname = \"System\"\nevents = ["));
+        assert!(!toml.contains("sdk = true"));
     }
 
     #[test]

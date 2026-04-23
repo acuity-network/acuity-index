@@ -1,5 +1,5 @@
 use byte_unit::Byte;
-use clap::{ArgGroup, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use futures::StreamExt;
 use signal_hook::{consts::TERM_SIGNALS, flag};
@@ -30,11 +30,10 @@ mod config;
 mod config_gen;
 mod indexer;
 mod metrics;
-mod pallets;
 mod shared;
 mod websockets;
 
-use config::{IndexSpec, KUSAMA_TOML, OptionsConfig, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
+use config::{IndexSpec, OptionsConfig};
 use config_gen::write_generated_index_spec;
 use indexer::{process_sub_msg, run_indexer};
 use metrics::{Metrics, metrics_listen};
@@ -45,14 +44,6 @@ use websockets::websockets_listen;
 mod tests;
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-pub enum Chain {
-    Polkadot,
-    Kusama,
-    Westend,
-    Paseo,
-}
 
 #[derive(Clone, ValueEnum, Debug)]
 pub enum DbMode {
@@ -121,12 +112,8 @@ pub enum Command {
 }
 
 #[derive(Parser, Debug)]
-#[command(group(ArgGroup::new("chain_source").required(true).args(["chain", "index_config"])))]
 pub struct RunArgs {
-    /// Chain to index
-    #[arg(short, long, value_enum)]
-    pub chain: Option<Chain>,
-    /// Path to an index specification TOML file (overrides --chain)
+    /// Path to an index specification TOML file
     #[arg(long)]
     pub index_config: Option<String>,
     /// Path to an options TOML file
@@ -180,14 +167,10 @@ pub struct RunArgs {
 }
 
 #[derive(Parser, Debug)]
-#[command(group(ArgGroup::new("chain_source").required(true).args(["chain", "index_config"])))]
 pub struct PurgeIndexArgs {
-    /// Chain whose index should be deleted
-    #[arg(short, long, value_enum)]
-    pub chain: Option<Chain>,
-    /// Path to an index specification TOML file (overrides --chain)
+    /// Path to an index specification TOML file
     #[arg(long)]
-    pub index_config: Option<String>,
+    pub index_config: String,
     /// Database path
     #[arg(short, long)]
     pub db_path: Option<String>,
@@ -331,26 +314,15 @@ fn resolve_args(
     })
 }
 
-fn load_index_spec(chain: Option<Chain>, index_config_path: Option<&str>) -> IndexSpec {
-    let spec: IndexSpec = if let Some(path) = index_config_path {
-        let toml_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            error!("Cannot read index spec {path}: {e}");
-            exit(1);
-        });
-        toml::from_str(&toml_str).unwrap_or_else(|e| {
-            error!("Invalid index spec: {e}");
-            exit(1);
-        })
-    } else {
-        let toml_str = match chain {
-            Some(Chain::Polkadot) => POLKADOT_TOML,
-            Some(Chain::Kusama) => KUSAMA_TOML,
-            Some(Chain::Westend) => WESTEND_TOML,
-            Some(Chain::Paseo) => PASEO_TOML,
-            None => unreachable!("clap requires --chain or --index-config"),
-        };
-        toml::from_str(toml_str).expect("Built-in TOML is valid")
-    };
+fn load_index_spec(index_config_path: &str) -> IndexSpec {
+    let toml_str = std::fs::read_to_string(index_config_path).unwrap_or_else(|e| {
+        error!("Cannot read index spec {index_config_path}: {e}");
+        exit(1);
+    });
+    let spec: IndexSpec = toml::from_str(&toml_str).unwrap_or_else(|e| {
+        error!("Invalid index spec: {e}");
+        exit(1);
+    });
 
     spec.validate().unwrap_or_else(|e| {
         error!("Invalid index spec: {e}");
@@ -390,7 +362,7 @@ fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
 }
 
 fn purge_index(args: &PurgeIndexArgs) {
-    let spec = load_index_spec(args.chain, args.index_config.as_deref());
+    let spec = load_index_spec(&args.index_config);
     let db_path = resolve_db_path(&spec.name, args.db_path.as_deref());
 
     match std::fs::remove_dir_all(&db_path) {
@@ -497,7 +469,10 @@ async fn run() -> Result<(), shared::IndexError> {
     }
 
     let run_args = &args.run;
-    let spec = load_index_spec(run_args.chain, run_args.index_config.as_deref());
+    let spec = load_index_spec(run_args.index_config.as_deref().unwrap_or_else(|| {
+        error!("--index-config is required");
+        exit(1);
+    }));
     let options = run_args
         .options_config
         .as_deref()
@@ -749,6 +724,8 @@ async fn main() {
 mod main_tests {
     use super::*;
 
+    const TEST_INDEX_CONFIG: &str = "/tmp/test-index.toml";
+
     fn test_spec() -> IndexSpec {
         IndexSpec {
             name: "test".into(),
@@ -760,6 +737,10 @@ mod main_tests {
             custom_keys: Default::default(),
             pallets: vec![],
         }
+    }
+
+    fn test_run_args() -> RunArgs {
+        RunArgs::try_parse_from(["acuity-index", "--index-config", TEST_INDEX_CONFIG]).unwrap()
     }
 
     #[test]
@@ -783,12 +764,12 @@ mod main_tests {
     fn args_parse_defaults() {
         let args = Args::try_parse_from(normalize_args([
             "acuity-index".to_string(),
-            "--chain".to_string(),
-            "polkadot".to_string(),
+            "--index-config".to_string(),
+            TEST_INDEX_CONFIG.to_string(),
         ]))
         .unwrap();
         assert!(args.command.is_none());
-        assert!(matches!(args.run.chain, Some(Chain::Polkadot)));
+        assert_eq!(args.run.index_config.as_deref(), Some(TEST_INDEX_CONFIG));
         assert!(args.run.db_mode.is_none());
         assert!(args.run.db_cache_capacity.is_none());
         assert!(args.run.queue_depth.is_none());
@@ -799,7 +780,7 @@ mod main_tests {
 
     #[test]
     fn resolve_args_uses_defaults_when_no_config() {
-        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
+        let args = test_run_args();
         let spec = test_spec();
         let resolved = resolve_args(&args, &spec, None).unwrap();
         assert!(matches!(resolved.db_mode, DbMode::LowSpace));
@@ -842,7 +823,7 @@ mod main_tests {
 
     #[test]
     fn resolve_args_config_overrides_defaults() {
-        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
+        let args = test_run_args();
         let spec = test_spec();
         let opts = OptionsConfig {
             url: Some("ws://custom:9944".into()),
@@ -876,8 +857,8 @@ mod main_tests {
     fn resolve_args_cli_overrides_config() {
         let args = RunArgs::try_parse_from([
             "acuity-index",
-            "--chain",
-            "polkadot",
+            "--index-config",
+            TEST_INDEX_CONFIG,
             "--port",
             "1234",
             "--metrics-port",
@@ -917,7 +898,7 @@ mod main_tests {
 
     #[test]
     fn resolve_args_invalid_db_mode() {
-        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
+        let args = test_run_args();
         let spec = test_spec();
         let opts = OptionsConfig {
             db_mode: Some("invalid".into()),
@@ -928,7 +909,7 @@ mod main_tests {
 
     #[test]
     fn resolve_args_rejects_zero_websocket_limits() {
-        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
+        let args = test_run_args();
         let spec = test_spec();
 
         for (field, opts) in [
@@ -982,7 +963,7 @@ mod main_tests {
 
     #[test]
     fn resolve_args_allows_zero_idle_timeout_to_disable_it() {
-        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
+        let args = test_run_args();
         let spec = test_spec();
         let opts = OptionsConfig {
             idle_timeout_secs: Some(0),
@@ -996,7 +977,7 @@ mod main_tests {
 
     #[test]
     fn resolve_args_ignores_spec_indexing_flags() {
-        let args = RunArgs::try_parse_from(["acuity-index", "--chain", "polkadot"]).unwrap();
+        let args = test_run_args();
         let mut spec = test_spec();
         spec.index_variant = true;
         spec.store_events = true;
@@ -1044,10 +1025,20 @@ max_events_limit = 500
 
     #[test]
     fn args_reject_removed_indexing_flags() {
-        assert!(Args::try_parse_from(["acuity-index", "--chain", "polkadot", "--store-events"])
-            .is_err());
-        assert!(Args::try_parse_from(["acuity-index", "--chain", "polkadot", "--index-variant"])
-            .is_err());
+        assert!(Args::try_parse_from([
+            "acuity-index",
+            "--index-config",
+            TEST_INDEX_CONFIG,
+            "--store-events",
+        ])
+        .is_err());
+        assert!(Args::try_parse_from([
+            "acuity-index",
+            "--index-config",
+            TEST_INDEX_CONFIG,
+            "--index-variant",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -1081,13 +1072,18 @@ max_events_limit = 500
     }
 
     #[test]
-    fn args_parse_purge_index_chain() {
-        let args =
-            Args::try_parse_from(["acuity-index", "purge-index", "--chain", "kusama"]).unwrap();
+    fn args_parse_purge_index_index_config() {
+        let args = Args::try_parse_from([
+            "acuity-index",
+            "purge-index",
+            "--index-config",
+            TEST_INDEX_CONFIG,
+        ])
+        .unwrap();
 
         match args.command {
             Some(Command::PurgeIndex { args: purge_args }) => {
-                assert!(matches!(purge_args.chain, Some(Chain::Kusama)));
+                assert_eq!(purge_args.index_config, TEST_INDEX_CONFIG);
                 assert!(purge_args.db_path.is_none());
             }
             _ => panic!("expected purge-index command"),
@@ -1099,8 +1095,8 @@ max_events_limit = 500
         let args = Args::try_parse_from([
             "acuity-index",
             "purge-index",
-            "--chain",
-            "polkadot",
+            "--index-config",
+            TEST_INDEX_CONFIG,
             "--db-path",
             "/tmp/test-db",
         ])
@@ -1122,7 +1118,7 @@ max_events_limit = 500
             "--url",
             "wss://rpc.example.com:443",
             "-f",
-            "./chains/test.toml",
+            "/tmp/test.toml",
         ])
         .unwrap();
 
@@ -1130,7 +1126,7 @@ max_events_limit = 500
             Some(Command::GenerateIndexSpec { url, force, output }) => {
                 assert_eq!(url, "wss://rpc.example.com:443");
                 assert!(force);
-                assert_eq!(output, "./chains/test.toml");
+                assert_eq!(output, "/tmp/test.toml");
             }
             _ => panic!("expected generate-index-spec command"),
         }
@@ -1144,7 +1140,7 @@ max_events_limit = 500
             "--url",
             "wss://rpc.example.com:443",
             "--force",
-            "./chains/test.toml",
+            "/tmp/test.toml",
         ])
         .unwrap();
 

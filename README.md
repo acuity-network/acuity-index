@@ -14,24 +14,14 @@ service, see [SECURITY.md](./SECURITY.md).
 ## Features
 
 - **Config-driven** — indexing rules are defined in TOML files; no recompilation needed for new chains
-- **Built-in SDK pallets** — first-class support for common Polkadot SDK pallets (Balances, Staking, Referenda, NominationPools, etc.)
-- **Custom pallet rules** — map event fields to scalar or binary composite index keys via TOML
+- **Explicit pallet rules** — every indexed event mapping lives in TOML, including SDK pallets
 - **Resume-safe** — tracks indexed block spans and resumes after restart
 - **Safe shutdown** — persists progress and exits cleanly on termination signals or when the upstream node disconnects
 - **Backward indexing** — indexes from the chain tip backwards while simultaneously tracking new blocks
 - **WebSocket API** — query events by key, subscribe to live updates, and inspect chain metadata
 - **Concurrent block fetching** — configurable queue depth for parallel backfill and HEAD catch-up requests
 
-## Supported Chains
-
-| Chain     | Flag        |
-|-----------|-------------|
-| Polkadot  | `polkadot`  |
-| Kusama    | `kusama`    |
-| Westend   | `westend`   |
-| Paseo     | `paseo`     |
-
-Any Substrate chain can be supported by providing a custom index specification TOML with `--index-config`.
+Any Substrate chain can be supported by generating or writing an index specification TOML and passing it with `--index-config`.
 
 ## Requirements
 
@@ -59,13 +49,12 @@ acuity-index [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `-c, --chain <CHAIN>` | — | Chain to index (`polkadot`, `kusama`, `westend`, `paseo`) |
-| `--index-config <PATH>` | — | Path to an index specification TOML file (overrides `--chain`) |
+| `--index-config <PATH>` | — | Path to an index specification TOML file |
 | `--options-config <PATH>` | — | Path to a runtime options TOML file |
-| `-d, --db-path <PATH>` | `~/.local/share/acuity-index/<chain>/db` | Database directory |
+| `-d, --db-path <PATH>` | `~/.local/share/acuity-index/<spec-name>/db` | Database directory |
 | `--db-mode <MODE>` | `low-space` | `low-space` or `high-throughput` |
 | `--db-cache-capacity <SIZE>` | `1024.00 MiB` | Maximum sled page-cache size |
-| `-u, --url <URL>` | Chain default | WebSocket URL of the Substrate node |
+| `-u, --url <URL>` | index spec default | WebSocket URL of the Substrate node |
 | `--queue-depth <N>` | `1` | Concurrent block requests during backfill and HEAD catch-up |
 | `-f, --finalized` | `false` | Only index finalized blocks |
 | `-p, --port <PORT>` | `8172` | WebSocket API port |
@@ -80,44 +69,31 @@ Runtime option precedence: **CLI flags > `--options-config` file > built-in defa
 | Subcommand | Description |
 |---|---|
 | `generate-index-spec [--force|-f] --url <URL> <OUTPUT>` | Inspect live metadata and write a starter index specification TOML file |
-| `purge-index [OPTIONS]` | Delete the index database for a built-in chain or custom index spec |
+| `purge-index --index-config <PATH> [OPTIONS]` | Delete the index database for an index spec |
 
 ### Examples
-
-Index Polkadot with default settings:
-
-```bash
-acuity-index
-```
-
-Index Kusama with a deeper backfill queue:
-
-```bash
-acuity-index --chain kusama --queue-depth 8
-```
 
 Use a custom index specification:
 
 ```bash
-acuity-index --index-config ./chains/mychain.toml --url wss://mynode:443
+acuity-index --index-config ./mychain.toml --url wss://mynode:443
 ```
 
 Generate a starter index specification from a live node:
 
 ```bash
-acuity-index generate-index-spec --url wss://mynode:443 ./chains/mychain.toml
+acuity-index generate-index-spec --url wss://mynode:443 ./mychain.toml
 ```
 
 If the output file already exists, `generate-index-spec` fails unless `--force` or `-f` is supplied.
 
 ## Local Synthetic Devnet
 
-This repository now includes a minimal in-repo Polkadot SDK runtime under `runtime/` and a matching local index spec template in `chains/synthetic.toml`.
+This repository now includes a minimal in-repo Polkadot SDK runtime under `runtime/` and a matching synthetic index spec renderer in `src/synthetic_devnet.rs`.
 
 The synthetic runtime is intentionally small and deterministic:
 
 - one custom `Synthetic` pallet emits searchable `u32`, `bytes32`, `account_id`, and multi-value event fields
-- `Balances` and `TransactionPayment` remain present so built-in SDK event indexing is exercised too
 - `just synthetic-node` runs `polkadot-omni-node --instant-seal --pool-type single-state` for ad hoc local experimentation and smoke-style seeding
 - `just benchmark-indexing` starts its own disposable synthetic node with `--dev-block-time 100 --pool-type single-state` and does not use `--instant-seal`
 
@@ -199,8 +175,7 @@ Startup failures such as invalid cache-size configuration, genesis-hash mismatch
 
 ## Index Specification
 
-Each chain is described by an index specification TOML file. Built-in specs are embedded at
-compile time; custom specs can be passed via `--index-config`.
+Each chain is described by an index specification TOML file passed via `--index-config`.
 
 If a runtime includes multiple instances of the same Substrate pallet under
 different names, treat them as distinct pallets in the config. Each instance
@@ -220,17 +195,12 @@ index_variant = false
 store_events = false
 spec_change_blocks = [0]
 
-# Built-in SDK pallet — indexing rules handled internally
-[[pallets]]
-name = "Balances"
-sdk = true
-
 # Custom keys must be declared once at schema level
 [custom_keys]
 item_id = "bytes32"
 item_revision = { fields = ["bytes32", "u32"] }
 
-# Custom pallet — built-in and generic scalar mappings
+# Explicit pallet mappings
 [[pallets]]
 name = "MyPallet"
 

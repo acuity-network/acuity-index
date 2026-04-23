@@ -1,6 +1,5 @@
 use crate::{
     config::{CustomKeyConfig, EventConfig, IndexSpec, PalletConfig, ParamConfig, ScalarKind},
-    pallets::is_supported_sdk_pallet,
     shared::{IndexError, internal_error, metadata_version, unsupported_metadata_error},
 };
 use scale_info::{
@@ -312,21 +311,12 @@ pub(crate) fn build_index_spec(
         .pallets()
         .filter_map(|pallet| {
             let variants = pallet.event_variants()?;
-            if is_supported_sdk_pallet(pallet.name()) {
-                return Some(PalletConfig {
-                    name: pallet.name().to_owned(),
-                    sdk: true,
-                    events: vec![],
-                });
-            }
-
             let events = variants
                 .iter()
                 .map(|variant| event_config(variant, types, &mut custom_keys))
                 .collect();
             Some(PalletConfig {
                 name: pallet.name().to_owned(),
-                sdk: false,
                 events,
             })
         })
@@ -501,9 +491,6 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
         out.push_str("name = ");
         out.push_str(&inline_string(&pallet.name)?);
         out.push('\n');
-        if pallet.sdk {
-            out.push_str("sdk = true\n");
-        }
         if !pallet.events.is_empty() {
             out.push_str("events = ");
             out.push_str(&inline_events(&pallet.events)?);
@@ -836,7 +823,6 @@ mod tests {
             ]),
             pallets: vec![PalletConfig {
                 name: "Content".into(),
-                sdk: false,
                 events: vec![
                     EventConfig {
                         name: "PublishItem".into(),

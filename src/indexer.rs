@@ -25,10 +25,6 @@ use zerocopy::IntoBytes;
 
 use crate::{
     config::{IndexSpec, KeyTypeName, ParamKey, ResolvedParamConfig, ScalarKind},
-    pallets::{
-        extract_bool, extract_bytes32, extract_string, extract_u32, extract_u64, extract_u128,
-        get_field, index_sdk_pallet,
-    },
     shared::*,
     websockets::process_msg_status,
 };
@@ -47,8 +43,7 @@ pub struct Indexer {
 struct BlockProcessingContext {
     index_variant: bool,
     store_events: bool,
-    sdk_pallets: std::collections::HashSet<String>,
-    custom_index: HashMap<String, HashMap<String, Vec<ResolvedParamConfig>>>,
+    event_index: HashMap<String, HashMap<String, Vec<ResolvedParamConfig>>>,
 }
 
 struct FetchedBlock {
@@ -84,8 +79,7 @@ impl BlockProcessingContext {
         Self {
             index_variant: config.index_variant,
             store_events: config.store_events,
-            sdk_pallets: config.sdk_pallets(),
-            custom_index: config.build_custom_index().expect("validated index spec"),
+            event_index: config.build_event_index().expect("validated index spec"),
         }
     }
 
@@ -95,12 +89,7 @@ impl BlockProcessingContext {
         event_name: &str,
         fields: &Composite<()>,
     ) -> Vec<Key> {
-        if self.sdk_pallets.contains(pallet_name) {
-            if let Some(keys) = index_sdk_pallet(pallet_name, event_name, fields) {
-                return keys;
-            }
-        }
-        if let Some(event_map) = self.custom_index.get(pallet_name) {
+        if let Some(event_map) = self.event_index.get(pallet_name) {
             if let Some(params) = event_map.get(event_name) {
                 return self.keys_from_params(params, fields);
             }
@@ -161,6 +150,133 @@ impl BlockProcessingContext {
             keys,
             stored_event_json,
         })
+    }
+}
+
+fn extract_u32(v: &Value<()>) -> Option<u32> {
+    match &v.value {
+        ValueDef::Primitive(p) => {
+            use scale_value::Primitive;
+            match p {
+                Primitive::U128(n) => u32::try_from(*n).ok(),
+                Primitive::I128(n) => u32::try_from(*n).ok(),
+                _ => None,
+            }
+        }
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_u32(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_u32(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+fn extract_u64(v: &Value<()>) -> Option<u64> {
+    match &v.value {
+        ValueDef::Primitive(p) => {
+            use scale_value::Primitive;
+            match p {
+                Primitive::U128(n) => u64::try_from(*n).ok(),
+                Primitive::I128(n) => u64::try_from(*n).ok(),
+                _ => None,
+            }
+        }
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_u64(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_u64(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+fn extract_u128(v: &Value<()>) -> Option<u128> {
+    match &v.value {
+        ValueDef::Primitive(p) => {
+            use scale_value::Primitive;
+            match p {
+                Primitive::U128(n) => Some(*n),
+                Primitive::I128(n) => u128::try_from(*n).ok(),
+                _ => None,
+            }
+        }
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_u128(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_u128(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+fn extract_string(v: &Value<()>) -> Option<String> {
+    match &v.value {
+        ValueDef::Primitive(scale_value::Primitive::String(s)) => Some(s.clone()),
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_string(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_string(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+fn extract_bool(v: &Value<()>) -> Option<bool> {
+    match &v.value {
+        ValueDef::Primitive(scale_value::Primitive::Bool(value)) => Some(*value),
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_bool(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_bool(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+fn extract_bytes32(v: &Value<()>) -> Option<[u8; 32]> {
+    match &v.value {
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 32 => {
+            let mut out = [0u8; 32];
+            for (index, field) in fields.iter().enumerate() {
+                match &field.value {
+                    ValueDef::Primitive(scale_value::Primitive::U128(byte)) => {
+                        out[index] = u8::try_from(*byte).ok()?;
+                    }
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        ValueDef::Composite(Composite::Unnamed(fields)) if fields.len() == 1 => {
+            extract_bytes32(&fields[0])
+        }
+        ValueDef::Composite(Composite::Named(fields)) if fields.len() == 1 => {
+            extract_bytes32(&fields[0].1)
+        }
+        _ => None,
+    }
+}
+
+fn get_field<'a>(composite: &'a Composite<()>, field: &str) -> Option<&'a Value<()>> {
+    if let Ok(index) = field.parse::<usize>() {
+        return match composite {
+            Composite::Unnamed(fields) => fields.get(index),
+            Composite::Named(fields) => fields.get(index).map(|(_, value)| value),
+        };
+    }
+
+    match composite {
+        Composite::Named(fields) => fields
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, value)| value),
+        Composite::Unnamed(_) => None,
     }
 }
 
@@ -1476,7 +1592,52 @@ mod tests {
     }
 
     fn test_config() -> IndexSpec {
-        toml::from_str(crate::config::POLKADOT_TOML).unwrap()
+        toml::from_str(
+            r#"
+name = "test-runtime"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+spec_change_blocks = [0]
+
+[custom_keys]
+para_id = "u32"
+id = "bytes32"
+
+[[pallets]]
+name = "System"
+events = [
+  { name = "NewAccount", params = [
+    { field = "account", key = "account_id" },
+  ]},
+]
+
+[[pallets]]
+name = "Claims"
+events = [
+  { name = "Claimed", params = [
+    { field = "who", key = "account_id" },
+  ]},
+]
+
+[[pallets]]
+name = "Paras"
+events = [
+  { name = "CurrentCodeUpdated", params = [
+    { field = "0", key = "id" },
+  ]},
+]
+
+[[pallets]]
+name = "Registrar"
+events = [
+  { name = "Registered", params = [
+    { field = "para_id", key = "para_id" },
+    { field = "manager", key = "account_id" },
+  ]},
+]
+"#,
+        )
+        .unwrap()
     }
 
     fn test_runtime(max_total_subscriptions: usize) -> Arc<RuntimeState> {
@@ -1947,7 +2108,6 @@ mod tests {
             )]),
             pallets: vec![crate::config::PalletConfig {
                 name: "MyPallet".into(),
-                sdk: false,
                 events: vec![crate::config::EventConfig {
                     name: "Stored".into(),
                     params: vec![crate::config::ParamConfig {
@@ -2224,7 +2384,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_for_event_handles_unknown_sdk_pallet_and_param_failures() {
+    fn keys_for_event_handles_unknown_pallet_and_param_failures() {
         let config: IndexSpec = toml::from_str(
             r#"
 name = "test"
@@ -2232,12 +2392,8 @@ genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001
 default_url = "ws://127.0.0.1:9944"
 spec_change_blocks = [0]
 
-[custom_keys]
+        [custom_keys]
 count = "u32"
-
-        [[pallets]]
-        name = "UnknownSdk"
-        sdk = true
 
         [[pallets]]
         name = "Custom"
@@ -2255,7 +2411,7 @@ count = "u32"
 
         assert!(
             indexer
-                .keys_for_event("UnknownSdk", "Created", &fields)
+                .keys_for_event("UnknownPallet", "Created", &fields)
                 .is_empty()
         );
         assert!(

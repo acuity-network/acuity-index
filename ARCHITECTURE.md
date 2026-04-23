@@ -49,7 +49,7 @@ The stack has five layers:
 
 1. `runtime/` builds a small Polkadot SDK runtime WASM with standard system pallets plus a custom `Synthetic` pallet.
 2. `polkadot-omni-node` runs that WASM runtime locally from a generated chain spec.
-3. `chains/synthetic.toml` defines the matching index specification template for the synthetic pallet events and built-in SDK pallets.
+3. `src/synthetic_devnet.rs` renders the matching index specification for the synthetic pallet events.
 4. `src/bin/seed_synthetic_runtime.rs` writes deterministic on-chain data that should become queryable through the indexer.
 5. `acuity-index` indexes that chain normally, and tests/benchmarks validate the result through the public WebSocket API.
 
@@ -61,19 +61,18 @@ The in-repo runtime exists to make local validation deterministic and self-conta
 
 - It is built as a separate Cargo workspace under `runtime/`.
 - `runtime/pallets/synthetic` defines a small custom pallet that emits predictable events covering the key shapes the indexer needs to exercise locally: `u32`, `bytes32`, `account_id`, and repeated multi-value fields.
-- `chains/synthetic.toml` mirrors those event shapes as index rules so the indexer can query the seeded data through normal custom-key and built-in-key lookups.
+- `src/synthetic_devnet.rs` renders those event shapes as index rules so the indexer can query the seeded data through normal custom-key and built-in-key lookups.
 
-The runtime keeps a small pallet set on purpose. It includes enough standard SDK pallets to validate built-in indexing paths such as `Balances` and `TransactionPayment`, while the custom `Synthetic` pallet provides deterministic event-heavy workloads for integration tests and benchmarks.
+The runtime keeps a small pallet set on purpose. The custom `Synthetic` pallet provides deterministic event-heavy workloads for integration tests and benchmarks.
 
 ### Synthetic config generation
 
-The synthetic index spec checked into `chains/synthetic.toml` is a template, not a directly usable chain config.
+The synthetic index spec is generated at runtime rather than checked in as a static file.
 
-- The template contains a placeholder genesis hash and default local RPC URL.
-- `src/synthetic_devnet.rs` loads that template and rewrites `genesis_hash` plus `default_url` for the currently running local node.
+- `src/synthetic_devnet.rs` renders the current `genesis_hash` plus `default_url` for the currently running local node.
 - Tests and benchmark tooling write that rendered config into a temporary working directory before launching `acuity-index`.
 
-This keeps the checked-in config stable while still making the synthetic workflow safe for disposable local chains whose genesis hash is only known after the chain spec/runtime is materialized.
+This keeps the synthetic workflow safe for disposable local chains whose genesis hash is only known after the chain spec/runtime is materialized.
 
 ### Synthetic Node Modes
 
@@ -264,11 +263,7 @@ Operational detail:
 
 ### Key derivation
 
-`Indexer::keys_for_event(...)` uses this priority order:
-
-1. If the pallet is marked `sdk = true`, try built-in pallet logic from `src/pallets.rs`.
-2. Otherwise fall back to the resolved TOML config from `IndexSpec::build_custom_index()`.
-3. If neither path yields keys, the event is ignored unless variant indexing causes it to be stored/queryable by variant.
+`Indexer::keys_for_event(...)` resolves keys only from the explicit TOML config returned by `IndexSpec::build_event_index()`. If no event mapping exists, the event is ignored unless variant indexing causes it to be stored/queryable by variant.
 
 ### Historical state requirement
 
@@ -420,12 +415,7 @@ are loaded from a separate `OptionsConfig` TOML file via the
 uses OR logic: `cli_flag || options_flag.unwrap_or(false)`. `index_variant` and
 `store_events` come only from `IndexSpec`.
 
-Pallet configuration supports two modes:
-
-- `sdk = true`
-  Use built-in Rust logic in `src/pallets.rs`.
-- custom event mappings
-  Explicit `field -> key` mappings in TOML.
+Pallet configuration uses one mode: explicit event mappings in TOML.
 
 `ParamConfig::resolve(...)` turns TOML key names into runtime `ParamKey` values:
 
@@ -573,7 +563,6 @@ This is heuristic, not perfect. It tries to:
 - detect account-like fields
 - infer scalar key types
 - recognize collection fields that should use `multi = true`
-- mark known SDK pallets as `sdk = true`
 
 Agents should treat generated configs as a starting point that may need cleanup for chain-specific semantics.
 

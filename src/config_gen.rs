@@ -414,15 +414,26 @@ fn inline_events(events: &[EventConfig]) -> Result<String, IndexError> {
 
 pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexError> {
     let mut out = String::new();
+    out.push_str("# Machine-readable name for this chain config.\n");
     out.push_str("name = ");
     out.push_str(&inline_string(&spec.name)?);
     out.push('\n');
+    out.push_str("# Chain identity hash; change this only when targeting a different chain.\n");
     out.push_str("genesis_hash = ");
     out.push_str(&inline_string(&spec.genesis_hash)?);
     out.push('\n');
+    out.push_str("# Default node endpoint used with this index spec.\n");
     out.push_str("default_url = ");
     out.push_str(&inline_string(&spec.default_url)?);
     out.push('\n');
+    out.push_str(
+        "# Block heights where a new index spec revision starts; must begin with 0.\n",
+    );
+    out.push_str("# Example: [0, 1250000, 2485000]\n");
+    out.push_str(
+        "# Adding a new boundary in past history causes the indexer to keep earlier data\n",
+    );
+    out.push_str("# and re-index from the earliest affected boundary onward.\n");
     out.push_str("spec_change_blocks = [");
     for (index, block_number) in spec.spec_change_blocks.iter().enumerate() {
         if index > 0 {
@@ -431,14 +442,23 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
         out.push_str(&block_number.to_string());
     }
     out.push(']');
-    out.push_str("\nindex_variant = ");
+    out.push_str("\n# Whether to index event variant names for variant-based queries.\n");
+    out.push_str("index_variant = ");
     out.push_str(if spec.index_variant { "true" } else { "false" });
-    out.push_str("\nstore_events = ");
+    out.push_str("\n# Whether to store decoded events for later retrieval.\n");
+    out.push_str("store_events = ");
     out.push_str(if spec.store_events { "true" } else { "false" });
     out.push_str("\n\n");
 
+    out.push_str("# Declare custom query keys here when you want to index event fields with\n");
+    out.push_str("# non-built-in key names. Built-in keys like account_id do not belong here.\n");
+    out.push_str("# Scalar keys map one event field to one typed query key.\n");
+    out.push_str("# Composite keys combine multiple fields into one query key.\n");
+    out.push_str("# Supported scalar kinds: bytes32, u32, u64, u128, string, bool.\n");
+    out.push_str("# Example scalar key: item_id = \"bytes32\"\n");
+    out.push_str("# Example composite key: item_revision = { fields = [\"bytes32\", \"u32\"] }\n");
+    out.push_str("[custom_keys]\n");
     if !spec.custom_keys.is_empty() {
-        out.push_str("[custom_keys]\n");
         let mut custom_keys: Vec<_> = spec.custom_keys.iter().collect();
         custom_keys.sort_by(|(left, _), (right, _)| left.cmp(right));
         for (name, kind) in custom_keys {
@@ -461,8 +481,20 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
             }
             out.push('\n');
         }
-        out.push('\n');
     }
+    out.push('\n');
+
+    out.push_str("# Example custom pallet config showing built-in, scalar, multi, and composite keys.\n");
+    out.push_str("# [[pallets]]\n");
+    out.push_str("# name = \"MyPallet\"\n");
+    out.push_str("# events = [\n");
+    out.push_str("#   { name = \"MyEvent\", params = [\n");
+    out.push_str("#     { field = \"who\", key = \"account_id\" },\n");
+    out.push_str("#     { field = \"item_id\", key = \"item_id\" },\n");
+    out.push_str("#     { field = \"related_ids\", key = \"item_id\", multi = true },\n");
+    out.push_str("#     { fields = [\"item_id\", \"revision_id\"], key = \"item_revision\" },\n");
+    out.push_str("#   ] },\n");
+    out.push_str("# ]\n\n");
 
     for (index, pallet) in spec.pallets.iter().enumerate() {
         out.push_str("[[pallets]]\n");

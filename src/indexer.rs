@@ -11,8 +11,8 @@ use subxt::{
     OnlineClient, PolkadotConfig,
     client::Block,
     config::RpcConfigFor,
-    events::Events,
     error::{BackendError, OnlineClientAtBlockError, RpcError},
+    events::Events,
     rpcs::methods::legacy::LegacyRpcMethods,
 };
 use tokio::{
@@ -89,7 +89,12 @@ impl BlockProcessingContext {
         }
     }
 
-    fn keys_for_event(&self, pallet_name: &str, event_name: &str, fields: &Composite<()>) -> Vec<Key> {
+    fn keys_for_event(
+        &self,
+        pallet_name: &str,
+        event_name: &str,
+        fields: &Composite<()>,
+    ) -> Vec<Key> {
         if self.sdk_pallets.contains(pallet_name) {
             if let Some(keys) = index_sdk_pallet(pallet_name, event_name, fields) {
                 return keys;
@@ -245,17 +250,24 @@ impl Indexer {
         let fetch_started = Instant::now();
         let fetched = self.fetch_block_events(block_number).await?;
         let fetch_elapsed = fetch_started.elapsed();
+        self.runtime.metrics.observe_block_fetch(fetch_elapsed);
 
         let process_started = Instant::now();
         let processing_ctx = Arc::clone(&self.processing_ctx);
-        let processed = task::spawn_blocking(move || Self::process_block_cpu(processing_ctx, fetched))
-            .await
-            .map_err(|err| internal_error(format!("blocking event processor panicked: {err}")))??;
+        let processed =
+            task::spawn_blocking(move || Self::process_block_cpu(processing_ctx, fetched))
+                .await
+                .map_err(|err| {
+                    internal_error(format!("blocking event processor panicked: {err}"))
+                })??;
         let process_elapsed = process_started.elapsed();
+        self.runtime.metrics.observe_block_process(process_elapsed);
 
         let commit_started = Instant::now();
         let summary = self.commit_processed_block(processed)?;
         let commit_elapsed = commit_started.elapsed();
+        self.runtime.metrics.observe_block_commit(commit_elapsed);
+        self.runtime.metrics.add_indexed_block(summary.1, summary.2);
 
         debug!(
             "Block {block_number} stage timings: fetch={}ms cpu={}ms commit={}ms",
@@ -364,7 +376,10 @@ impl Indexer {
         })
     }
 
-    fn commit_processed_block(&self, processed: ProcessedBlock) -> Result<(u32, u32, u32), IndexError> {
+    fn commit_processed_block(
+        &self,
+        processed: ProcessedBlock,
+    ) -> Result<(u32, u32, u32), IndexError> {
         let ProcessedBlock {
             block_number,
             event_count,
@@ -418,7 +433,9 @@ impl Indexer {
             event_index,
             fields,
         )?;
-        self.trees.events.insert(db_key.as_bytes(), json_bytes.as_slice())?;
+        self.trees
+            .events
+            .insert(db_key.as_bytes(), json_bytes.as_slice())?;
         Ok(())
     }
 
@@ -445,7 +462,8 @@ impl Indexer {
         event_name: &str,
         fields: &Composite<()>,
     ) -> Vec<Key> {
-        self.processing_ctx.keys_for_event(pallet_name, event_name, fields)
+        self.processing_ctx
+            .keys_for_event(pallet_name, event_name, fields)
     }
 
     // ─── Event encoding ───────────────────────────────────────────────────────
@@ -472,13 +490,13 @@ impl Indexer {
 }
 
 fn encode_event_value(
-        pallet_name: &str,
-        event_name: &str,
-        pallet_index: u8,
-        variant_index: u8,
-        event_index: u32,
-        fields: &Composite<()>,
-    ) -> serde_json::Value {
+    pallet_name: &str,
+    event_name: &str,
+    pallet_index: u8,
+    variant_index: u8,
+    event_index: u32,
+    fields: &Composite<()>,
+) -> serde_json::Value {
     json!({
         "palletName": pallet_name,
         "eventName": event_name,
@@ -852,7 +870,20 @@ pub fn process_sub_msg(runtime: &RuntimeState, msg: SubscriptionMessage) -> Resu
             }
         }
     }
+    update_subscription_metrics(runtime);
     Ok(())
+}
+
+fn update_subscription_metrics(runtime: &RuntimeState) {
+    let status_subscriptions = lock_or_recover(&runtime.status_subs, "status_subs").len();
+    let event_subscriptions: usize = lock_or_recover(&runtime.events_subs, "events_subs")
+        .values()
+        .map(Vec::len)
+        .sum();
+    runtime
+        .metrics
+        .set_status_subscriptions(status_subscriptions);
+    runtime.metrics.set_event_subscriptions(event_subscriptions);
 }
 
 // ─── Span helpers ─────────────────────────────────────────────────────────────
@@ -1284,8 +1315,16 @@ pub async fn run_indexer(
         next_live_head_to_queue(&current_span).to_formatted_string(&Locale::en),
         spans.len().to_formatted_string(&Locale::en),
     );
+    indexer
+        .runtime
+        .metrics
+        .set_current_span(current_span.start, current_span.end);
 
     let mut latest_seen_head = current_span.end;
+    indexer
+        .runtime
+        .metrics
+        .set_latest_seen_head(latest_seen_head);
     let mut next_head_to_queue = next_live_head_to_queue(&current_span);
     let mut head_sub_future = Box::pin(Indexer::next_head_block_number(blocks_sub.next()));
     let mut head_futures = Vec::with_capacity(queue_depth as usize);
@@ -1350,6 +1389,7 @@ pub async fn run_indexer(
                         }
                         };
                         latest_seen_head = latest_seen_head.max(block_number);
+                        indexer.runtime.metrics.set_latest_seen_head(latest_seen_head);
                         queue_head_blocks(
                             &mut head_futures,
                             queue_depth,
@@ -1375,6 +1415,10 @@ pub async fn run_indexer(
                             save_current_span(&trees, &current_span, versions_len, index_variant, store_events)?;
                             return Err(err);
                         }
+                        indexer
+                            .runtime
+                            .metrics
+                            .set_current_span(current_span.start, current_span.end);
                         drop(head_futures.swap_remove(idx));
                         queue_head_blocks(
                             &mut head_futures,
@@ -1428,6 +1472,10 @@ pub async fn run_indexer(
                                         current_span.end.to_formatted_string(&Locale::en),
                                     );
                                 }
+                                indexer
+                                    .runtime
+                                    .metrics
+                                    .set_current_span(current_span.start, current_span.end);
                                 debug!(
                                     "📚 Backfill #{}: {} events, {} keys",
                                     block_number.to_formatted_string(&Locale::en),
@@ -2021,7 +2069,15 @@ mod tests {
         let ctx = BlockProcessingContext::new(&spec);
 
         let derived = ctx
-            .derive_event(55, "Unindexed", "OnlyVariant", 4, 1, 3, &Composite::Named(vec![]))
+            .derive_event(
+                55,
+                "Unindexed",
+                "OnlyVariant",
+                4,
+                1,
+                3,
+                &Composite::Named(vec![]),
+            )
             .unwrap();
 
         assert_eq!(derived.variant_key, Some(Key::Variant(4, 1)));

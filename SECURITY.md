@@ -106,15 +106,21 @@ Assessment:
 
 ### 4. Some operational metadata is still exposed
 
-`SizeOnDisk` returns on-disk database size to any client.
+`SizeOnDisk` returns on-disk database size to any client. If enabled, the separate
+OpenMetrics endpoint also exposes operational signals such as connection state,
+subscription counts, span progress, and database size.
 
 Impact:
 
 - This leaks storage growth and operational characteristics.
+- The metrics listener widens the set of operational metadata visible to anything
+  that can reach that port.
 
 Assessment:
 
 - Lower severity than unauthenticated data access, but worth reviewing if the service is public.
+- The dedicated metrics port should be treated as an internal observability surface,
+  not as part of the public WebSocket API.
 
 ### 5. Internal panic paths remain mostly limited to test-only code and explicit fatal startup assertions
 
@@ -172,5 +178,6 @@ For Internet exposure, deploy behind infrastructure that provides at least:
 - connection/IP rate limiting
 - firewalling or edge filtering
 - health checks and overload monitoring
+- internal-only exposure or equivalent protection for the metrics port when enabled
 
 Without those controls, the service is still materially more exposed to abuse even after the application-level hardening implemented here.

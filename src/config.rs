@@ -226,6 +226,8 @@ pub struct OptionsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_total_subscriptions: Option<usize>,

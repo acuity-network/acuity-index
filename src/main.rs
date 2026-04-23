@@ -18,6 +18,7 @@ use subxt::{
     rpcs::{RpcClient, methods::legacy::LegacyRpcMethods},
 };
 use tokio::{
+    net::TcpListener,
     select, spawn,
     sync::{mpsc, watch},
     time::sleep,
@@ -28,6 +29,7 @@ use tracing_log::AsTrace;
 mod config;
 mod config_gen;
 mod indexer;
+mod metrics;
 mod pallets;
 mod shared;
 mod websockets;
@@ -35,6 +37,7 @@ mod websockets;
 use config::{IndexSpec, KUSAMA_TOML, OptionsConfig, PASEO_TOML, POLKADOT_TOML, WESTEND_TOML};
 use config_gen::write_generated_index_spec;
 use indexer::{process_sub_msg, run_indexer};
+use metrics::{Metrics, metrics_listen};
 use shared::{RuntimeState, Trees, WsConfig};
 use websockets::websockets_listen;
 
@@ -153,6 +156,9 @@ pub struct RunArgs {
     /// WebSocket port [default: 8172]
     #[arg(short, long)]
     pub port: Option<u16>,
+    /// OpenMetrics HTTP port
+    #[arg(long)]
+    pub metrics_port: Option<u16>,
     /// Maximum concurrent WebSocket connections [default: 1024]
     #[arg(long)]
     pub max_connections: Option<usize>,
@@ -205,6 +211,7 @@ struct ResolvedArgs {
     index_variant: bool,
     store_events: bool,
     port: u16,
+    metrics_port: Option<u16>,
     ws_config: WsConfig,
 }
 
@@ -279,6 +286,7 @@ fn resolve_args(
         .port
         .or(opts.and_then(|o| o.port))
         .unwrap_or(DEFAULT_PORT);
+    let metrics_port = cli.metrics_port.or(opts.and_then(|o| o.metrics_port));
 
     let default_ws = WsConfig::default();
     let ws_config = WsConfig {
@@ -327,6 +335,7 @@ fn resolve_args(
         index_variant,
         store_events,
         port,
+        metrics_port,
         ws_config,
     })
 }
@@ -552,8 +561,10 @@ async fn run() -> Result<(), shared::IndexError> {
         flag::register(*sig, Arc::clone(&term_now))?;
     }
 
-    let runtime = Arc::new(RuntimeState::new(
+    let metrics = Arc::new(Metrics::new());
+    let runtime = Arc::new(RuntimeState::with_metrics(
         resolved.ws_config.max_total_subscriptions,
+        metrics.clone(),
     ));
     let (exit_tx, exit_rx) = watch::channel(false);
     let (sub_tx, mut sub_rx) =
@@ -576,6 +587,18 @@ async fn run() -> Result<(), shared::IndexError> {
         sub_tx,
         resolved.ws_config.clone(),
     ));
+    let mut metrics_task = match resolved.metrics_port {
+        Some(metrics_port) => {
+            let listener = TcpListener::bind(("0.0.0.0", metrics_port)).await?;
+            Some(spawn(metrics_listen(
+                listener,
+                trees.clone(),
+                metrics.clone(),
+                exit_rx.clone(),
+            )))
+        }
+        None => None,
+    };
 
     let mut backoff_secs = INITIAL_BACKOFF_SECS;
     let mut signals = Signals::new(TERM_SIGNALS)?;
@@ -583,8 +606,12 @@ async fn run() -> Result<(), shared::IndexError> {
     loop {
         if term_now.load(Ordering::Relaxed) {
             runtime.set_rpc(None);
+            metrics.set_rpc_connected(false);
             let _ = exit_tx.send(true);
             let _ = ws_task.await;
+            if let Some(metrics_task) = metrics_task.take() {
+                let _ = metrics_task.await;
+            }
             let _ = trees.flush();
             info!("Shutdown requested; exiting.");
             return Ok(());
@@ -596,11 +623,16 @@ async fn run() -> Result<(), shared::IndexError> {
             Ok(clients) => clients,
             Err(err) if err.is_recoverable() => {
                 runtime.set_rpc(None);
+                metrics.set_rpc_connected(false);
+                metrics.inc_reconnects();
                 error!("RPC connection failed: {err}; retrying in {backoff_secs}s");
                 select! {
                     _ = signals.next() => {
                         let _ = exit_tx.send(true);
                         let _ = ws_task.await;
+                        if let Some(metrics_task) = metrics_task.take() {
+                            let _ = metrics_task.await;
+                        }
                         let _ = trees.flush();
                         info!("Shutdown requested during reconnection backoff.");
                         return Ok(());
@@ -624,6 +656,7 @@ async fn run() -> Result<(), shared::IndexError> {
 
         backoff_secs = INITIAL_BACKOFF_SECS;
         runtime.set_rpc(Some(rpc.clone()));
+        metrics.set_rpc_connected(true);
 
         let indexer_handle = spawn(run_indexer(
             trees.clone(),
@@ -640,9 +673,13 @@ async fn run() -> Result<(), shared::IndexError> {
         let indexer_result = select! {
             _ = signals.next() => {
                 runtime.set_rpc(None);
+                metrics.set_rpc_connected(false);
                 let _ = exit_tx.send(true);
                 let _ = indexer_handle.await;
                 let _ = ws_task.await;
+                if let Some(metrics_task) = metrics_task.take() {
+                    let _ = metrics_task.await;
+                }
                 let _ = trees.flush();
                 info!("Shutdown complete.");
                 return Ok(());
@@ -655,18 +692,27 @@ async fn run() -> Result<(), shared::IndexError> {
         match indexer_result {
             Ok(Ok(())) => {
                 runtime.set_rpc(None);
+                metrics.set_rpc_connected(false);
                 let _ = exit_tx.send(true);
                 let _ = ws_task.await;
+                if let Some(metrics_task) = metrics_task.take() {
+                    let _ = metrics_task.await;
+                }
                 info!("Indexer stopped cleanly.");
                 return Ok(());
             }
             Ok(Err(err)) if err.is_recoverable() => {
                 runtime.set_rpc(None);
+                metrics.set_rpc_connected(false);
+                metrics.inc_reconnects();
                 warn!("Indexer error (recoverable): {err}; reconnecting in {backoff_secs}s");
                 select! {
                     _ = signals.next() => {
                         let _ = exit_tx.send(true);
                         let _ = ws_task.await;
+                        if let Some(metrics_task) = metrics_task.take() {
+                            let _ = metrics_task.await;
+                        }
                         let _ = trees.flush();
                         info!("Shutdown requested during reconnection backoff.");
                         return Ok(());
@@ -678,15 +724,23 @@ async fn run() -> Result<(), shared::IndexError> {
             }
             Ok(Err(err)) => {
                 runtime.set_rpc(None);
+                metrics.set_rpc_connected(false);
                 let _ = exit_tx.send(true);
                 let _ = ws_task.await;
+                if let Some(metrics_task) = metrics_task.take() {
+                    let _ = metrics_task.await;
+                }
                 error!("Indexer error (fatal): {err}");
                 return Err(err);
             }
             Err(join_err) => {
                 runtime.set_rpc(None);
+                metrics.set_rpc_connected(false);
                 let _ = exit_tx.send(true);
                 let _ = ws_task.await;
+                if let Some(metrics_task) = metrics_task.take() {
+                    let _ = metrics_task.await;
+                }
                 error!("Indexer task failed: {join_err}");
                 return Err(shared::internal_error(format!(
                     "indexer task panicked: {join_err}"
@@ -758,6 +812,7 @@ mod main_tests {
         assert!(!args.run.index_variant);
         assert!(!args.run.store_events);
         assert!(args.run.port.is_none());
+        assert!(args.run.metrics_port.is_none());
     }
 
     #[test]
@@ -772,6 +827,7 @@ mod main_tests {
         assert!(!resolved.index_variant);
         assert!(!resolved.store_events);
         assert_eq!(resolved.port, 8172);
+        assert_eq!(resolved.metrics_port, None);
 
         let default_ws = WsConfig::default();
         assert_eq!(
@@ -825,6 +881,7 @@ mod main_tests {
             queue_depth: Some(4),
             finalized: Some(true),
             port: Some(9999),
+            metrics_port: Some(9998),
             max_connections: None,
             max_total_subscriptions: None,
             max_subscriptions_per_connection: None,
@@ -841,6 +898,7 @@ mod main_tests {
         assert!(resolved.index_variant);
         assert!(resolved.store_events);
         assert_eq!(resolved.port, 9999);
+        assert_eq!(resolved.metrics_port, Some(9998));
         assert_eq!(resolved.url.as_deref(), Some("ws://custom:9944"));
         assert_eq!(resolved.db_path.as_deref(), Some("/data/db"));
     }
@@ -853,6 +911,8 @@ mod main_tests {
             "polkadot",
             "--port",
             "1234",
+            "--metrics-port",
+            "4321",
             "--queue-depth",
             "8",
             "--finalized",
@@ -870,6 +930,7 @@ mod main_tests {
             queue_depth: Some(2),
             finalized: Some(false),
             port: Some(9999),
+            metrics_port: Some(9998),
             max_connections: None,
             max_total_subscriptions: None,
             max_subscriptions_per_connection: None,
@@ -885,6 +946,7 @@ mod main_tests {
         assert!(!resolved.index_variant);
         assert!(resolved.store_events);
         assert_eq!(resolved.port, 1234);
+        assert_eq!(resolved.metrics_port, Some(4321));
     }
 
     #[test]
@@ -1019,6 +1081,7 @@ db_mode = "high_throughput"
 queue_depth = 4
 finalized = true
 port = 9999
+metrics_port = 9998
 max_connections = 2048
 max_total_subscriptions = 100000
 max_subscriptions_per_connection = 64
@@ -1035,6 +1098,7 @@ max_events_limit = 500
         assert_eq!(opts.queue_depth, Some(4));
         assert_eq!(opts.finalized, Some(true));
         assert_eq!(opts.port, Some(9999));
+        assert_eq!(opts.metrics_port, Some(9998));
         assert_eq!(opts.max_connections, Some(2048));
         assert_eq!(opts.max_total_subscriptions, Some(100000));
         assert_eq!(opts.max_subscriptions_per_connection, Some(64));

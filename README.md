@@ -71,6 +71,7 @@ acuity-index [OPTIONS]
 | `-i, --index-variant` | `false` | Also index events by pallet/variant index |
 | `-s, --store-events` | `false` | Store decoded events per `(block_number, event_index)` for retrieval |
 | `-p, --port <PORT>` | `8172` | WebSocket API port |
+| `--metrics-port <PORT>` | — | Optional HTTP `/metrics` port for OpenMetrics scraping |
 | `-v / -q` | — | Increase / decrease log verbosity |
 
 Runtime option precedence: **CLI flags > `--options-config` file > built-in defaults**.
@@ -253,7 +254,7 @@ key = "item_revision" # binary composite query key
 
 Runtime options can be loaded from a separate TOML file via `--options-config`.
 This is useful for deployment-specific settings (like a WebSocket URL, database path,
-or port) that vary across environments.
+or listener port) that vary across environments.
 `index_variant` and `store_events` live in the index spec, not in the runtime options file.
 
 All fields are optional — omit any field to keep its built-in default:
@@ -267,6 +268,7 @@ All fields are optional — omit any field to keep its built-in default:
 | `queue_depth` | integer | `1` |
 | `finalized` | boolean | `false` |
 | `port` | integer | `8172` |
+| `metrics_port` | integer | disabled |
 
 Merge precedence: **CLI flags > `--options-config` file > built-in defaults**.
 `finalized` is enabled if either the CLI flag or the options config field is `true`.

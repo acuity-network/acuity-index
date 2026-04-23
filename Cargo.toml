@@ -22,6 +22,7 @@ futures = "0.3"
 hex = "0.4"
 home = "0.5"
 num-format = "0.4"
+prometheus-client = "0.24"
 scale-info = "2.11"
 scale-value = "0.18"
 serde = { version = "1", features = ["derive"] }

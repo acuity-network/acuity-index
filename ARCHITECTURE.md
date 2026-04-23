@@ -13,7 +13,9 @@ This file is meant to help AI agents quickly find the right code and understand 
 ## Runtime Components
 
 - `src/main.rs`
-  Parses CLI args, loads index spec and options config, opens sled, verifies genesis hash, starts long-lived subscription/WebSocket tasks, and runs a reconnect loop that only recreates the RPC clients plus indexer task with exponential backoff on transient failures.
+  Parses CLI args, loads index spec and options config, opens sled, verifies genesis hash, starts long-lived subscription/WebSocket tasks plus the optional metrics listener, and runs a reconnect loop that only recreates the RPC clients plus indexer task with exponential backoff on transient failures.
+- `src/metrics.rs`
+  Owns the in-process `prometheus-client` registry, exposes the optional HTTP `/metrics` endpoint in OpenMetrics text format, and records process-level gauges, counters, and block-stage histograms.
 - `src/indexer.rs`
   Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, decoded event storage, and notification fanout into shared subscriber state. Saves the current span before returning on any error so the reconnect loop can resume without data loss.
 - `src/config.rs`
@@ -184,8 +186,9 @@ The normal startup path lives in `src/main.rs`:
 4. Resolve the database path and open sled.
 5. Verify or initialize the stored `genesis_hash` in the root database.
 6. Create shared runtime state plus long-lived tasks:
-   a. Spawn a bounded subscription dispatcher task that applies subscribe/unsubscribe messages to shared in-memory registries.
-   b. Spawn `websockets_listen(...)` once for the process lifetime.
+    a. Spawn a bounded subscription dispatcher task that applies subscribe/unsubscribe messages to shared in-memory registries.
+    b. Spawn `websockets_listen(...)` once for the process lifetime.
+    c. If `--metrics-port` is configured, bind a separate HTTP listener that serves `/metrics`.
 7. Enter the reconnect loop (see [RPC Reconnection](#rpc-reconnection) below). On each iteration:
    a. Connect to the target node with `subxt` (retry with exponential backoff on transient failures).
    b. Verify the connected chain genesis hash matches the config.

@@ -619,6 +619,23 @@ fn apply_subscription_response(
     }
 }
 
+struct ConnectionMetricGuard {
+    runtime: Arc<RuntimeState>,
+}
+
+impl ConnectionMetricGuard {
+    fn new(runtime: Arc<RuntimeState>) -> Self {
+        runtime.metrics.inc_ws_connections();
+        Self { runtime }
+    }
+}
+
+impl Drop for ConnectionMetricGuard {
+    fn drop(&mut self) {
+        self.runtime.metrics.dec_ws_connections();
+    }
+}
+
 // ─── Connection handler ───────────────────────────────────────────────────────
 
 async fn handle_connection(
@@ -634,6 +651,7 @@ async fn handle_connection(
     let ws_stream =
         tokio_tungstenite::accept_async_with_config(raw_stream, Some(websocket_config())).await?;
     info!("WebSocket established: {addr}");
+    let _connection_metrics = ConnectionMetricGuard::new(runtime.clone());
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
     let (sub_events_tx, mut sub_events_rx) =

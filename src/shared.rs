@@ -5,6 +5,7 @@ use sled::Tree;
 use std::{
     collections::HashMap,
     fmt,
+    sync::Arc,
     sync::{Mutex, MutexGuard},
 };
 use subxt::{PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods};
@@ -17,6 +18,8 @@ use zerocopy::{
     byteorder::{U16, U32},
 };
 use zerocopy_derive::*;
+
+use crate::metrics::Metrics;
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
@@ -764,15 +767,22 @@ pub struct RuntimeState {
     pub(crate) max_total_subscriptions: usize,
     pub(crate) status_subs: Mutex<Vec<mpsc::Sender<NotificationMessage>>>,
     pub(crate) events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<NotificationMessage>>>>,
+    pub(crate) metrics: Arc<Metrics>,
     rpc: Mutex<Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>>,
 }
 
 impl RuntimeState {
+    #[cfg(test)]
     pub fn new(max_total_subscriptions: usize) -> Self {
+        Self::with_metrics(max_total_subscriptions, Arc::new(Metrics::new()))
+    }
+
+    pub fn with_metrics(max_total_subscriptions: usize, metrics: Arc<Metrics>) -> Self {
         Self {
             max_total_subscriptions,
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
+            metrics,
             rpc: Mutex::new(None),
         }
     }

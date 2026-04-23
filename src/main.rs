@@ -117,8 +117,8 @@ pub enum Command {
 #[derive(Parser, Debug)]
 pub struct RunArgs {
     /// Path to an index specification TOML file
-    #[arg(long)]
-    pub index_config: Option<String>,
+    #[arg(long = "index-spec")]
+    pub index_spec: Option<String>,
     /// Path to an options TOML file
     #[arg(long)]
     pub options_config: Option<String>,
@@ -172,8 +172,8 @@ pub struct RunArgs {
 #[derive(Parser, Debug)]
 pub struct PurgeIndexArgs {
     /// Path to an index specification TOML file
-    #[arg(long)]
-    pub index_config: String,
+    #[arg(long = "index-spec")]
+    pub index_spec: String,
     /// Database path
     #[arg(short, long)]
     pub db_path: Option<String>,
@@ -341,9 +341,9 @@ fn hash_content(content: &str) -> u64 {
     hasher.finish()
 }
 
-fn load_index_spec_source(index_config_path: &str) -> Result<(String, u64), String> {
-    let toml_str = std::fs::read_to_string(index_config_path)
-        .map_err(|e| format!("Cannot read index spec {index_config_path}: {e}"))?;
+fn load_index_spec_source(index_spec_path: &str) -> Result<(String, u64), String> {
+    let toml_str = std::fs::read_to_string(index_spec_path)
+        .map_err(|e| format!("Cannot read index spec {index_spec_path}: {e}"))?;
     let source_hash = hash_content(&toml_str);
     Ok((toml_str, source_hash))
 }
@@ -356,14 +356,14 @@ fn parse_index_spec(toml_str: &str) -> Result<IndexSpec, String> {
     Ok(spec)
 }
 
-fn build_config_snapshot(index_config_path: &str) -> Result<ConfigSnapshot, String> {
-    let (toml_str, source_hash) = load_index_spec_source(index_config_path)?;
+fn build_config_snapshot(index_spec_path: &str) -> Result<ConfigSnapshot, String> {
+    let (toml_str, source_hash) = load_index_spec_source(index_spec_path)?;
     let spec = parse_index_spec(&toml_str)?;
     Ok(ConfigSnapshot { spec, source_hash })
 }
 
-fn load_index_spec(index_config_path: &str) -> IndexSpec {
-    build_config_snapshot(index_config_path)
+fn load_index_spec(index_spec_path: &str) -> IndexSpec {
+    build_config_snapshot(index_spec_path)
         .map(|snapshot| snapshot.spec)
         .unwrap_or_else(|e| {
             error!("{e}");
@@ -435,14 +435,14 @@ fn event_targets_path(event: &Event, target_path: &Path) -> bool {
 }
 
 async fn watch_index_spec(
-    index_config_path: PathBuf,
+    index_spec_path: PathBuf,
     initial_snapshot: ConfigSnapshot,
     url_override: Option<String>,
     snapshot_tx: watch::Sender<SpecUpdate>,
     ready_tx: Option<oneshot::Sender<()>>,
     mut exit_rx: watch::Receiver<bool>,
 ) -> Result<(), shared::IndexError> {
-    let watch_dir = index_config_path
+    let watch_dir = index_spec_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
@@ -475,7 +475,7 @@ async fn watch_index_spec(
                 };
 
                 let event = match result {
-                    Ok(event) if event_targets_path(&event, &index_config_path) => event,
+                    Ok(event) if event_targets_path(&event, &index_spec_path) => event,
                     Ok(_) => continue,
                     Err(err) => {
                         warn!("Index spec watcher error: {err}");
@@ -483,20 +483,20 @@ async fn watch_index_spec(
                     }
                 };
 
-                if !event_targets_path(&event, &index_config_path) {
+                if !event_targets_path(&event, &index_spec_path) {
                     continue;
                 }
 
                 sleep(Duration::from_millis(200)).await;
                 while let Ok(result) = event_rx.try_recv() {
                     match result {
-                        Ok(event) if event_targets_path(&event, &index_config_path) => {}
+                        Ok(event) if event_targets_path(&event, &index_spec_path) => {}
                         Ok(_) => {}
                         Err(err) => warn!("Index spec watcher error: {err}"),
                     }
                 }
 
-                let (toml_str, source_hash) = match load_index_spec_source(index_config_path.to_str().ok_or_else(|| {
+                let (toml_str, source_hash) = match load_index_spec_source(index_spec_path.to_str().ok_or_else(|| {
                     shared::internal_error("index spec path is not valid UTF-8")
                 })?) {
                     Ok(source) => source,
@@ -558,7 +558,7 @@ fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
 }
 
 fn purge_index(args: &PurgeIndexArgs) {
-    let spec = load_index_spec(&args.index_config);
+    let spec = load_index_spec(&args.index_spec);
     let db_path = resolve_db_path(&spec.name, args.db_path.as_deref());
 
     match std::fs::remove_dir_all(&db_path) {
@@ -665,11 +665,11 @@ async fn run() -> Result<(), shared::IndexError> {
     }
 
     let run_args = &args.run;
-    let index_config_path = run_args.index_config.as_deref().unwrap_or_else(|| {
-        error!("--index-config is required");
+    let index_spec_path = run_args.index_spec.as_deref().unwrap_or_else(|| {
+        error!("--index-spec is required");
         exit(1);
     });
-    let initial_snapshot = build_config_snapshot(index_config_path).unwrap_or_else(|e| {
+    let initial_snapshot = build_config_snapshot(index_spec_path).unwrap_or_else(|e| {
         error!("{e}");
         exit(1);
     });
@@ -759,7 +759,7 @@ async fn run() -> Result<(), shared::IndexError> {
         None => None,
     };
     let watcher_task = spawn(watch_index_spec(
-        PathBuf::from(index_config_path),
+        PathBuf::from(index_spec_path),
         initial_snapshot.clone(),
         resolved.url.clone(),
         spec_update_tx,
@@ -1166,7 +1166,7 @@ mod main_tests {
     }
 
     fn test_run_args() -> RunArgs {
-        RunArgs::try_parse_from(["acuity-index", "--index-config", TEST_INDEX_CONFIG]).unwrap()
+        RunArgs::try_parse_from(["acuity-index", "--index-spec", TEST_INDEX_CONFIG]).unwrap()
     }
 
     fn test_snapshot(spec: IndexSpec) -> ConfigSnapshot {
@@ -1201,12 +1201,12 @@ mod main_tests {
     fn args_parse_defaults() {
         let args = Args::try_parse_from(normalize_args([
             "acuity-index".to_string(),
-            "--index-config".to_string(),
+            "--index-spec".to_string(),
             TEST_INDEX_CONFIG.to_string(),
         ]))
         .unwrap();
         assert!(args.command.is_none());
-        assert_eq!(args.run.index_config.as_deref(), Some(TEST_INDEX_CONFIG));
+        assert_eq!(args.run.index_spec.as_deref(), Some(TEST_INDEX_CONFIG));
         assert!(args.run.db_mode.is_none());
         assert!(args.run.db_cache_capacity.is_none());
         assert!(args.run.queue_depth.is_none());
@@ -1294,7 +1294,7 @@ mod main_tests {
     fn resolve_args_cli_overrides_config() {
         let args = RunArgs::try_parse_from([
             "acuity-index",
-            "--index-config",
+            "--index-spec",
             TEST_INDEX_CONFIG,
             "--port",
             "1234",
@@ -1559,7 +1559,7 @@ max_events_limit = 500
         assert!(
             Args::try_parse_from([
                 "acuity-index",
-                "--index-config",
+                "--index-spec",
                 TEST_INDEX_CONFIG,
                 "--store-events",
             ])
@@ -1568,7 +1568,7 @@ max_events_limit = 500
         assert!(
             Args::try_parse_from([
                 "acuity-index",
-                "--index-config",
+                "--index-spec",
                 TEST_INDEX_CONFIG,
                 "--index-variant",
             ])
@@ -1607,18 +1607,18 @@ max_events_limit = 500
     }
 
     #[test]
-    fn args_parse_purge_index_index_config() {
+    fn args_parse_purge_index_index_spec() {
         let args = Args::try_parse_from([
             "acuity-index",
             "purge-index",
-            "--index-config",
+            "--index-spec",
             TEST_INDEX_CONFIG,
         ])
         .unwrap();
 
         match args.command {
             Some(Command::PurgeIndex { args: purge_args }) => {
-                assert_eq!(purge_args.index_config, TEST_INDEX_CONFIG);
+                assert_eq!(purge_args.index_spec, TEST_INDEX_CONFIG);
                 assert!(purge_args.db_path.is_none());
             }
             _ => panic!("expected purge-index command"),
@@ -1630,7 +1630,7 @@ max_events_limit = 500
         let args = Args::try_parse_from([
             "acuity-index",
             "purge-index",
-            "--index-config",
+            "--index-spec",
             TEST_INDEX_CONFIG,
             "--db-path",
             "/tmp/test-db",

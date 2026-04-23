@@ -121,7 +121,7 @@ async fn run_benchmark_once(
 
     let mut child = ChildGuard {
         child: Command::new(indexer_bin)
-            .arg("--index-config")
+            .arg("--index-spec")
             .arg(config_path)
             .arg("--url")
             .arg(node_url)

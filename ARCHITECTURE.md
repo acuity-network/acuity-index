@@ -178,7 +178,7 @@ These recipes are the supported developer entrypoints for the synthetic stack. T
 The normal startup path lives in `src/main.rs`:
 
 1. Parse CLI args.
-2. Load the required `--index-config` index specification.
+2. Load the required `--index-spec` index specification.
 3. Validate the spec and resolve runtime options (CLI > `--options-config` > defaults).
 4. Resolve the database path and open sled.
 5. Verify or initialize the stored `genesis_hash` in the root database.
@@ -186,7 +186,7 @@ The normal startup path lives in `src/main.rs`:
     a. Spawn a bounded subscription dispatcher task that applies subscribe/unsubscribe messages to shared in-memory registries.
     b. Spawn `websockets_listen(...)` once for the process lifetime.
     c. If `--metrics-port` is configured, bind a separate HTTP listener that serves `/metrics`.
-    d. Spawn an index-spec watcher task for `--index-config`.
+    d. Spawn an index-spec watcher task for `--index-spec`.
 7. Enter the reconnect/supervisor loop (see [RPC Reconnection And Spec Reload](#rpc-reconnection-and-spec-reload) below). On each iteration:
    a. Connect to the target node with `subxt` (retry with exponential backoff on transient failures).
    b. Verify the connected chain genesis hash matches the config.
@@ -383,7 +383,7 @@ On each iteration:
 ### Spec watcher behavior
 
 `watch_index_spec(...)` watches the parent directory of the configured
-`--index-config` path and filters filesystem events back down to the target file.
+`--index-spec` path and filters filesystem events back down to the target file.
 
 Its behavior is:
 

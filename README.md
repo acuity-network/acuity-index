@@ -16,13 +16,13 @@ service, see [SECURITY.md](./SECURITY.md).
 - **Config-driven** — indexing rules are defined in TOML files; no recompilation needed for new chains
 - **Explicit pallet rules** — every indexed event mapping lives in TOML, including SDK pallets
 - **Resume-safe** — tracks indexed block spans and resumes after restart
-- **Index-spec hot reload** — watches `--index-config` and restarts only the RPC/indexer loop on accepted spec changes
+- **Index-spec hot reload** — watches `--index-spec` and restarts only the RPC/indexer loop on accepted spec changes
 - **Safe shutdown** — persists progress and exits cleanly on termination signals or when the upstream node disconnects
 - **Backward indexing** — indexes from the chain tip backwards while simultaneously tracking new blocks
 - **WebSocket API** — query events by key, subscribe to live updates, and inspect chain metadata
 - **Concurrent block fetching** — configurable queue depth for parallel backfill and HEAD catch-up requests
 
-Any Substrate chain can be supported by generating or writing an index specification TOML and passing it with `--index-config`.
+Any Substrate chain can be supported by generating or writing an index specification TOML and passing it with `--index-spec`.
 
 ## Requirements
 
@@ -50,7 +50,7 @@ acuity-index [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--index-config <PATH>` | — | Path to an index specification TOML file |
+| `--index-spec <PATH>` | — | Path to an index specification TOML file |
 | `--options-config <PATH>` | — | Path to a runtime options TOML file |
 | `-d, --db-path <PATH>` | `~/.local/share/acuity-index/<spec-name>/db` | Database directory |
 | `--db-mode <MODE>` | `low-space` | `low-space` or `high-throughput` |
@@ -65,7 +65,7 @@ acuity-index [OPTIONS]
 Runtime option precedence: **CLI flags > `--options-config` file > built-in defaults**.
 `index_variant` and `store_events` are top-level index spec fields, not runtime options.
 
-When `--index-config` points to a file, `acuity-index` watches that file for changes.
+When `--index-spec` points to a file, `acuity-index` watches that file for changes.
 Accepted spec edits restart only the RPC/indexer loop; the WebSocket and metrics
 servers stay up. Changes to `name` or `genesis_hash` are rejected and the current
 spec keeps running.
@@ -75,14 +75,14 @@ spec keeps running.
 | Subcommand | Description |
 |---|---|
 | `generate-index-spec [--force|-f] --url <URL> <OUTPUT>` | Inspect live metadata and write a starter index specification TOML file |
-| `purge-index --index-config <PATH> [OPTIONS]` | Delete the index database for an index spec |
+| `purge-index --index-spec <PATH> [OPTIONS]` | Delete the index database for an index spec |
 
 ### Examples
 
 Use a custom index specification:
 
 ```bash
-acuity-index --index-config ./mychain.toml --url wss://mynode:443
+acuity-index --index-spec ./mychain.toml --url wss://mynode:443
 ```
 
 Generate a starter index specification from a live node:
@@ -186,7 +186,7 @@ Startup failures such as invalid cache-size configuration, genesis-hash mismatch
 
 ## Index Specification
 
-Each chain is described by an index specification TOML file passed via `--index-config`.
+Each chain is described by an index specification TOML file passed via `--index-spec`.
 
 If a runtime includes multiple instances of the same Substrate pallet under
 different names, treat them as distinct pallets in the config. Each instance

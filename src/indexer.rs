@@ -890,7 +890,7 @@ fn update_subscription_metrics(runtime: &RuntimeState) {
 
 pub fn load_spans(
     span_db: &Tree,
-    versions: &[u32],
+    spec_change_blocks: &[u32],
     index_variant: bool,
     store_events: bool,
 ) -> Result<Vec<Span>, IndexError> {
@@ -924,7 +924,7 @@ pub fn load_spans(
             continue;
         }
         let span_version: u16 = span_value.version.into();
-        for (version, block_number) in versions.iter().enumerate() {
+        for (version, block_number) in spec_change_blocks.iter().enumerate() {
             let version_u16: u16 = version
                 .try_into()
                 .map_err(|_| internal_error("version index exceeds u16"))?;
@@ -1020,13 +1020,13 @@ pub fn check_next_batch_block(spans: &[Span], next: &mut Option<u32>) {
 fn save_span(
     span_db: &Tree,
     span: &Span,
-    versions_len: usize,
+    spec_change_blocks_len: usize,
     index_variant: bool,
     store_events: bool,
 ) -> Result<(), IndexError> {
     let value = SpanDbValue {
         start: span.start.into(),
-        version: ((versions_len.saturating_sub(1)) as u16).into(),
+        version: ((spec_change_blocks_len.saturating_sub(1)) as u16).into(),
         index_variant: u8::from(index_variant),
         store_events: u8::from(store_events),
     };
@@ -1037,7 +1037,7 @@ fn save_span(
 fn save_current_span(
     trees: &Trees,
     current_span: &Span,
-    versions_len: usize,
+    spec_change_blocks_len: usize,
     index_variant: bool,
     store_events: bool,
 ) -> Result<(), IndexError> {
@@ -1050,7 +1050,7 @@ fn save_current_span(
         save_span(
             &trees.span,
             &persisted_span,
-            versions_len,
+            spec_change_blocks_len,
             index_variant,
             store_events,
         )?;
@@ -1071,7 +1071,7 @@ fn advance_span_end(
     trees: &Trees,
     current_span: &mut Span,
     next_block: u32,
-    versions_len: usize,
+    spec_change_blocks_len: usize,
     index_variant: bool,
     store_events: bool,
 ) -> Result<(), IndexError> {
@@ -1079,7 +1079,7 @@ fn advance_span_end(
     current_span.end = next_block;
     let value = SpanDbValue {
         start: current_span.start.into(),
-        version: ((versions_len.saturating_sub(1)) as u16).into(),
+        version: ((spec_change_blocks_len.saturating_sub(1)) as u16).into(),
         index_variant: u8::from(index_variant),
         store_events: u8::from(store_events),
     };
@@ -1167,7 +1167,7 @@ fn advance_backfill_start(
 fn process_queued_head_result(
     trees: &Trees,
     current_span: &mut Span,
-    versions_len: usize,
+    spec_change_blocks_len: usize,
     index_variant: bool,
     store_events: bool,
     indexer: &Indexer,
@@ -1186,7 +1186,7 @@ fn process_queued_head_result(
                     trees,
                     current_span,
                     next_block,
-                    versions_len,
+                    spec_change_blocks_len,
                     index_variant,
                     store_events,
                 )?;
@@ -1242,7 +1242,7 @@ pub async fn run_indexer(
         if store_events { "yes" } else { "no" }
     );
 
-    let versions_len = spec.versions.len();
+    let spec_change_blocks_len = spec.spec_change_blocks.len();
 
     let mut next_batch_block: Option<u32> = Some(if finalized {
         let finalized_hash = rpc.chain_get_finalized_head().await?;
@@ -1267,7 +1267,12 @@ pub async fn run_indexer(
         api.stream_best_blocks().await
     }?;
 
-    let mut spans = load_spans(&trees.span, &spec.versions, index_variant, store_events)?;
+    let mut spans = load_spans(
+        &trees.span,
+        &spec.spec_change_blocks,
+        index_variant,
+        store_events,
+    )?;
 
     let indexer = Indexer::new(trees.clone(), api, rpc, &spec, runtime);
 
@@ -1355,7 +1360,7 @@ pub async fn run_indexer(
                         save_current_span(
                             &trees,
                             &current_span,
-                            versions_len,
+                            spec_change_blocks_len,
                             index_variant,
                             store_events,
                         )?;
@@ -1370,7 +1375,7 @@ pub async fn run_indexer(
                             save_current_span(
                                 &trees,
                                 &current_span,
-                                versions_len,
+                                spec_change_blocks_len,
                                 index_variant,
                                 store_events,
                             )?;
@@ -1381,7 +1386,7 @@ pub async fn run_indexer(
                             save_current_span(
                                 &trees,
                                 &current_span,
-                                versions_len,
+                                spec_change_blocks_len,
                                 index_variant,
                                 store_events,
                             )?;
@@ -1405,14 +1410,20 @@ pub async fn run_indexer(
                         if let Err(err) = process_queued_head_result(
                             &trees,
                             &mut current_span,
-                            versions_len,
+                            spec_change_blocks_len,
                             index_variant,
                             store_events,
                             &indexer,
                             &mut head_orphans,
                             result,
                         ) {
-                            save_current_span(&trees, &current_span, versions_len, index_variant, store_events)?;
+                            save_current_span(
+                                &trees,
+                                &current_span,
+                                spec_change_blocks_len,
+                                index_variant,
+                                store_events,
+                            )?;
                             return Err(err);
                         }
                         indexer
@@ -1495,7 +1506,7 @@ pub async fn run_indexer(
                                 save_current_span(
                                     &trees,
                                     &current_span,
-                                    versions_len,
+                                    spec_change_blocks_len,
                                     index_variant,
                                     store_events,
                                 )?;
@@ -2003,7 +2014,7 @@ mod tests {
             name: "test".into(),
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
-            versions: vec![0],
+            spec_change_blocks: vec![0],
             index_variant: false,
             store_events: true,
             custom_keys: HashMap::from([(
@@ -2060,7 +2071,7 @@ mod tests {
             name: "test".into(),
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
-            versions: vec![0],
+            spec_change_blocks: vec![0],
             index_variant: true,
             store_events: true,
             custom_keys: HashMap::new(),
@@ -2297,7 +2308,7 @@ mod tests {
 name = "test"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 count = "u32"

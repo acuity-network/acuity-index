@@ -1,7 +1,7 @@
 name = "westend"
 genesis_hash = "e143f23803ac50e8f6f8e62695d1ce9e4e1d68aa36c1cd2cfd15340213f3423e"
 default_url = "wss://westend-rpc.polkadot.io:443"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 identity = "u128"

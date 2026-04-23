@@ -103,6 +103,19 @@ pub fn write_config_with_overrides(
     Ok(())
 }
 
+pub fn rewrite_config_table(
+    path: &Path,
+    mutator: impl FnOnce(&mut toml::map::Map<String, toml::Value>),
+) -> Result<(), Box<dyn Error>> {
+    let mut value: toml::Value = toml::from_str(&fs::read_to_string(path)?)?;
+    let table = value
+        .as_table_mut()
+        .ok_or_else(|| io::Error::other("synthetic config must be a TOML table"))?;
+    mutator(table);
+    fs::write(path, toml::to_string(&value)?)?;
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct IndexerOptions {
     pub queue_depth: u8,
@@ -368,6 +381,13 @@ impl SyntheticStack {
             &self.indexer_options,
         )?;
         wait_for_indexer(&self.indexer_url, Duration::from_secs(30)).await
+    }
+
+    pub fn rewrite_config(
+        &self,
+        mutator: impl FnOnce(&mut toml::map::Map<String, toml::Value>),
+    ) -> Result<(), Box<dyn Error>> {
+        rewrite_config_table(&self.config_path, mutator)
     }
 
     pub fn stop_node(&mut self) {

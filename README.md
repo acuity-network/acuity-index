@@ -218,7 +218,7 @@ genesis_hash = "abc123..."
 default_url = "wss://my-node:443"
 index_variant = false
 store_events = false
-versions = [0]
+spec_change_blocks = [0]
 
 # Built-in SDK pallet — indexing rules handled internally
 [[pallets]]
@@ -249,6 +249,11 @@ key = "item_id"     # custom query key name
 fields = ["item_id", "revision_id"]
 key = "item_revision" # binary composite query key
 ```
+
+`spec_change_blocks` lists the block heights where a new index-spec revision starts.
+It must start with `0` and be strictly increasing. When a new boundary is added in
+the past, existing indexed spans are kept through the block before that boundary,
+and the suffix starting at the earliest affected boundary is re-indexed.
 
 ### Runtime Options Config
 

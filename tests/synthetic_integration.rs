@@ -1,9 +1,9 @@
 mod common;
 
 use acuity_index::synthetic_devnet::{
-    QueryExpectation, events_len, fetch_genesis_hash, fetch_status, get_events, key_u32,
-    pick_unused_port, size_on_disk, spans_cover_tip, validate_query_expectation,
-    wait_for_indexed_tip, wait_for_node,
+    QueryExpectation, events_len, fetch_genesis_hash, fetch_status, get_events, key_bytes32,
+    key_u32, pick_unused_port, size_on_disk, spans_cover_tip, synthetic_digest,
+    validate_query_expectation, wait_for_indexed_tip, wait_for_node,
 };
 use serde_json::{Value, json};
 use std::{
@@ -177,6 +177,103 @@ fn different_genesis_hash(actual: &str) -> String {
 
 fn is_sorted_newest_first(events: &[(u64, u64)]) -> bool {
     events.windows(2).all(|window| window[0] >= window[1])
+}
+
+fn synthetic_pallet_mut(
+    table: &mut toml::map::Map<String, toml::Value>,
+) -> Result<&mut toml::map::Map<String, toml::Value>, Box<dyn Error>> {
+    let pallets = table
+        .get_mut("pallets")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or_else(|| io::Error::other("missing pallets array"))?;
+
+    pallets
+        .iter_mut()
+        .find_map(|pallet| {
+            let pallet_table = pallet.as_table_mut()?;
+            (pallet_table.get("name").and_then(toml::Value::as_str) == Some("Synthetic"))
+                .then_some(pallet_table)
+        })
+        .ok_or_else(|| io::Error::other("missing Synthetic pallet").into())
+}
+
+fn burst_emitted_params_mut(
+    table: &mut toml::map::Map<String, toml::Value>,
+) -> Result<&mut Vec<toml::Value>, Box<dyn Error>> {
+    let pallet = synthetic_pallet_mut(table)?;
+    let events = pallet
+        .get_mut("events")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or_else(|| io::Error::other("missing Synthetic events array"))?;
+
+    events
+        .iter_mut()
+        .find_map(|event| {
+            let event_table = event.as_table_mut()?;
+            if event_table.get("name").and_then(toml::Value::as_str) != Some("BurstEmitted") {
+                return None;
+            }
+            event_table
+                .get_mut("params")
+                .and_then(toml::Value::as_array_mut)
+        })
+        .ok_or_else(|| io::Error::other("missing BurstEmitted params").into())
+}
+
+fn set_burst_emitted_digest_index(
+    table: &mut toml::map::Map<String, toml::Value>,
+    enabled: bool,
+) -> Result<(), Box<dyn Error>> {
+    let params = burst_emitted_params_mut(table)?;
+    params.retain(|param| {
+        let Some(param_table) = param.as_table() else {
+            return true;
+        };
+        !(param_table.get("field").and_then(toml::Value::as_str) == Some("digest")
+            && param_table.get("key").and_then(toml::Value::as_str) == Some("digest"))
+    });
+
+    if enabled {
+        let mut digest_param = toml::map::Map::new();
+        digest_param.insert("field".into(), toml::Value::String("digest".into()));
+        digest_param.insert("key".into(), toml::Value::String("digest".into()));
+        params.push(toml::Value::Table(digest_param));
+    }
+
+    Ok(())
+}
+
+fn set_spec_change_blocks(table: &mut toml::map::Map<String, toml::Value>, blocks: &[u32]) {
+    table.insert(
+        "spec_change_blocks".into(),
+        toml::Value::Array(
+            blocks
+                .iter()
+                .map(|block| toml::Value::Integer(i64::from(*block)))
+                .collect(),
+        ),
+    );
+}
+
+fn rewrite_burst_digest_config(
+    stack: &SyntheticStack,
+    enabled: bool,
+    spec_change_blocks: &[u32],
+) -> Result<(), Box<dyn Error>> {
+    let mut mutation_error = None;
+    stack.rewrite_config(|table| {
+        if let Err(err) = set_burst_emitted_digest_index(table, enabled) {
+            mutation_error = Some(err.to_string());
+            return;
+        }
+        set_spec_change_blocks(table, spec_change_blocks);
+    })?;
+
+    if let Some(err) = mutation_error {
+        return Err(io::Error::other(err).into());
+    }
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -435,6 +532,91 @@ async fn variant_queries_and_store_events_flag_follow_config() -> Result<(), Box
             .as_array()
             .is_some_and(|events| events.is_empty())
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires polkadot-omni-node and a release runtime build"]
+async fn past_spec_change_blocks_reindexes_historical_suffix() -> Result<(), Box<dyn Error>> {
+    let mut stack =
+        SyntheticStack::start(ConfigOverrides::default(), IndexerOptions::default()).await?;
+    let temp = tempfile::tempdir()?;
+    let manifest_path = temp.path().join("spec-change-blocks-past.json");
+    let batch_id = 9300;
+    let digest = synthetic_digest(batch_id, 0);
+
+    rewrite_burst_digest_config(&stack, false, &[0])?;
+    stack.restart_indexer().await?;
+
+    let manifest = run_bulk_seeder(&stack.node_url, &manifest_path, batch_id, 1, 3)?;
+    wait_for_indexed_tip(
+        &stack.indexer_url,
+        manifest.end_block,
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let baseline_batch = get_events(&stack.indexer_url, key_u32("batch_id", batch_id), 10).await?;
+    assert_eq!(events_len(&baseline_batch), 3);
+    let seeded_block = response_events(&baseline_batch)?
+        .into_iter()
+        .map(|(block_number, _)| block_number)
+        .min()
+        .ok_or_else(|| io::Error::other("missing seeded BurstEmitted events"))?;
+
+    let baseline_digest = get_events(&stack.indexer_url, key_bytes32("digest", digest), 10).await?;
+    assert_eq!(events_len(&baseline_digest), 0);
+
+    rewrite_burst_digest_config(&stack, true, &[0, u32::try_from(seeded_block)?])?;
+    stack.restart_indexer().await?;
+    let reindexed_digest = wait_for_query_expectation(
+        &stack.indexer_url,
+        &QueryExpectation {
+            description: "historical digest query becomes available after reindex".into(),
+            key: key_bytes32("digest", digest),
+            min_events: 1,
+            expected_event_names: vec!["BurstEmitted".into()],
+        },
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    assert_eq!(events_len(&reindexed_digest), 1);
+    assert_eq!(response_events(&reindexed_digest)?[0].0, seeded_block);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires polkadot-omni-node and a release runtime build"]
+async fn future_spec_change_blocks_do_not_reindex_past_data() -> Result<(), Box<dyn Error>> {
+    let mut stack =
+        SyntheticStack::start(ConfigOverrides::default(), IndexerOptions::default()).await?;
+    let temp = tempfile::tempdir()?;
+    let manifest_path = temp.path().join("spec-change-blocks-future.json");
+    let batch_id = 9400;
+    let digest = synthetic_digest(batch_id, 0);
+
+    rewrite_burst_digest_config(&stack, false, &[0])?;
+    stack.restart_indexer().await?;
+
+    let manifest = run_bulk_seeder(&stack.node_url, &manifest_path, batch_id, 1, 3)?;
+    wait_for_indexed_tip(
+        &stack.indexer_url,
+        manifest.end_block,
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let baseline_digest = get_events(&stack.indexer_url, key_bytes32("digest", digest), 10).await?;
+    assert_eq!(events_len(&baseline_digest), 0);
+
+    rewrite_burst_digest_config(&stack, true, &[0, manifest.end_block.saturating_add(10)])?;
+    stack.restart_indexer().await?;
+
+    let still_missing = get_events(&stack.indexer_url, key_bytes32("digest", digest), 10).await?;
+    assert_eq!(events_len(&still_missing), 0);
 
     Ok(())
 }

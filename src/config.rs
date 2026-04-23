@@ -249,7 +249,12 @@ pub struct IndexSpec {
     pub name: String,
     pub genesis_hash: String,
     pub default_url: String,
-    pub versions: Vec<u32>,
+    /// Block heights where a new index-spec revision starts.
+    ///
+    /// The first entry must be `0`, and each later entry must be strictly
+    /// greater than the previous one. A new block number added in the past
+    /// causes spans at or after that boundary to be re-indexed.
+    pub spec_change_blocks: Vec<u32>,
     #[serde(default)]
     pub index_variant: bool,
     #[serde(default)]
@@ -281,6 +286,19 @@ impl IndexSpec {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.spec_change_blocks.is_empty() {
+            return Err("spec_change_blocks must not be empty".to_owned());
+        }
+        if self.spec_change_blocks[0] != 0 {
+            return Err("spec_change_blocks must start at block 0".to_owned());
+        }
+        for window in self.spec_change_blocks.windows(2) {
+            if window[0] >= window[1] {
+                return Err(
+                    "spec_change_blocks must be strictly increasing with no duplicates".to_owned(),
+                );
+            }
+        }
         let _ = self.build_custom_index()?;
         Ok(())
     }
@@ -340,7 +358,7 @@ mod tests {
             name: "test".into(),
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
-            versions: vec![0],
+            spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
             custom_keys: HashMap::from([(
@@ -363,6 +381,63 @@ mod tests {
         };
 
         assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_spec_change_blocks() {
+        let spec = IndexSpec {
+            name: "test".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            spec_change_blocks: vec![],
+            index_variant: false,
+            store_events: false,
+            custom_keys: HashMap::new(),
+            pallets: vec![],
+        };
+
+        assert_eq!(
+            spec.validate().unwrap_err(),
+            "spec_change_blocks must not be empty"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_spec_change_blocks_not_starting_at_zero() {
+        let spec = IndexSpec {
+            name: "test".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            spec_change_blocks: vec![10],
+            index_variant: false,
+            store_events: false,
+            custom_keys: HashMap::new(),
+            pallets: vec![],
+        };
+
+        assert_eq!(
+            spec.validate().unwrap_err(),
+            "spec_change_blocks must start at block 0"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_unsorted_spec_change_blocks() {
+        let spec = IndexSpec {
+            name: "test".into(),
+            genesis_hash: "00".repeat(32),
+            default_url: "ws://127.0.0.1:9944".into(),
+            spec_change_blocks: vec![0, 10, 10],
+            index_variant: false,
+            store_events: false,
+            custom_keys: HashMap::new(),
+            pallets: vec![],
+        };
+
+        assert_eq!(
+            spec.validate().unwrap_err(),
+            "spec_change_blocks must be strictly increasing with no duplicates"
+        );
     }
 
     #[test]

@@ -70,7 +70,7 @@ mod config_tests {
             name: "bad".into(),
             genesis_hash: "zzzz".into(),
             default_url: "wss://x".into(),
-            versions: vec![0],
+            spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
             custom_keys: Default::default(),
@@ -85,7 +85,7 @@ mod config_tests {
             name: "bad".into(),
             genesis_hash: "aabb".into(),
             default_url: "wss://x".into(),
-            versions: vec![0],
+            spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
             custom_keys: Default::default(),
@@ -174,7 +174,7 @@ mod config_tests {
 name = "test"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 amount = "u128"
@@ -238,7 +238,7 @@ events = [
 name = "test"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "wss://test:443"
-versions = [0]
+spec_change_blocks = [0]
 
         [[pallets]]
         name = "Foo"
@@ -269,7 +269,7 @@ versions = [0]
 name = "acuity"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 item_id = "bytes32"
@@ -327,7 +327,7 @@ revision_id = "u32"
 name = "acuity"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 item_id = "bytes32"
@@ -373,7 +373,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 name = "acuity"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 item_revision = { fields = ["bytes32", "u32"] }
@@ -396,7 +396,7 @@ item_revision = { fields = ["bytes32", "u32"] }
 name = "acuity"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 item_id = "bytes32"
@@ -419,7 +419,7 @@ item_id = "bytes32"
 name = "acuity"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 
         [[pallets]]
         name = "Content"
@@ -510,7 +510,7 @@ versions = [0]
 name = "test"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 index_variant = true
 store_events = true
 "#;
@@ -525,11 +525,23 @@ store_events = true
 name = "test"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 "#;
         let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
         assert!(!cfg.index_variant);
         assert!(!cfg.store_events);
+    }
+
+    #[test]
+    fn index_spec_parses_spec_change_blocks() {
+        let toml_str = r#"
+name = "test"
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
+default_url = "ws://127.0.0.1:9944"
+spec_change_blocks = [0, 100, 250]
+"#;
+        let cfg: IndexSpec = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.spec_change_blocks, vec![0, 100, 250]);
     }
 
     #[test]

@@ -342,7 +342,7 @@ Each stored span means: blocks `start..=end` have been indexed with a specific i
 
 Span values also persist:
 
-- config version boundary info derived from `IndexSpec.versions`
+- config version boundary info derived from `IndexSpec.spec_change_blocks`
 - whether `index_variant` was enabled
 - whether `store_events` was enabled
 
@@ -350,7 +350,7 @@ When loading spans, the indexer may discard or trim them if they are stale relat
 
 - If variant indexing is now enabled but was previously disabled, affected spans are removed for reindexing.
 - If decoded event storage is now enabled but was previously disabled, affected spans are removed for reindexing.
-- If `spec.versions` indicates the index spec changed starting at some block, affected spans are removed or split so that only the stale portion is reindexed.
+- If `spec.spec_change_blocks` indicates the index spec changed starting at some block, affected spans are removed or split so that only the stale portion is reindexed.
 
 Important invariants:
 
@@ -407,7 +407,7 @@ Top-level fields:
 - `default_url`
 - `index_variant`
 - `store_events`
-- `versions`
+- `spec_change_blocks`
 - `custom_keys`
 - `pallets`
 

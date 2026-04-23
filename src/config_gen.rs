@@ -336,7 +336,7 @@ pub(crate) fn build_index_spec(
         name: name.to_owned(),
         genesis_hash: genesis_hash.to_owned(),
         default_url: default_url.to_owned(),
-        versions: vec![0],
+        spec_change_blocks: vec![0],
         index_variant: false,
         store_events: false,
         custom_keys,
@@ -423,12 +423,12 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
     out.push_str("default_url = ");
     out.push_str(&inline_string(&spec.default_url)?);
     out.push('\n');
-    out.push_str("versions = [");
-    for (index, version) in spec.versions.iter().enumerate() {
+    out.push_str("spec_change_blocks = [");
+    for (index, block_number) in spec.spec_change_blocks.iter().enumerate() {
         if index > 0 {
             out.push_str(", ");
         }
-        out.push_str(&version.to_string());
+        out.push_str(&block_number.to_string());
     }
     out.push(']');
     if spec.index_variant {
@@ -754,7 +754,7 @@ mod tests {
             name: "acuity-runtime".into(),
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
-            versions: vec![0],
+            spec_change_blocks: vec![0],
             index_variant: false,
             store_events: false,
             custom_keys: HashMap::from([
@@ -829,6 +829,7 @@ mod tests {
 
         let toml = render_index_spec_toml(&spec).unwrap();
 
+        assert!(toml.contains("spec_change_blocks = [0]"));
         assert!(toml.contains("item_id = \"bytes32\""));
         assert!(toml.contains("item_revision = { fields = [\"bytes32\", \"u32\"] }"));
         assert!(toml.contains("revision_id = \"u32\""));

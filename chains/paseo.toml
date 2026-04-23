@@ -1,7 +1,7 @@
 name = "paseo"
 genesis_hash = "77afd6190f1554ad45fd0d31aee62aacc33c6db0ea801129acb813f913e0764f"
 default_url = "wss://paseo.ibp.network:443"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 amount = "u128"

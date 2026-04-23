@@ -1,7 +1,7 @@
 name = "kusama"
 genesis_hash = "b0a8d493285c2df73290dfb7e61f870f17b41801197a149ca93654499ea3dafe"
 default_url = "wss://kusama-rpc.polkadot.io:443"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 amount = "u128"

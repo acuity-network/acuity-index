@@ -86,7 +86,7 @@ mod indexer_tests {
 name = "acuity-runtime"
 genesis_hash = "0000000000000000000000000000000000000000000000000000000000000001"
 default_url = "ws://127.0.0.1:9944"
-versions = [0]
+spec_change_blocks = [0]
 
 [custom_keys]
 item_id = "bytes32"

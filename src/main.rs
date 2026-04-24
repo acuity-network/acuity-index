@@ -9,7 +9,7 @@ use std::{
     collections::{HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     io::ErrorKind,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::exit,
     sync::Arc,
     sync::atomic::{AtomicBool, Ordering},
@@ -124,7 +124,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub options_config: Option<String>,
     /// Database path
-    #[arg(short, long)]
+    #[arg(short, long, value_parser = parse_db_path_arg)]
     pub db_path: Option<String>,
     /// Database mode [default: low-space]
     #[arg(long, value_enum)]
@@ -175,7 +175,7 @@ pub struct PurgeIndexArgs {
     /// Path to an index specification TOML file
     pub index_spec: String,
     /// Database path
-    #[arg(short, long)]
+    #[arg(short, long, value_parser = parse_db_path_arg)]
     pub db_path: Option<String>,
 }
 
@@ -709,27 +709,69 @@ async fn watch_runtime_config(
     }
 }
 
-fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> PathBuf {
+fn validate_chain_name(chain_name: &str) -> Result<(), shared::IndexError> {
+    match Path::new(chain_name).components().next() {
+        Some(Component::Normal(component))
+            if Path::new(component) == Path::new(chain_name)
+                && !component.is_empty() =>
+        {
+            Ok(())
+        }
+        _ => Err(shared::internal_error(format!(
+            "invalid chain name '{chain_name}': path separators and traversal are not allowed"
+        ))),
+    }
+}
+
+fn validate_db_path(path: &str) -> Result<(), shared::IndexError> {
+    if Path::new(path)
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(shared::internal_error(format!(
+            "invalid database path '{path}': parent directory traversal is not allowed"
+        )));
+    }
+
+    Ok(())
+}
+
+fn parse_db_path_arg(path: &str) -> Result<String, String> {
+    validate_db_path(path).map_err(|err| err.to_string())?;
+    Ok(path.to_owned())
+}
+
+fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> Result<PathBuf, shared::IndexError> {
     match db_path {
-        Some(path) => PathBuf::from(path),
-        None => match home::home_dir() {
-            Some(mut p) => {
-                p.push(".local/share/acuity-index");
-                p.push(chain_name);
-                p.push("db");
-                p
+        Some(path) => {
+            validate_db_path(path)?;
+            Ok(PathBuf::from(path))
+        }
+        None => {
+            validate_chain_name(chain_name)?;
+
+            match home::home_dir() {
+                Some(mut p) => {
+                    p.push(".local/share/acuity-index");
+                    p.push(chain_name);
+                    p.push("db");
+                    Ok(p)
+                }
+                None => {
+                    error!("No home directory.");
+                    exit(1);
+                }
             }
-            None => {
-                error!("No home directory.");
-                exit(1);
-            }
-        },
+        }
     }
 }
 
 fn purge_index(args: &PurgeIndexArgs) -> ! {
     let spec = load_index_spec(&args.index_spec);
-    let db_path = resolve_db_path(&spec.name, args.db_path.as_deref());
+    let db_path = resolve_db_path(&spec.name, args.db_path.as_deref()).unwrap_or_else(|err| {
+        error!("{err}");
+        exit(1);
+    });
 
     match std::fs::remove_dir_all(&db_path) {
         Ok(()) => {
@@ -868,7 +910,7 @@ async fn run() -> Result<(), shared::IndexError> {
         .genesis_hash_bytes()
         .map_err(|e| shared::internal_error(format!("invalid genesis hash in config: {e}")))?;
 
-    let db_path = resolve_db_path(&spec.name, resolved.db_path.as_deref());
+    let db_path = resolve_db_path(&spec.name, resolved.db_path.as_deref())?;
     info!("Database path: {}", db_path.display());
 
     let db_cache_capacity = parse_db_cache_capacity(&resolved.db_cache_capacity)?;
@@ -2056,6 +2098,53 @@ max_events_limit = 500
     }
 
     #[test]
+    fn args_reject_run_db_path_traversal() {
+        let err = Args::try_parse_from([
+            "acuity-index",
+            "run",
+            TEST_INDEX_CONFIG,
+            "--db-path",
+            "db/../other",
+        ])
+        .unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn args_reject_purge_index_db_path_traversal() {
+        let err = Args::try_parse_from([
+            "acuity-index",
+            "purge-index",
+            TEST_INDEX_CONFIG,
+            "--db-path",
+            "db/../other",
+        ])
+        .unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn args_accept_run_absolute_db_path() {
+        let args = Args::try_parse_from([
+            "acuity-index",
+            "run",
+            TEST_INDEX_CONFIG,
+            "--db-path",
+            "/tmp/test-db",
+        ])
+        .unwrap();
+
+        match args.command {
+            Command::Run { args: run_args } => {
+                assert_eq!(run_args.db_path.as_deref(), Some("/tmp/test-db"));
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
     fn args_parse_generate_index_spec_short_force() {
         let args = Args::try_parse_from([
             "acuity-index",
@@ -2137,9 +2226,30 @@ max_events_limit = 500
 
     #[test]
     fn resolve_db_path_uses_chain_name() {
-        let path = resolve_db_path("kusama", None);
+        let path = resolve_db_path("kusama", None).unwrap();
 
         assert!(path.ends_with(".local/share/acuity-index/kusama/db"));
+    }
+
+    #[test]
+    fn resolve_db_path_rejects_chain_name_traversal() {
+        let err = resolve_db_path("../kusama", None).unwrap_err();
+
+        assert!(err.to_string().contains("invalid chain name"));
+    }
+
+    #[test]
+    fn resolve_db_path_rejects_db_path_traversal() {
+        let err = resolve_db_path("kusama", Some("db/../other")).unwrap_err();
+
+        assert!(err.to_string().contains("invalid database path"));
+    }
+
+    #[test]
+    fn resolve_db_path_allows_explicit_absolute_path() {
+        let path = resolve_db_path("kusama", Some("/tmp/acuity-db")).unwrap();
+
+        assert_eq!(path, PathBuf::from("/tmp/acuity-db"));
     }
 
     #[test]

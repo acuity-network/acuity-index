@@ -5,11 +5,28 @@ It connects to a node via WebSocket, decodes on-chain events, stores them in
 an embedded [sled](https://github.com/spacejam/sled) database, and exposes the
 indexed data through a WebSocket API.
 
-For an implementation-level overview of how the indexer is structured, see
-[ARCHITECTURE.md](./ARCHITECTURE.md).
+Primary documentation now lives in the in-repo mdBook at
+[`book/`](./book/) and can be built locally with `just book-build` or served with
+`just book-serve`.
 
-For the current security review and deployment guidance for the public WebSocket
-service, see [SECURITY.md](./SECURITY.md).
+Start there for mixed operator, contributor, and internals documentation:
+
+- book entrypoint: [`book/src/index.md`](./book/src/index.md)
+- table of contents: [`book/src/SUMMARY.md`](./book/src/SUMMARY.md)
+
+Detailed source documents remain available too:
+
+- implementation overview: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- WebSocket protocol reference: [`API.md`](./API.md)
+- security review and deployment guidance: [`SECURITY.md`](./SECURITY.md)
+
+## Documentation
+
+- Read the book for the primary project documentation: operator workflows,
+  contributor workflows, and internal architecture.
+- Use `README.md` as the short project entrypoint.
+- Use `API.md`, `ARCHITECTURE.md`, and `SECURITY.md` as detailed companion
+  references while the book continues to absorb more of their content.
 
 ## Features
 
@@ -39,6 +56,14 @@ cargo install --path .
 
 For Rust clients consuming the WebSocket API, see
 [`acuity-index-api-rs` on crates.io](https://crates.io/crates/acuity-index-api-rs).
+
+For fuller narrative documentation, examples, and workflow guides, build and open
+the in-repo book:
+
+```bash
+just book-build
+just book-serve
+```
 
 ## Usage
 

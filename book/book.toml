@@ -1,0 +1,15 @@
+[book]
+title = "The acuity-index Book"
+authors = ["Jonathan Brown"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../target/book"
+
+[output.html]
+git-repository-url = "https://github.com/acuity-network/acuity-index"
+edit-url-template = "https://github.com/acuity-network/acuity-index/edit/master/book/{path}"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+site-url = "/acuity-index/"

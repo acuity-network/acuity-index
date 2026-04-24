@@ -45,3 +45,10 @@ zerocopy-derive = "0.8.47"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+incremental = false
+strip = "symbols"

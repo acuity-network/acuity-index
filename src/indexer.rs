@@ -75,12 +75,14 @@ struct DerivedEvent {
 }
 
 impl BlockProcessingContext {
-    fn new(config: &IndexSpec) -> Self {
-        Self {
+    fn new(config: &IndexSpec) -> Result<Self, IndexError> {
+        Ok(Self {
             index_variant: config.index_variant,
             store_events: config.store_events,
-            event_index: config.build_event_index().expect("validated index spec"),
-        }
+            event_index: config
+                .build_event_index()
+                .map_err(|err| internal_error(format!("invalid index spec: {err}")))?,
+        })
     }
 
     fn keys_for_event(
@@ -287,14 +289,14 @@ impl Indexer {
         rpc: LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
         config: &IndexSpec,
         runtime: Arc<RuntimeState>,
-    ) -> Self {
-        Indexer {
+    ) -> Result<Self, IndexError> {
+        Ok(Indexer {
             trees,
             api: Some(api),
             rpc: Some(rpc),
             runtime,
-            processing_ctx: Arc::new(BlockProcessingContext::new(config)),
-        }
+            processing_ctx: Arc::new(BlockProcessingContext::new(config)?),
+        })
     }
 
     #[cfg(test)]
@@ -308,7 +310,7 @@ impl Indexer {
             api: None,
             rpc: None,
             runtime: Arc::new(RuntimeState::new(max_total_subscriptions)),
-            processing_ctx: Arc::new(BlockProcessingContext::new(config)),
+            processing_ctx: Arc::new(BlockProcessingContext::new(config).unwrap()),
         }
     }
 
@@ -321,7 +323,7 @@ impl Indexer {
             runtime: Arc::new(RuntimeState::new(
                 WsConfig::default().max_total_subscriptions,
             )),
-            processing_ctx: Arc::new(BlockProcessingContext::new(config)),
+            processing_ctx: Arc::new(BlockProcessingContext::new(config).unwrap()),
         }
     }
 
@@ -1295,7 +1297,7 @@ pub async fn run_indexer(
 
     let mut spans = load_spans(&trees.span, &spec.spec_change_blocks)?;
 
-    let indexer = Indexer::new(trees.clone(), api, rpc, &spec, runtime);
+    let indexer = Indexer::new(trees.clone(), api, rpc, &spec, runtime)?;
 
     let mut current_span =
         if let Some(span) = spans.last().filter(|s| Some(s.end) == next_batch_block) {
@@ -1619,7 +1621,7 @@ events = [
         runtime: Arc<RuntimeState>,
     ) -> Indexer {
         let config = test_config();
-        let mut processing_ctx = BlockProcessingContext::new(&config);
+        let mut processing_ctx = BlockProcessingContext::new(&config).unwrap();
         processing_ctx.store_events = store_events;
         Indexer {
             trees,
@@ -1971,7 +1973,7 @@ events = [
                 }],
             }],
         };
-        let ctx = BlockProcessingContext::new(&spec);
+        let ctx = BlockProcessingContext::new(&spec).unwrap();
 
         let derived = ctx
             .derive_event(
@@ -2013,7 +2015,7 @@ events = [
             keys: HashMap::new(),
             pallets: vec![],
         };
-        let ctx = BlockProcessingContext::new(&spec);
+        let ctx = BlockProcessingContext::new(&spec).unwrap();
 
         let derived = ctx
             .derive_event(

@@ -600,11 +600,15 @@ fn disconnect_error(message: impl Into<String>) -> IndexError {
 }
 
 fn service_unavailable_response(message: &str) -> HttpResponse<Option<String>> {
-    HttpResponse::builder()
-        .status(StatusCode::SERVICE_UNAVAILABLE)
-        .header("content-type", "text/plain; charset=utf-8")
-        .body(Some(message.to_owned()))
-        .expect("service unavailable response should be valid")
+    let mut response = HttpResponse::new(Some(message.to_owned()));
+    *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+    response.headers_mut().insert(
+        tokio_tungstenite::tungstenite::http::header::CONTENT_TYPE,
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+            "text/plain; charset=utf-8",
+        ),
+    );
+    response
 }
 
 fn apply_subscription_response(
@@ -818,11 +822,9 @@ pub async fn websockets_listen(
     mut exit_rx: Receiver<bool>,
     sub_tx: Sender<SubscriptionMessage>,
     mut live_ws_config_rx: watch::Receiver<LiveWsConfig>,
-) {
+) -> Result<(), IndexError> {
     let addr = format!("0.0.0.0:{port}");
-    let listener = TcpListener::bind(&addr)
-        .await
-        .expect("Failed to bind WebSocket port");
+    let listener = TcpListener::bind(&addr).await?;
     info!("Listening on {addr}");
     let active_connections = Arc::new(AtomicUsize::new(0));
     let mut live_ws_config = *live_ws_config_rx.borrow();
@@ -857,6 +859,8 @@ pub async fn websockets_listen(
             }
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

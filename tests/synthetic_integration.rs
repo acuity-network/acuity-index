@@ -1,8 +1,9 @@
 mod common;
 
 use acuity_index::synthetic_devnet::{
-    QueryExpectation, events_len, fetch_genesis_hash, fetch_status, get_events, key_bytes32,
-    key_u32, pick_unused_port, size_on_disk, spans_cover_tip, synthetic_digest,
+    QueryExpectation, decoded_event_names, events_len, fetch_genesis_hash, fetch_status,
+    get_events, key_bytes32, key_u32, pick_unused_port, size_on_disk, spans_cover_tip,
+    synthetic_digest,
     validate_query_expectation, wait_for_indexed_tip, wait_for_node,
 };
 use serde_json::{Value, json};
@@ -109,6 +110,31 @@ async fn wait_for_variants_temporarily_unavailable(
         if Instant::now() >= deadline {
             return Err(io::Error::other(format!(
                 "timed out waiting for temporarily_unavailable response: {response}"
+            ))
+            .into());
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+async fn wait_for_get_events_temporarily_unavailable(
+    indexer_url: &str,
+    key: Value,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let response = get_events(indexer_url, key.clone(), 10).await?;
+
+        if response["type"] == "error" && response["data"]["code"] == "temporarily_unavailable"
+        {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            return Err(io::Error::other(format!(
+                "timed out waiting for GetEvents temporarily_unavailable response: {response}"
             ))
             .into());
         }
@@ -481,10 +507,9 @@ async fn subscriptions_deliver_status_and_event_notifications() -> Result<(), Bo
 
 #[tokio::test]
 #[ignore = "requires polkadot-omni-node and a release runtime build"]
-async fn variant_queries_and_store_events_follow_config() -> Result<(), Box<dyn Error>> {
+async fn variant_queries_return_hydrated_decoded_events() -> Result<(), Box<dyn Error>> {
     let stack = SyntheticStack::start(
         ConfigOverrides {
-            store_events: Some(false),
             index_variant: Some(true),
         },
         IndexerOptions::default(),
@@ -503,11 +528,7 @@ async fn variant_queries_and_store_events_follow_config() -> Result<(), Box<dyn 
 
     let custom_response = get_events(&stack.indexer_url, key_u32("batch_id", 9100), 10).await?;
     assert_eq!(events_len(&custom_response), 3);
-    assert!(
-        custom_response["data"]["decodedEvents"]
-            .as_array()
-            .is_some_and(|events| events.is_empty())
-    );
+    assert_eq!(decoded_event_names(&custom_response).len(), 3);
 
     let variants = acuity_index::synthetic_devnet::request_json_ws(
         &stack.indexer_url,
@@ -527,11 +548,7 @@ async fn variant_queries_and_store_events_follow_config() -> Result<(), Box<dyn 
     .await?;
     assert_eq!(variant_response["type"], "events");
     assert_eq!(response_events(&variant_response)?.len(), 3);
-    assert!(
-        variant_response["data"]["decodedEvents"]
-            .as_array()
-            .is_some_and(|events| events.is_empty())
-    );
+    assert_eq!(decoded_event_names(&variant_response).len(), 3);
 
     Ok(())
 }
@@ -726,6 +743,7 @@ async fn indexer_restart_and_rpc_reconnect_preserve_queryability() -> Result<(),
 
     let baseline = get_events(&stack.indexer_url, key_u32("record_id", 100), 10).await?;
     assert_eq!(events_len(&baseline), 2);
+    assert!(!decoded_event_names(&baseline).is_empty());
 
     stack.restart_indexer().await?;
     let after_restart = get_events(&stack.indexer_url, key_u32("record_id", 100), 10).await?;
@@ -738,14 +756,15 @@ async fn indexer_restart_and_rpc_reconnect_preserve_queryability() -> Result<(),
 
     stack.stop_node();
     wait_for_variants_temporarily_unavailable(&stack.indexer_url, Duration::from_secs(30)).await?;
+    wait_for_get_events_temporarily_unavailable(
+        &stack.indexer_url,
+        key_u32("record_id", 100),
+        Duration::from_secs(30),
+    )
+    .await?;
 
     let status_during_outage = fetch_status(&stack.indexer_url).await?;
     assert_eq!(status_during_outage["type"], "status");
-    let query_during_outage = get_events(&stack.indexer_url, key_u32("record_id", 100), 10).await?;
-    assert_eq!(
-        response_events(&query_during_outage)?,
-        response_events(&baseline)?
-    );
 
     stack.restart_node().await?;
     let variants_after_restart =
@@ -758,6 +777,7 @@ async fn indexer_restart_and_rpc_reconnect_preserve_queryability() -> Result<(),
         response_events(&query_after_reconnect)?,
         response_events(&baseline)?
     );
+    assert_eq!(decoded_event_names(&query_after_reconnect), decoded_event_names(&baseline));
     Ok(())
 }
 

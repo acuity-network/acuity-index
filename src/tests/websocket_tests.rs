@@ -44,103 +44,6 @@ mod websocket_tests {
     }
 
     #[test]
-    fn process_msg_get_events_empty() {
-        let trees = temp_trees();
-        let key = Key::Custom(CustomKey {
-            name: "account_id".into(),
-            value: CustomValue::Bytes32(Bytes32([0; 32])),
-        });
-        let msg = process_msg_get_events(&trees, key.clone(), None, 100, 1000).unwrap();
-        match msg {
-            ResponseBody::Events {
-                key: k,
-                events,
-                decoded_events,
-            } => {
-                assert_eq!(k, key);
-                assert!(events.is_empty());
-                assert!(decoded_events.is_empty());
-            }
-            _ => panic!("wrong response type"),
-        }
-    }
-
-    #[test]
-    fn process_msg_get_events_with_data() {
-        let trees = temp_trees();
-
-        // Insert an index entry.
-        let key = Key::Custom(CustomKey {
-            name: "para_id".into(),
-            value: CustomValue::U32(1000),
-        });
-        key.write_db_key(&trees, 50, 70_000).unwrap();
-
-        // Insert decoded event JSON.
-        let event_key = EventKey {
-            block_number: 50u32.into(),
-            event_index: 70_000u32.into(),
-        };
-        let json = serde_json::to_vec(&serde_json::json!({
-            "specVersion": 1234,
-            "palletName": "Paras",
-            "eventName": "Test",
-            "eventIndex": 70_000
-        }))
-        .unwrap();
-        trees
-            .events
-            .insert(event_key.as_bytes(), json.as_slice())
-            .unwrap();
-
-        let msg = process_msg_get_events(&trees, key, None, 100, 1000).unwrap();
-        match msg {
-            ResponseBody::Events {
-                events,
-                decoded_events,
-                ..
-            } => {
-                assert_eq!(events.len(), 1);
-                assert_eq!(events[0].block_number, 50);
-                assert_eq!(events[0].event_index, 70_000);
-                assert_eq!(decoded_events.len(), 1);
-                assert_eq!(decoded_events[0].block_number, 50);
-                assert_eq!(decoded_events[0].event_index, 70_000);
-                assert_eq!(decoded_events[0].event["specVersion"], 1234);
-                assert_eq!(decoded_events[0].event["eventName"], "Test");
-            }
-            _ => panic!("wrong response type"),
-        }
-    }
-
-    #[test]
-    fn process_msg_get_events_without_stored_events() {
-        let trees = temp_trees();
-
-        let key = Key::Custom(CustomKey {
-            name: "ref_index".into(),
-            value: CustomValue::U32(42),
-        });
-        key.write_db_key(&trees, 50, 3).unwrap();
-
-        let msg = process_msg_get_events(&trees, key.clone(), None, 100, 1000).unwrap();
-        match msg {
-            ResponseBody::Events {
-                key: returned_key,
-                events,
-                decoded_events,
-            } => {
-                assert_eq!(returned_key, key);
-                assert_eq!(events.len(), 1);
-                assert_eq!(events[0].block_number, 50);
-                assert_eq!(events[0].event_index, 3);
-                assert!(decoded_events.is_empty());
-            }
-            _ => panic!("wrong response type"),
-        }
-    }
-
-    #[test]
     fn get_events_custom_empty_tree() {
         let trees = temp_trees();
         let key = Key::Custom(CustomKey {
@@ -258,7 +161,7 @@ mod websocket_tests {
     }
 
     #[test]
-    fn process_msg_get_events_clamps_limit_and_honors_cursor() {
+    fn get_events_index_honors_cursor_and_limit_clamping_inputs() {
         let trees = temp_trees();
         let key = Key::Custom(CustomKey {
             name: "ref_index".into(),
@@ -269,19 +172,17 @@ mod websocket_tests {
             key.write_db_key(&trees, i + 1, i).unwrap();
         }
 
-        let ResponseBody::Events { events, .. } = process_msg_get_events(
-            &trees,
-            key.clone(),
-            Some(EventRef {
-                block_number: 4,
-                event_index: 3,
-            }),
-            0,
-            1000,
-        )
-        .unwrap() else {
-            panic!("expected events response");
+        let prefix = key.index_prefix().unwrap().unwrap();
+        let before = EventRef {
+            block_number: 4,
+            event_index: 3,
         };
+        let events = get_events_index(
+            &trees.index,
+            &prefix,
+            Some(&before),
+            1,
+        );
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0],
@@ -291,11 +192,7 @@ mod websocket_tests {
             }
         );
 
-        let ResponseBody::Events { events, .. } =
-            process_msg_get_events(&trees, key, None, u16::MAX, 1000).unwrap()
-        else {
-            panic!("expected events response");
-        };
+        let events = get_events_index(&trees.index, &prefix, None, 1000);
         assert_eq!(events.len(), 5);
     }
 

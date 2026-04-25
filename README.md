@@ -97,7 +97,7 @@ acuity-index <COMMAND>
 `run` requires a positional `<INDEX_SPEC>` path before any options.
 
 Runtime option precedence: **CLI flags > `--options-config` file > built-in defaults**.
-`index_variant` and `store_events` are top-level index spec fields, not runtime options.
+`index_variant` is a top-level index spec field, not a runtime option.
 
 When `run <INDEX_SPEC>` points to a file, `acuity-index` watches that file for changes.
 Accepted spec edits restart only the RPC/indexer loop; the WebSocket and metrics
@@ -206,7 +206,7 @@ Clean shutdown happens in two cases:
 - the process receives a termination signal
 - a fatal startup/runtime error forces the process to exit
 
-If the upstream node closes the live block stream or the RPC connection drops, `acuity-index` saves the active span, keeps the WebSocket server running for sled-backed reads and existing subscriptions, and reconnects with exponential backoff instead of exiting. RPC-backed requests such as `Variants` return a temporary-unavailable error until the node comes back.
+If the upstream node closes the live block stream or the RPC connection drops, `acuity-index` saves the active span, keeps the WebSocket server running, and reconnects with exponential backoff instead of exiting. Local requests such as `Status` and `SizeOnDisk` keep working, while RPC-backed requests such as `Variants` and `GetEvents` return a temporary-unavailable error until the node comes back.
 
 If the watched index spec changes, `acuity-index` validates the new file before
 switching. Accepted changes stop the current indexer cleanly, persist the active
@@ -236,7 +236,6 @@ name = "mychain"
 genesis_hash = "abc123..."
 default_url = "wss://my-node:443"
 index_variant = false
-store_events = false
 spec_change_blocks = [0]
 
 # All query keys must be declared once at schema level
@@ -271,11 +270,11 @@ It must start with `0` and be strictly increasing. When a new boundary is added 
 the past, existing indexed spans are kept through the block before that boundary,
 and the suffix starting at the earliest affected boundary is re-indexed.
 
-If you change `index_variant` or `store_events` and want historical data re-indexed
+If you change `index_variant` and want historical data re-indexed
 under the new setting, add a new `spec_change_blocks` boundary.
 
 Changes to `default_url`, explicit pallet mappings, declared keys,
-`index_variant`, `store_events`, or `spec_change_blocks` are applied by the
+`index_variant` or `spec_change_blocks` are applied by the
 hot-reload path when the watched spec file is updated.
 
 ### Runtime Options Config
@@ -283,7 +282,7 @@ hot-reload path when the watched spec file is updated.
 Runtime options can be loaded from a separate TOML file via `--options-config`.
 This is useful for deployment-specific settings (like a WebSocket URL, database path,
 or listener port) that vary across environments.
-`index_variant` and `store_events` live in the index spec, not in the runtime options file.
+`index_variant` lives in the index spec, not in the runtime options file.
 
 All fields are optional — omit any field to keep its built-in default:
 

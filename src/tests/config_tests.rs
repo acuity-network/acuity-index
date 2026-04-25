@@ -61,7 +61,6 @@ events = [
             default_url: "wss://x".into(),
             spec_change_blocks: vec![0],
             index_variant: false,
-            store_events: false,
             keys: Default::default(),
             pallets: vec![],
         };
@@ -76,7 +75,6 @@ events = [
             default_url: "wss://x".into(),
             spec_change_blocks: vec![0],
             index_variant: false,
-            store_events: false,
             keys: Default::default(),
             pallets: vec![],
         };

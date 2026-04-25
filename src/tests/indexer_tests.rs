@@ -917,11 +917,16 @@ item_revision = { fields = ["bytes32", "u32"] }
 
         indexer.index_event_key(key.clone(), 7, 1).unwrap();
         assert!(matches!(
-            rx.recv().await,
-            Some(NotificationMessage {
-                body: NotificationBody::EventNotification { .. }
-            })
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await,
+            Ok(None) | Err(_)
         ));
+        assert!(indexer
+            .runtime_state()
+            .events_subs
+            .lock()
+            .unwrap()
+            .get(&key)
+            .is_none());
 
         process_sub_msg(
             indexer.runtime_state(),
@@ -990,12 +995,17 @@ item_revision = { fields = ["bytes32", "u32"] }
         indexer.index_event_key(key.clone(), 7, 1).unwrap();
         indexer.index_event_key(key.clone(), 8, 2).unwrap();
 
-        let first = rx.recv().await.unwrap();
         assert!(matches!(
-            first.body,
-            NotificationBody::EventNotification { .. }
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await,
+            Ok(None)
         ));
-        assert!(rx.try_recv().is_err());
+        assert!(indexer
+            .runtime_state()
+            .events_subs
+            .lock()
+            .unwrap()
+            .get(&key)
+            .is_none());
 
         indexer.index_event_key(key, 9, 3).unwrap();
         assert!(rx.try_recv().is_err());

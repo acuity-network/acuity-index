@@ -1,6 +1,7 @@
 //! WebSocket server — schema-less edition.
 
 use crate::shared::*;
+use crate::event_hydration::hydrate_event_refs;
 use futures::{SinkExt, StreamExt};
 use sled::Tree;
 use std::{
@@ -12,7 +13,8 @@ use std::{
     },
 };
 use subxt::{
-    Metadata, PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods,
+    Metadata, OnlineClient, PolkadotConfig, config::RpcConfigFor,
+    rpcs::methods::legacy::LegacyRpcMethods,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{
@@ -28,7 +30,6 @@ use tokio_tungstenite::tungstenite::{
     protocol::WebSocketConfig,
 };
 use tracing::{error, info};
-use zerocopy::IntoBytes;
 
 const MAX_WS_MESSAGE_SIZE_BYTES: usize = 256 * 1024;
 const MAX_WS_FRAME_SIZE_BYTES: usize = 64 * 1024;
@@ -274,8 +275,10 @@ pub async fn process_msg_variants(
     Ok(ResponseBody::Variants(pallets))
 }
 
-pub fn process_msg_get_events(
+pub async fn process_msg_get_events(
     trees: &Trees,
+    api: &OnlineClient<PolkadotConfig>,
+    rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     key: Key,
     before: Option<EventRef>,
     limit: u16,
@@ -286,23 +289,7 @@ pub fn process_msg_get_events(
         before.as_ref(),
         clamp_events_limit(limit, max_events_limit),
     )?;
-
-    let mut decoded_events = Vec::new();
-    for event_ref in &event_refs {
-        let db_key = EventKey {
-            block_number: event_ref.block_number.into(),
-            event_index: event_ref.event_index.into(),
-        };
-        if let Ok(Some(bytes)) = trees.events.get(db_key.as_bytes()) {
-            if let Ok(json) = serde_json::from_slice(&bytes) {
-                decoded_events.push(DecodedEvent {
-                    block_number: event_ref.block_number,
-                    event_index: event_ref.event_index,
-                    event: json,
-                });
-            }
-        }
-    }
+    let decoded_events = hydrate_event_refs(api, rpc, &event_refs).await?;
 
     Ok(ResponseBody::Events {
         key,
@@ -317,12 +304,12 @@ fn size_on_disk_response(trees: &Trees) -> Result<ResponseBody, IndexError> {
 
 fn process_local_msg(
     trees: &Trees,
-    msg: RequestMessage,
+    msg: &RequestMessage,
     sub_tx: &Sender<SubscriptionMessage>,
     sub_response_tx: &mpsc::Sender<NotificationMessage>,
     max_events_limit: usize,
 ) -> Option<Result<ResponseMessage, IndexError>> {
-    let response = match msg.body {
+    let response = match &msg.body {
         RequestBody::Status => request_id_response(msg.id, process_msg_status(&trees.span)),
         RequestBody::SubscribeStatus => {
             if let Err(err) = enqueue_subscription_message(
@@ -365,10 +352,8 @@ fn process_local_msg(
             if let Err(err) = validate_key(&key) {
                 return Some(Ok(invalid_request_response(msg.id, err)));
             }
-            match process_msg_get_events(trees, key, before, limit, max_events_limit) {
-                Ok(body) => request_id_response(msg.id, body),
-                Err(err) => return Some(Err(err)),
-            }
+            let _ = (before, limit, max_events_limit);
+            return None;
         }
         RequestBody::SubscribeEvents { key } => {
             if let Err(err) = validate_key(&key) {
@@ -388,7 +373,7 @@ fn process_local_msg(
                 msg.id,
                 ResponseBody::SubscriptionStatus {
                     action: SubscriptionAction::Subscribed,
-                    target: SubscriptionTarget::Events { key },
+                    target: SubscriptionTarget::Events { key: key.clone() },
                 },
             )
         }
@@ -410,7 +395,7 @@ fn process_local_msg(
                 msg.id,
                 ResponseBody::SubscriptionStatus {
                     action: SubscriptionAction::Unsubscribed,
-                    target: SubscriptionTarget::Events { key },
+                    target: SubscriptionTarget::Events { key: key.clone() },
                 },
             )
         }
@@ -561,16 +546,23 @@ pub async fn process_msg(
         return response;
     }
 
-    if let Some(response) = process_local_msg(trees, msg, sub_tx, sub_response_tx, max_events_limit)
+    if let Some(response) = process_local_msg(trees, &msg, sub_tx, sub_response_tx, max_events_limit)
     {
         return response;
     }
 
-    let Some(rpc) = runtime.rpc() else {
+    let Some((api, rpc)) = runtime.clients() else {
         return Ok(temporarily_unavailable_response(id));
     };
 
-    let body = match process_msg_variants(&rpc).await {
+    let body = match msg.body {
+        RequestBody::Variants => process_msg_variants(&rpc).await,
+        RequestBody::GetEvents { key, limit, before } => {
+            process_msg_get_events(trees, &api, &rpc, key, before, limit, max_events_limit).await
+        }
+        _ => unreachable!(),
+    };
+    let body = match body {
         Ok(body) => body,
         Err(err) if err.is_recoverable() => return Ok(temporarily_unavailable_response(id)),
         Err(err) => return Err(err),
@@ -1040,7 +1032,7 @@ mod tests {
 
         let subscribed = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 1,
                 body: RequestBody::SubscribeEvents { key: key.clone() },
             },
@@ -1067,7 +1059,7 @@ mod tests {
 
         let unsubscribed = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 2,
                 body: RequestBody::UnsubscribeEvents { key: key.clone() },
             },
@@ -1101,7 +1093,7 @@ mod tests {
 
         let status = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 1,
                 body: RequestBody::SubscribeStatus,
             },
@@ -1128,7 +1120,7 @@ mod tests {
 
         let size = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 2,
                 body: RequestBody::SizeOnDisk,
             },
@@ -1203,32 +1195,6 @@ mod tests {
     }
 
     #[test]
-    fn process_msg_get_events_ignores_invalid_stored_event_json() {
-        let trees = temp_trees();
-        let key = Key::Custom(CustomKey {
-            name: "ref_index".into(),
-            value: CustomValue::U32(3),
-        });
-        key.write_db_key(&trees, 10, 1).unwrap();
-        let db_key = EventKey {
-            block_number: 10u32.into(),
-            event_index: 1u32.into(),
-        };
-        trees
-            .events
-            .insert(db_key.as_bytes(), b"not-json".as_slice())
-            .unwrap();
-
-        let ResponseBody::Events { decoded_events, .. } =
-            process_msg_get_events(&trees, key, None, 100, DEFAULT_WS_CONFIG.max_events_limit)
-                .unwrap()
-        else {
-            panic!("expected events response");
-        };
-        assert!(decoded_events.is_empty());
-    }
-
-    #[test]
     fn process_local_msg_handles_status_unsubscribe_and_get_events() {
         let trees = temp_trees();
         let (sub_tx, mut sub_rx) = mpsc::channel(4);
@@ -1241,7 +1207,7 @@ mod tests {
 
         let status = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 1,
                 body: RequestBody::Status,
             },
@@ -1261,7 +1227,7 @@ mod tests {
 
         let unsubscribed = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 2,
                 body: RequestBody::UnsubscribeStatus,
             },
@@ -1288,7 +1254,7 @@ mod tests {
 
         let events = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 3,
                 body: RequestBody::GetEvents {
                     key,
@@ -1299,16 +1265,8 @@ mod tests {
             &sub_tx,
             &response_tx,
             DEFAULT_WS_CONFIG.max_events_limit,
-        )
-        .unwrap()
-        .unwrap();
-        assert!(matches!(
-            events,
-            ResponseMessage {
-                id: Some(3),
-                body: ResponseBody::Events { .. },
-            }
-        ));
+        );
+        assert!(events.is_none());
     }
 
     #[test]
@@ -1320,7 +1278,7 @@ mod tests {
         assert!(
             process_local_msg(
                 &trees,
-                RequestMessage {
+                &RequestMessage {
                     id: 1,
                     body: RequestBody::Variants,
                 },
@@ -1446,7 +1404,7 @@ mod tests {
 
         let result = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 9,
                 body: RequestBody::SubscribeStatus,
             },
@@ -1473,7 +1431,7 @@ mod tests {
 
         let result = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 10,
                 body: RequestBody::GetEvents {
                     key,
@@ -1514,7 +1472,7 @@ mod tests {
 
         let result = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 11,
                 body: RequestBody::SubscribeEvents { key },
             },
@@ -1555,7 +1513,7 @@ mod tests {
 
         let result = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 12,
                 body: RequestBody::GetEvents {
                     key,
@@ -1602,7 +1560,7 @@ mod tests {
 
         let result = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 13,
                 body: RequestBody::GetEvents {
                     key,
@@ -1648,7 +1606,7 @@ mod tests {
 
         let result = process_local_msg(
             &trees,
-            RequestMessage {
+            &RequestMessage {
                 id: 14,
                 body: RequestBody::GetEvents {
                     key,
@@ -1981,7 +1939,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn existing_connection_observes_live_max_events_limit_changes() {
+    async fn get_events_returns_temporarily_unavailable_without_runtime_clients() {
         let trees = temp_trees();
         let runtime = disconnected_runtime();
         let key = Key::Custom(CustomKey {
@@ -2044,8 +2002,8 @@ mod tests {
         let response: serde_json::Value =
             serde_json::from_str(response.to_text().unwrap()).unwrap();
         assert_eq!(response["id"], 23);
-        assert_eq!(response["type"], "events");
-        assert_eq!(response["data"]["events"].as_array().unwrap().len(), 1);
+        assert_eq!(response["type"], "error");
+        assert_eq!(response["data"]["code"], "temporarily_unavailable");
 
         client.close(None).await.unwrap();
         assert!(server.await.unwrap().is_ok());

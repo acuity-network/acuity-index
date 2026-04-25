@@ -273,7 +273,7 @@ Representative notification types:
 
 - `key`: subscribed key that matched
 - `event`: matching event reference
-- `decodedEvent`: decoded event object when available, otherwise `null`
+- `decodedEvent`: decoded event object hydrated from the node before delivery
 
 `subscriptionTerminated` is sent best-effort before the server drops a subscriber
 that cannot keep up. The current reason is `backpressure`.
@@ -331,8 +331,8 @@ Protocol-level invalid custom key inputs include:
 - composite keys nested deeper than `8` levels
 - custom values whose encoded key payload exceeds `16384` bytes
 
-During node outages, sled-backed requests such as `Status`, `GetEvents`, and
-`SizeOnDisk` continue to work. `Variants` requires live RPC metadata and returns
+During node outages, local requests such as `Status` and `SizeOnDisk` continue
+to work. `Variants` and `GetEvents` require live RPC access and return
 `temporarily_unavailable` until the node connection is restored.
 
 ## Pagination Semantics
@@ -379,9 +379,6 @@ Scalar kinds:
 
 - `GetEvents` returns newest-first ordering
 - `before` acts as a pagination cursor
-- decoded events are only returned when `store_events = true`
-- `Variants` depends on a live RPC connection
-- sled-backed queries can continue to work during temporary RPC outages
-
-When `store_events = false`, `decodedEvents` and `decodedEvent` are empty or
-`null`.
+- decoded events are hydrated from the node for `GetEvents` and `eventNotification`
+- `Variants` and `GetEvents` depend on a live RPC connection
+- local requests like `Status` and `SizeOnDisk` can continue to work during temporary RPC outages

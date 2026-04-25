@@ -108,16 +108,12 @@ mod shared_tests {
     }
 
     #[test]
-    fn event_key_layout() {
-        let key = EventKey {
-            block_number: 123u32.into(),
-            event_index: 70_000u32.into(),
-        };
-        let bytes = key.as_bytes();
-        // 4 + 4 = 8 bytes
-        assert_eq!(bytes.len(), 8);
-        assert_eq!(&bytes[..4], &123u32.to_be_bytes());
-        assert_eq!(&bytes[4..], &70_000u32.to_be_bytes());
+    fn decode_event_ref_suffix_reads_block_and_event_indexes() {
+        let bytes = [123u32.to_be_bytes(), 70_000u32.to_be_bytes()].concat();
+        let event_ref = decode_event_ref_suffix(&bytes).unwrap();
+
+        assert_eq!(event_ref.block_number, 123);
+        assert_eq!(event_ref.event_index, 70_000);
     }
 
     // ─── Key serialization ────────────────────────────────────────────────

@@ -336,7 +336,6 @@ pub(crate) fn build_index_spec(
         default_url: default_url.to_owned(),
         spec_change_blocks: vec![0],
         index_variant: false,
-        store_events: false,
         keys,
         pallets,
     }
@@ -441,9 +440,6 @@ pub(crate) fn render_index_spec_toml(spec: &IndexSpec) -> Result<String, IndexEr
     out.push_str("\n# Whether to index event variant names for variant-based queries.\n");
     out.push_str("index_variant = ");
     out.push_str(if spec.index_variant { "true" } else { "false" });
-    out.push_str("\n# Whether to store decoded events for later retrieval.\n");
-    out.push_str("store_events = ");
-    out.push_str(if spec.store_events { "true" } else { "false" });
     out.push_str("\n\n");
 
     out.push_str("# Declare all query keys here. Event params may only reference names declared\n");
@@ -818,7 +814,6 @@ mod tests {
             default_url: "ws://127.0.0.1:9944".into(),
             spec_change_blocks: vec![0],
             index_variant: false,
-            store_events: false,
             keys: HashMap::from([
                 (
                     "account_id".into(),
@@ -896,7 +891,6 @@ mod tests {
 
         assert!(toml.contains("spec_change_blocks = [0]"));
         assert!(toml.contains("index_variant = false"));
-        assert!(toml.contains("store_events = false"));
         assert!(toml.contains("[keys]"));
         assert!(toml.contains("account_id = \"bytes32\""));
         assert!(toml.contains("item_id = \"bytes32\""));

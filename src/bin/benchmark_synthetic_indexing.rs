@@ -347,9 +347,7 @@ fn write_benchmark_index_spec(
     url: &str,
     genesis_hash: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let mut value: toml::Value = toml::from_str(&render_synthetic_index_spec(url, genesis_hash)?)?;
-    value["store_events"] = toml::Value::Boolean(false);
-    fs::write(path, toml::to_string(&value)?)?;
+    fs::write(path, render_synthetic_index_spec(url, genesis_hash)?)?;
     Ok(())
 }
 

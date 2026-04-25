@@ -78,7 +78,6 @@ pub fn build_chain_spec(output_path: &Path) -> Result<(), Box<dyn Error>> {
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigOverrides {
-    pub store_events: Option<bool>,
     pub index_variant: Option<bool>,
 }
 
@@ -93,9 +92,6 @@ pub fn write_config_with_overrides(
     let table = value
         .as_table_mut()
         .ok_or_else(|| io::Error::other("synthetic config must be a TOML table"))?;
-    if let Some(store_events) = overrides.store_events {
-        table.insert("store_events".into(), toml::Value::Boolean(store_events));
-    }
     if let Some(index_variant) = overrides.index_variant {
         table.insert("index_variant".into(), toml::Value::Boolean(index_variant));
     }

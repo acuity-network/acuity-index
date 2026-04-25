@@ -62,7 +62,7 @@ Impact:
 - any reachable client can query indexed data
 - any reachable client can subscribe to live updates
 - any reachable client can call `SizeOnDisk`
-- any reachable client can retrieve decoded events if `store_events = true`
+- any reachable client can retrieve decoded events while the service has live node access
 
 This is the largest remaining exposure and should be treated as a deliberate
 product decision rather than an implicit default.
@@ -133,7 +133,7 @@ Highest-value remaining work:
 
 1. add rate limiting
 2. decide whether `SizeOnDisk` should remain public
-3. decide whether decoded event retrieval should remain public when `store_events = true`
+3. decide whether decoded event retrieval should remain public
 4. require TLS termination in all documented deployment paths
 5. revisit authentication if the service needs differentiated access or abuse accountability
 6. track or remediate the current dependency audit findings

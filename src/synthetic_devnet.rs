@@ -135,7 +135,6 @@ pub fn render_synthetic_index_spec(
             "name = \"synthetic-runtime\"\n",
             "genesis_hash = \"{}\"\n",
             "default_url = \"{}\"\n",
-            "store_events = true\n",
             "spec_change_blocks = [0]\n\n",
             "[keys]\n",
             "account_id = \"bytes32\"\n",

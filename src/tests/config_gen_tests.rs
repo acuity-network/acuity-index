@@ -220,7 +220,6 @@ mod config_gen_tests {
             default_url: "ws://127.0.0.1:9944".into(),
             spec_change_blocks: vec![0],
             index_variant: false,
-            store_events: false,
             keys: HashMap::from([(
                 "account_id".into(),
                 crate::config::CustomKeyConfig::Scalar(ScalarKind::Bytes32),

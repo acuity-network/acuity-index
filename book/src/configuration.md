@@ -20,7 +20,6 @@ name = "mychain"
 genesis_hash = "abc123..."
 default_url = "wss://my-node:443"
 index_variant = false
-store_events = false
 spec_change_blocks = [0]
 
 [keys]
@@ -50,7 +49,6 @@ key = "item_revision"
 - `genesis_hash`: chain identity guard; a database is tied to one chain only
 - `default_url`: fallback node URL when CLI and runtime options do not override it
 - `index_variant`: whether to store pallet/variant lookups in the variant tree
-- `store_events`: whether decoded event payloads are persisted for retrieval
 - `spec_change_blocks`: revision boundaries for historical reindex behavior
 
 ## Declared Keys
@@ -106,5 +104,4 @@ Supported fields:
 | `port` | integer | `8172` |
 | `metrics_port` | integer | disabled |
 
-`index_variant` and `store_events` belong in the index spec, not the runtime
-options file.
+`index_variant` belongs in the index spec, not the runtime options file.

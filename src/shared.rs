@@ -8,7 +8,9 @@ use std::{
     sync::Arc,
     sync::{Mutex, MutexGuard},
 };
-use subxt::{PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods};
+use subxt::{
+    OnlineClient, PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods,
+};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite;
@@ -149,14 +151,6 @@ pub fn read_span_db_value(bytes: &[u8]) -> Option<SpanDbValue> {
 pub struct VariantKey {
     pub pallet_index: u8,
     pub variant_index: u8,
-    pub block_number: U32<BigEndian>,
-    pub event_index: U32<BigEndian>,
-}
-
-/// On-disk format for stored event keys.
-#[derive(FromBytes, IntoBytes, Unaligned, Immutable, PartialEq, Debug)]
-#[repr(C)]
-pub struct EventKey {
     pub block_number: U32<BigEndian>,
     pub event_index: U32<BigEndian>,
 }
@@ -409,8 +403,6 @@ pub struct Trees {
     pub span: Tree,
     pub variant: Tree,
     pub index: Tree,
-    /// Stores JSON-encoded decoded events keyed by block number and event index.
-    pub events: Tree,
 }
 
 impl Trees {
@@ -420,7 +412,6 @@ impl Trees {
             span: db.open_tree(b"span")?,
             variant: db.open_tree(b"variant")?,
             index: db.open_tree(b"index")?,
-            events: db.open_tree(b"events")?,
             root: db,
         })
     }
@@ -430,7 +421,6 @@ impl Trees {
         self.span.flush()?;
         self.variant.flush()?;
         self.index.flush()?;
-        self.events.flush()?;
         Ok(())
     }
 }
@@ -788,6 +778,7 @@ pub struct RuntimeState {
     pub(crate) status_subs: Mutex<Vec<mpsc::Sender<NotificationMessage>>>,
     pub(crate) events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<NotificationMessage>>>>,
     pub(crate) metrics: Arc<Metrics>,
+    api: Mutex<Option<OnlineClient<PolkadotConfig>>>,
     rpc: Mutex<Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>>,
 }
 
@@ -802,8 +793,17 @@ impl RuntimeState {
             status_subs: Mutex::new(Vec::new()),
             events_subs: Mutex::new(HashMap::new()),
             metrics,
+            api: Mutex::new(None),
             rpc: Mutex::new(None),
         }
+    }
+
+    pub fn set_api(&self, api: Option<OnlineClient<PolkadotConfig>>) {
+        *lock_or_recover(&self.api, "runtime_api") = api;
+    }
+
+    pub fn api(&self) -> Option<OnlineClient<PolkadotConfig>> {
+        lock_or_recover(&self.api, "runtime_api").clone()
     }
 
     pub fn set_rpc(&self, rpc: Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>) {
@@ -812,6 +812,15 @@ impl RuntimeState {
 
     pub fn rpc(&self) -> Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>> {
         lock_or_recover(&self.rpc, "runtime_rpc").clone()
+    }
+
+    pub fn clients(
+        &self,
+    ) -> Option<(
+        OnlineClient<PolkadotConfig>,
+        LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    )> {
+        Some((self.api()?, self.rpc()?))
     }
 }
 

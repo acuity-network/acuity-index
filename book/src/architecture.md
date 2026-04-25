@@ -9,7 +9,7 @@ entries in `sled`, and serves query access over WebSocket.
 - `src/main.rs`: startup, config loading, database initialization, watcher setup,
   metrics listener, and reconnect supervisor loop
 - `src/indexer.rs`: indexing pipeline, resume logic, live-head tailing, event key
-  derivation, decoded event storage, notification fanout
+  derivation, notification fanout
 - `src/config.rs`: TOML schema and mapping resolution
 - `src/websockets.rs`: public API implementation and connection lifecycle
 - `src/shared.rs`: wire types, sled key layouts, shared runtime state
@@ -79,7 +79,7 @@ Per-block indexing follows this shape:
 7. decode fields schema-lessly into `scale_value::Composite<()>`
 8. derive indexing keys from explicit config
 9. write event references for each derived key
-10. optionally store JSON-decoded event payloads if `store_events` is enabled
+10. store event refs locally and hydrate decoded event payloads from the node when queries or subscriptions need them
 
 Malformed persisted sled data is handled defensively during decode. Corrupt span
 records or malformed index keys are skipped with logging instead of panicking.
@@ -144,7 +144,7 @@ Important invariants:
 - if the upstream block stream closes, the indexer returns a recoverable error so
   the supervisor loop can reconnect and resume
 
-Changes to `index_variant` or `store_events` only trigger historical reindexing
+Changes to `index_variant` only trigger historical reindexing
 when the spec revision advances via `spec_change_blocks`.
 
 ## RPC Reconnection And Spec Reload

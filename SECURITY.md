@@ -164,7 +164,7 @@ Highest-value remaining work:
 
 1. Add rate limiting.
 2. Decide whether `SizeOnDisk` should remain public.
-3. Decide whether decoded event retrieval should remain public when `store_events = true` in the index spec.
+3. Decide whether decoded event retrieval should remain public.
 4. Require TLS termination in all documented deployment paths.
 5. Revisit authentication if the service needs differentiated access or abuse accountability.
 6. Track or remediate the `cargo audit` findings, especially the transitive `lru` advisory and long-term `sled` maintenance risk.

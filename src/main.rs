@@ -31,6 +31,7 @@ use tracing_log::AsTrace;
 
 mod config;
 mod config_gen;
+mod event_hydration;
 mod indexer;
 mod metrics;
 mod shared;
@@ -450,7 +451,6 @@ fn classify_spec_update(
 
     let indexing_changed = current.spec.spec_change_blocks != candidate.spec.spec_change_blocks
         || current.spec.index_variant != candidate.spec.index_variant
-        || current.spec.store_events != candidate.spec.store_events
         || current.spec.keys != candidate.spec.keys
         || current.spec.pallets != candidate.spec.pallets;
 
@@ -1009,6 +1009,7 @@ async fn run() -> Result<(), shared::IndexError> {
 
     loop {
         if term_now.load(Ordering::Relaxed) {
+            runtime.set_api(None);
             runtime.set_rpc(None);
             metrics.set_rpc_connected(false);
             let _ = process_exit_tx.send(true);
@@ -1030,6 +1031,7 @@ async fn run() -> Result<(), shared::IndexError> {
 
         let (api, rpc) = match select! {
             _ = signals.next() => {
+                runtime.set_api(None);
                 runtime.set_rpc(None);
                 metrics.set_rpc_connected(false);
                 let _ = process_exit_tx.send(true);
@@ -1092,6 +1094,7 @@ async fn run() -> Result<(), shared::IndexError> {
         } {
             Ok(clients) => clients,
             Err(err) if err.is_recoverable() => {
+                runtime.set_api(None);
                 runtime.set_rpc(None);
                 metrics.set_rpc_connected(false);
                 metrics.inc_reconnects();
@@ -1172,6 +1175,7 @@ async fn run() -> Result<(), shared::IndexError> {
         }
 
         backoff_secs = INITIAL_BACKOFF_SECS;
+        runtime.set_api(Some(api.clone()));
         runtime.set_rpc(Some(rpc.clone()));
         metrics.set_rpc_connected(true);
         let (indexer_exit_tx, indexer_exit_rx) = watch::channel(false);
@@ -1197,6 +1201,7 @@ async fn run() -> Result<(), shared::IndexError> {
 
         let loop_control = select! {
             _ = signals.next() => {
+                runtime.set_api(None);
                 runtime.set_rpc(None);
                 metrics.set_rpc_connected(false);
                 let _ = indexer_exit_tx.send(true);
@@ -1218,6 +1223,7 @@ async fn run() -> Result<(), shared::IndexError> {
                     let update = spec_update_rx.borrow_and_update().clone();
                     current_snapshot = update.snapshot.clone();
                     if update.action == SpecUpdateAction::RestartIndexer {
+                        runtime.set_api(None);
                         runtime.set_rpc(None);
                         metrics.set_rpc_connected(false);
                         let _ = indexer_exit_tx.send(true);
@@ -1247,6 +1253,7 @@ async fn run() -> Result<(), shared::IndexError> {
                                     let _ = live_ws_config_tx.send(next_live_ws_config);
                                 }
                                 if update.action == OptionsUpdateAction::RestartIndexer {
+                                    runtime.set_api(None);
                                     runtime.set_rpc(None);
                                     metrics.set_rpc_connected(false);
                                     let _ = indexer_exit_tx.send(true);
@@ -1271,6 +1278,7 @@ async fn run() -> Result<(), shared::IndexError> {
                 match watcher_result {
                     Ok(Ok(())) => {
                         error!("Config watcher stopped unexpectedly.");
+                        runtime.set_api(None);
                         runtime.set_rpc(None);
                         metrics.set_rpc_connected(false);
                         let _ = indexer_exit_tx.send(true);
@@ -1286,6 +1294,7 @@ async fn run() -> Result<(), shared::IndexError> {
                         return Err(shared::internal_error("config watcher stopped unexpectedly"));
                     }
                     Ok(Err(err)) => {
+                        runtime.set_api(None);
                         runtime.set_rpc(None);
                         metrics.set_rpc_connected(false);
                         let _ = indexer_exit_tx.send(true);
@@ -1301,6 +1310,7 @@ async fn run() -> Result<(), shared::IndexError> {
                         return Err(err);
                     }
                     Err(join_err) => {
+                        runtime.set_api(None);
                         runtime.set_rpc(None);
                         metrics.set_rpc_connected(false);
                         let _ = indexer_exit_tx.send(true);
@@ -1363,6 +1373,7 @@ async fn run() -> Result<(), shared::IndexError> {
             },
             LoopControl::Indexer(indexer_result) => match indexer_result {
                 Ok(Ok(())) => {
+                    runtime.set_api(None);
                     runtime.set_rpc(None);
                     metrics.set_rpc_connected(false);
                     let _ = process_exit_tx.send(true);
@@ -1377,6 +1388,7 @@ async fn run() -> Result<(), shared::IndexError> {
                     return Ok(());
                 }
                 Ok(Err(err)) if err.is_recoverable() => {
+                    runtime.set_api(None);
                     runtime.set_rpc(None);
                     metrics.set_rpc_connected(false);
                     metrics.inc_reconnects();
@@ -1445,6 +1457,7 @@ async fn run() -> Result<(), shared::IndexError> {
                     continue;
                 }
                 Ok(Err(err)) => {
+                    runtime.set_api(None);
                     runtime.set_rpc(None);
                     metrics.set_rpc_connected(false);
                     let _ = process_exit_tx.send(true);
@@ -1459,6 +1472,7 @@ async fn run() -> Result<(), shared::IndexError> {
                     return Err(err);
                 }
                 Err(join_err) => {
+                    runtime.set_api(None);
                     runtime.set_rpc(None);
                     metrics.set_rpc_connected(false);
                     let _ = process_exit_tx.send(true);
@@ -1504,7 +1518,6 @@ mod main_tests {
             default_url: "ws://127.0.0.1:9944".into(),
             spec_change_blocks: vec![0],
             index_variant: false,
-            store_events: false,
             keys: Default::default(),
             pallets: vec![],
         }
@@ -1769,7 +1782,6 @@ mod main_tests {
         let args = test_run_args();
         let mut spec = test_spec();
         spec.index_variant = true;
-        spec.store_events = true;
         let _resolved = resolve_args(&args, &spec, None).unwrap();
     }
 

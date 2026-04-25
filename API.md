@@ -53,7 +53,11 @@ Example:
   "data": {
     "key": {"type": "Custom", "value": {"name": "ref_index", "kind": "u32", "value": 42}},
     "event": {"blockNumber": 50, "eventIndex": 3},
-    "decodedEvent": null
+    "decodedEvent": {
+      "blockNumber": 50,
+      "eventIndex": 3,
+      "event": {"specVersion": 1234, "palletName": "Referenda", "eventName": "Submitted", "palletIndex": 42, "variantIndex": 0, "eventIndex": 3, "fields": {"index": 42}}
+    }
   }
 }
 ```
@@ -174,7 +178,7 @@ Response payload:
 
 - `key`: the queried key
 - `events`: matching event references, newest first
-- `decodedEvents`: decoded payloads for matching events when stored
+- `decodedEvents`: decoded payloads for the returned event refs
 
 Each `EventRef` contains:
 
@@ -392,7 +396,7 @@ Payload:
 
 - `key`: subscribed key that matched
 - `event`: matching event reference
-- `decodedEvent`: decoded event object when available, otherwise `null`
+- `decodedEvent`: decoded event object hydrated from the node before delivery
 
 Example:
 
@@ -488,7 +492,7 @@ Example when no request `id` could be recovered:
 Additional error codes currently returned by the WebSocket layer include:
 
 - `subscription_limit` when a connection exceeds the per-connection subscription cap or the global total subscription cap
-- `temporarily_unavailable` when an RPC-backed request (currently `Variants`) is made while the node connection is down and the server is reconnecting
+- `temporarily_unavailable` when an RPC-backed request (`Variants` or `GetEvents`) is made while the node connection is down and the server is reconnecting
 
 Invalid custom key payloads are returned as `invalid_request` responses, including:
 
@@ -505,8 +509,8 @@ responses or connection drops include:
 - subscription control queue saturation
 - connection idle timeout
 
-During node outages, sled-backed requests such as `Status`, `GetEvents`, and `SizeOnDisk`
-continue to work. `Variants` requires live RPC metadata and returns
+During node outages, local requests such as `Status` and `SizeOnDisk` continue to
+work. `Variants` and `GetEvents` require live RPC access and return
 `temporarily_unavailable` until the node connection is re-established.
 
 ## Pagination Semantics
@@ -570,14 +574,14 @@ Composite keys are encoded recursively and must satisfy these protocol-level lim
 
 ## Storage Notes
 
-When `store_events = true` in the active index spec, decoded events are stored individually under `(block_number, event_index)`.
+Index entries store event refs locally in sled.
 
-That allows:
+Decoded event payloads are hydrated from the node on demand for:
 
-- `GetEvents` to return only decoded events that match the query key
-- `eventNotification` to include `decodedEvent` when the event payload was persisted
+- `GetEvents` responses
+- `eventNotification` subscription deliveries
 
-When `store_events = false`, `decodedEvents` and `decodedEvent` will be empty or `null`.
+This keeps the JSON-RPC shape unchanged while making decoded payload availability depend on live node access.
 
 ## Delivery and Backpressure
 

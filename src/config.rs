@@ -200,8 +200,6 @@ pub struct IndexSpec {
     pub spec_change_blocks: Vec<u32>,
     #[serde(default)]
     pub index_variant: bool,
-    #[serde(default)]
-    pub store_events: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub keys: HashMap<String, CustomKeyConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -263,7 +261,6 @@ mod tests {
             default_url: "ws://127.0.0.1:9944".into(),
             spec_change_blocks: vec![0],
             index_variant: false,
-            store_events: false,
             keys: HashMap::from([(
                 "item_id".into(),
                 CustomKeyConfig::Scalar(ScalarKind::Bytes32),
@@ -293,7 +290,6 @@ mod tests {
             default_url: "ws://127.0.0.1:9944".into(),
             spec_change_blocks: vec![],
             index_variant: false,
-            store_events: false,
             keys: HashMap::new(),
             pallets: vec![],
         };
@@ -312,7 +308,6 @@ mod tests {
             default_url: "ws://127.0.0.1:9944".into(),
             spec_change_blocks: vec![10],
             index_variant: false,
-            store_events: false,
             keys: HashMap::new(),
             pallets: vec![],
         };
@@ -331,7 +326,6 @@ mod tests {
             default_url: "ws://127.0.0.1:9944".into(),
             spec_change_blocks: vec![0, 10, 10],
             index_variant: false,
-            store_events: false,
             keys: HashMap::new(),
             pallets: vec![],
         };

@@ -11,8 +11,6 @@ use subxt::{
     OnlineClient, PolkadotConfig,
     client::Block,
     config::RpcConfigFor,
-    error::{BackendError, OnlineClientAtBlockError, RpcError},
-    events::Events,
     rpcs::methods::legacy::LegacyRpcMethods,
 };
 use tokio::{
@@ -25,6 +23,7 @@ use zerocopy::IntoBytes;
 
 use crate::{
     config::{IndexSpec, ParamKey, ResolvedParamConfig, ScalarKind},
+    event_hydration::{FetchedBlock, fetch_block_events, hydrate_event_refs},
     shared::*,
     websockets::process_msg_status,
 };
@@ -42,14 +41,7 @@ pub struct Indexer {
 #[derive(Clone)]
 struct BlockProcessingContext {
     index_variant: bool,
-    store_events: bool,
     event_index: HashMap<String, HashMap<String, Vec<ResolvedParamConfig>>>,
-}
-
-struct FetchedBlock {
-    block_number: u32,
-    spec_version: u32,
-    events: Events<PolkadotConfig>,
 }
 
 struct ProcessedBlock {
@@ -64,21 +56,18 @@ struct ProcessedEvent {
     event_index: u32,
     variant_key: Option<Key>,
     keys: Vec<Key>,
-    stored_event_json: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct DerivedEvent {
     variant_key: Option<Key>,
     keys: Vec<Key>,
-    stored_event_json: Option<Vec<u8>>,
 }
 
 impl BlockProcessingContext {
     fn new(config: &IndexSpec) -> Result<Self, IndexError> {
         Ok(Self {
             index_variant: config.index_variant,
-            store_events: config.store_events,
             event_index: config
                 .build_event_index()
                 .map_err(|err| internal_error(format!("invalid index spec: {err}")))?,
@@ -120,37 +109,20 @@ impl BlockProcessingContext {
 
     fn derive_event(
         &self,
-        spec_version: u32,
         pallet_name: &str,
         event_name: &str,
         pallet_index: u8,
         variant_index: u8,
-        event_index: u32,
         fields: &Composite<()>,
     ) -> Result<DerivedEvent, IndexError> {
         let variant_key = self
             .index_variant
             .then_some(Key::Variant(pallet_index, variant_index));
         let keys = self.keys_for_event(pallet_name, event_name, fields);
-        let should_store_event = self.index_variant || !keys.is_empty();
-        let stored_event_json = if self.store_events && should_store_event {
-            Some(encode_event_json(
-                spec_version,
-                pallet_name,
-                event_name,
-                pallet_index,
-                variant_index,
-                event_index,
-                fields,
-            )?)
-        } else {
-            None
-        };
 
         Ok(DerivedEvent {
             variant_key,
             keys,
-            stored_event_json,
         })
     }
 }
@@ -399,27 +371,7 @@ impl Indexer {
 
     async fn fetch_block_events(&self, block_number: u32) -> Result<FetchedBlock, IndexError> {
         let (api, rpc) = self.runtime_clients()?;
-
-        let block_hash = rpc
-            .chain_get_block_hash(Some(block_number.into()))
-            .await?
-            .ok_or(IndexError::BlockNotFound(block_number))?;
-
-        let at_block = api.at_block(block_hash).await.map_err(|err| {
-            if is_state_pruned_error(&err) {
-                IndexError::StatePruningMisconfigured { block_number }
-            } else {
-                err.into()
-            }
-        })?;
-        let spec_version = at_block.spec_version();
-        let events = at_block.events().fetch().await?;
-
-        Ok(FetchedBlock {
-            block_number,
-            spec_version,
-            events,
-        })
+        fetch_block_events(api, rpc, block_number).await
     }
 
     fn process_block_cpu(
@@ -428,8 +380,8 @@ impl Indexer {
     ) -> Result<ProcessedBlock, IndexError> {
         let FetchedBlock {
             block_number,
-            spec_version,
             events,
+            ..
         } = fetched;
 
         let mut key_count = 0u32;
@@ -465,12 +417,10 @@ impl Indexer {
                 };
 
             let derived = processing_ctx.derive_event(
-                spec_version,
                 pallet_name,
                 event_name,
                 pallet_index,
                 variant_index,
-                event_index,
                 &field_values,
             )?;
 
@@ -482,7 +432,6 @@ impl Indexer {
                 event_index,
                 variant_key: derived.variant_key,
                 keys: derived.keys,
-                stored_event_json: derived.stored_event_json,
             });
         }
 
@@ -513,64 +462,10 @@ impl Indexer {
             for key in event.keys {
                 self.index_event_key(key, block_number, event.event_index)?;
             }
-
-            if let Some(json_bytes) = event.stored_event_json {
-                self.store_encoded_event(block_number, event.event_index, &json_bytes)?;
-            }
         }
 
         Ok((block_number, event_count, key_count))
     }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn store_event(
-        &self,
-        block_number: u32,
-        event_index: u32,
-        spec_version: u32,
-        pallet_name: &str,
-        event_name: &str,
-        pallet_index: u8,
-        variant_index: u8,
-        fields: &Composite<()>,
-    ) -> Result<(), IndexError> {
-        if !self.processing_ctx.store_events {
-            return Ok(());
-        }
-
-        let db_key = EventKey {
-            block_number: block_number.into(),
-            event_index: event_index.into(),
-        };
-        let json_bytes = encode_event_json(
-            spec_version,
-            pallet_name,
-            event_name,
-            pallet_index,
-            variant_index,
-            event_index,
-            fields,
-        )?;
-        self.trees
-            .events
-            .insert(db_key.as_bytes(), json_bytes.as_slice())?;
-        Ok(())
-    }
-
-    fn store_encoded_event(
-        &self,
-        block_number: u32,
-        event_index: u32,
-        json_bytes: &[u8],
-    ) -> Result<(), IndexError> {
-        let db_key = EventKey {
-            block_number: block_number.into(),
-            event_index: event_index.into(),
-        };
-        self.trees.events.insert(db_key.as_bytes(), json_bytes)?;
-        Ok(())
-    }
-
     // ─── Key derivation ───────────────────────────────────────────────────────
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -607,7 +502,7 @@ impl Indexer {
     }
 }
 
-fn encode_event_value(
+pub(crate) fn encode_event_value(
     pallet_name: &str,
     event_name: &str,
     pallet_index: u8,
@@ -623,27 +518,6 @@ fn encode_event_value(
         "eventIndex": event_index,
         "fields": composite_to_json(fields),
     })
-}
-
-fn encode_event_json(
-    spec_version: u32,
-    pallet_name: &str,
-    event_name: &str,
-    pallet_index: u8,
-    variant_index: u8,
-    event_index: u32,
-    fields: &Composite<()>,
-) -> Result<Vec<u8>, IndexError> {
-    let mut encoded = encode_event_value(
-        pallet_name,
-        event_name,
-        pallet_index,
-        variant_index,
-        event_index,
-        fields,
-    );
-    encoded["specVersion"] = json!(spec_version);
-    Ok(serde_json::to_vec(&encoded)?)
 }
 
 impl Indexer {
@@ -678,51 +552,70 @@ impl Indexer {
     }
 
     fn notify_event_subscribers(&self, key: Key, event_ref: EventRef) {
-        let mut subs = lock_or_recover(&self.runtime.events_subs, "events_subs");
-        if let Some(txs) = subs.get_mut(&key) {
-            let event_key = EventKey {
-                block_number: event_ref.block_number.into(),
-                event_index: event_ref.event_index.into(),
+        let has_subscribers = lock_or_recover(&self.runtime.events_subs, "events_subs")
+            .get(&key)
+            .is_some_and(|txs| !txs.is_empty());
+        if !has_subscribers {
+            return;
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let clients = self
+            .runtime_clients()
+            .map(|(api, rpc)| (api.clone(), rpc.clone()));
+
+        task::spawn(async move {
+            let (api, rpc) = match clients {
+                Ok(clients) => clients,
+                Err(err) => {
+                    error!("dropping event subscription after client lookup failure: {err}");
+                    drop_event_subscribers(runtime.as_ref(), &key);
+                    return;
+                }
             };
-            let decoded_events = self
-                .trees
-                .events
-                .get(event_key.as_bytes())
-                .ok()
-                .flatten()
-                .and_then(|b| serde_json::from_slice(&b).ok())
-                .map(|events| {
-                    vec![DecodedEvent {
-                        block_number: event_ref.block_number,
-                        event_index: event_ref.event_index,
-                        event: events,
-                    }]
-                })
-                .unwrap_or_default();
+
+            let decoded_event = match hydrate_event_refs(&api, &rpc, &[event_ref.clone()]).await {
+                Ok(mut decoded_events) => match decoded_events.pop() {
+                    Some(decoded_event) => decoded_event,
+                    None => {
+                        error!(
+                            "dropping event subscription after missing hydrated event for #{}:{}",
+                            event_ref.block_number, event_ref.event_index
+                        );
+                        drop_event_subscribers(runtime.as_ref(), &key);
+                        return;
+                    }
+                },
+                Err(err) => {
+                    error!(
+                        "dropping event subscription after hydration failure for #{}:{}: {err}",
+                        event_ref.block_number, event_ref.event_index
+                    );
+                    drop_event_subscribers(runtime.as_ref(), &key);
+                    return;
+                }
+            };
 
             let notification = NotificationMessage {
                 body: NotificationBody::EventNotification {
                     key: key.clone(),
                     event: event_ref,
-                    decoded_event: decoded_events.into_iter().next(),
+                    decoded_event: Some(decoded_event),
                 },
             };
-            txs.retain(|tx| keep_subscriber(tx, &notification));
-        }
-        if subs.get(&key).is_some_and(Vec::is_empty) {
-            subs.remove(&key);
-        }
+            let mut subs = lock_or_recover(&runtime.events_subs, "events_subs");
+            if let Some(txs) = subs.get_mut(&key) {
+                txs.retain(|tx| keep_subscriber(tx, &notification));
+            }
+            if subs.get(&key).is_some_and(Vec::is_empty) {
+                subs.remove(&key);
+            }
+        });
     }
 }
 
-fn is_state_pruned_error(err: &OnlineClientAtBlockError) -> bool {
-    match err {
-        OnlineClientAtBlockError::CannotGetSpecVersion {
-            reason: BackendError::Rpc(RpcError::ClientError(subxt::rpcs::Error::User(user_err))),
-            ..
-        } => user_err.code == 4003 && user_err.message.contains("State already discarded"),
-        _ => false,
-    }
+fn drop_event_subscribers(runtime: &RuntimeState, key: &Key) {
+    lock_or_recover(&runtime.events_subs, "events_subs").remove(key);
 }
 
 fn keep_subscriber(tx: &mpsc::Sender<NotificationMessage>, msg: &NotificationMessage) -> bool {
@@ -838,7 +731,7 @@ fn value_to_json(v: &Value<()>) -> serde_json::Value {
     }
 }
 
-pub fn composite_to_json(c: &Composite<()>) -> serde_json::Value {
+pub(crate) fn composite_to_json(c: &Composite<()>) -> serde_json::Value {
     match c {
         Composite::Named(fields) => {
             let map: serde_json::Map<String, serde_json::Value> = fields
@@ -1254,7 +1147,6 @@ pub async fn run_indexer(
     runtime: Arc<RuntimeState>,
 ) -> Result<(), IndexError> {
     let index_variant = spec.index_variant;
-    let store_events = spec.store_events;
 
     info!(
         "📇 Finalized only: {}",
@@ -1264,10 +1156,6 @@ pub async fn run_indexer(
     info!(
         "📇 Variant indexing: {}",
         if index_variant { "yes" } else { "no" }
-    );
-    info!(
-        "📇 Event storage: {}",
-        if store_events { "yes" } else { "no" }
     );
 
     let spec_change_blocks_len = spec.spec_change_blocks.len();
@@ -1540,9 +1428,7 @@ pub async fn run_indexer(
 mod tests {
     use super::*;
     use scale_value::{Composite, Primitive, Value, ValueDef, Variant};
-    use serde_json::json;
     use zerocopy::FromBytes;
-    use zerocopy::IntoBytes;
 
     fn temp_trees() -> Trees {
         let dir = tempfile::tempdir().unwrap();
@@ -1615,29 +1501,19 @@ events = [
         }
     }
 
-    fn test_indexer_with_runtime(
-        trees: Trees,
-        store_events: bool,
-        runtime: Arc<RuntimeState>,
-    ) -> Indexer {
+    fn test_indexer_with_runtime(trees: Trees, runtime: Arc<RuntimeState>) -> Indexer {
         let config = test_config();
-        let mut processing_ctx = BlockProcessingContext::new(&config).unwrap();
-        processing_ctx.store_events = store_events;
         Indexer {
             trees,
             api: None,
             rpc: None,
             runtime,
-            processing_ctx: Arc::new(processing_ctx),
+            processing_ctx: Arc::new(BlockProcessingContext::new(&config).unwrap()),
         }
     }
 
-    fn test_indexer(trees: Trees, store_events: bool) -> Indexer {
-        test_indexer_with_runtime(
-            trees,
-            store_events,
-            test_runtime(WsConfig::default().max_total_subscriptions),
-        )
+    fn test_indexer(trees: Trees) -> Indexer {
+        test_indexer_with_runtime(trees, test_runtime(WsConfig::default().max_total_subscriptions))
     }
 
     fn u128_value(value: u128) -> Value<()> {
@@ -1825,7 +1701,7 @@ events = [
     #[test]
     fn process_queued_head_result_advances_contiguously() {
         let trees = temp_trees();
-        let indexer = test_indexer(trees.clone(), true);
+        let indexer = test_indexer(trees.clone());
         let initial = Span { start: 10, end: 10 };
         save_span(&trees.span, &initial, 1).unwrap();
 
@@ -1852,7 +1728,7 @@ events = [
     #[test]
     fn process_queued_head_result_buffers_out_of_order_blocks_until_gap_closes() {
         let trees = temp_trees();
-        let indexer = test_indexer(trees.clone(), true);
+        let indexer = test_indexer(trees.clone());
         let initial = Span { start: 20, end: 20 };
         save_span(&trees.span, &initial, 1).unwrap();
 
@@ -1893,7 +1769,7 @@ events = [
     #[test]
     fn process_queued_head_result_propagates_state_pruning_errors() {
         let trees = temp_trees();
-        let indexer = test_indexer(trees.clone(), true);
+        let indexer = test_indexer(trees.clone());
         let initial = Span { start: 30, end: 30 };
         save_span(&trees.span, &initial, 1).unwrap();
 
@@ -1936,7 +1812,7 @@ events = [
     #[test]
     fn queue_next_backfill_block_skips_block_zero() {
         let trees = temp_trees();
-        let indexer = test_indexer(trees, true);
+        let indexer = test_indexer(trees);
         let mut futures = Vec::new();
         let spans = Vec::new();
         let mut next_batch_block = Some(0);
@@ -1948,14 +1824,13 @@ events = [
     }
 
     #[test]
-    fn derive_event_builds_custom_key_and_stored_event_json() {
+    fn derive_event_builds_custom_key() {
         let spec = IndexSpec {
             name: "test".into(),
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
             spec_change_blocks: vec![0],
             index_variant: false,
-            store_events: true,
             keys: HashMap::from([(
                 "amount".into(),
                 crate::config::CustomKeyConfig::Scalar(ScalarKind::U128),
@@ -1977,12 +1852,10 @@ events = [
 
         let derived = ctx
             .derive_event(
-                1234,
                 "MyPallet",
                 "Stored",
                 9,
                 2,
-                7,
                 &Composite::Named(vec![("amount".into(), u128_value(999))]),
             )
             .unwrap();
@@ -1995,23 +1868,16 @@ events = [
                 value: CustomValue::U128(U128Text(999)),
             })]
         );
-        let stored: serde_json::Value =
-            serde_json::from_slice(&derived.stored_event_json.expect("expected stored event"))
-                .unwrap();
-        assert_eq!(stored["specVersion"], json!(1234));
-        assert_eq!(stored["eventName"], json!("Stored"));
-        assert_eq!(stored["fields"], json!({"amount": "999"}));
     }
 
     #[test]
-    fn derive_event_stores_variant_only_event_when_variant_indexing_enabled() {
+    fn derive_event_indexes_variant_only_event_when_variant_indexing_enabled() {
         let spec = IndexSpec {
             name: "test".into(),
             genesis_hash: "00".repeat(32),
             default_url: "ws://127.0.0.1:9944".into(),
             spec_change_blocks: vec![0],
             index_variant: true,
-            store_events: true,
             keys: HashMap::new(),
             pallets: vec![],
         };
@@ -2019,135 +1885,22 @@ events = [
 
         let derived = ctx
             .derive_event(
-                55,
                 "Unindexed",
                 "OnlyVariant",
                 4,
                 1,
-                3,
                 &Composite::Named(vec![]),
             )
             .unwrap();
 
         assert_eq!(derived.variant_key, Some(Key::Variant(4, 1)));
         assert!(derived.keys.is_empty());
-        let stored: serde_json::Value =
-            serde_json::from_slice(&derived.stored_event_json.expect("expected stored event"))
-                .unwrap();
-        assert_eq!(stored["specVersion"], json!(55));
-        assert_eq!(stored["palletIndex"], json!(4));
-        assert_eq!(stored["variantIndex"], json!(1));
-    }
-
-    #[test]
-    fn store_event_persists_decoded_event() {
-        let trees = temp_trees();
-        let indexer = test_indexer(trees.clone(), true);
-
-        indexer
-            .store_event(
-                42,
-                70_000,
-                1234,
-                "Balances",
-                "Deposit",
-                5,
-                2,
-                &Composite::Named(vec![("amount".into(), u128_value(999))]),
-            )
-            .unwrap();
-
-        let db_key = EventKey {
-            block_number: 42u32.into(),
-            event_index: 70_000u32.into(),
-        };
-        let bytes = trees.events.get(db_key.as_bytes()).unwrap().unwrap();
-        let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(stored["specVersion"], json!(1234));
-        assert_eq!(stored["palletName"], json!("Balances"));
-        assert_eq!(stored["eventName"], json!("Deposit"));
-        assert_eq!(stored["eventIndex"], json!(70_000));
-        assert_eq!(stored["fields"], json!({"amount": "999"}));
-    }
-
-    #[test]
-    fn store_event_skips_writes_when_disabled() {
-        let trees = temp_trees();
-        let indexer = test_indexer(trees.clone(), false);
-
-        indexer
-            .store_event(
-                42,
-                7,
-                1234,
-                "Balances",
-                "Ignored",
-                5,
-                2,
-                &Composite::Named(vec![]),
-            )
-            .unwrap();
-
-        let db_key = EventKey {
-            block_number: 42u32.into(),
-            event_index: 7u32.into(),
-        };
-        assert!(trees.events.get(db_key.as_bytes()).unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn notify_event_subscribers_includes_decoded_events() {
+    async fn notify_event_subscribers_drops_subscription_when_hydration_fails() {
         let trees = temp_trees();
-        let indexer = Indexer::new_test(trees.clone(), &test_config());
-        let key = Key::Custom(CustomKey {
-            name: "ref_index".into(),
-            value: CustomValue::U32(42),
-        });
-        let db_key = EventKey {
-            block_number: 7u32.into(),
-            event_index: 3u32.into(),
-        };
-        trees
-            .events
-            .insert(
-                db_key.as_bytes(),
-                serde_json::to_vec(&serde_json::json!({"specVersion": 1234, "eventName": "Ready"}))
-                    .unwrap(),
-            )
-            .unwrap();
-
-        let (tx, mut rx) = mpsc::channel(1);
-        process_sub_msg(
-            indexer.runtime.as_ref(),
-            &live_ws_config(WsConfig::default().max_total_subscriptions),
-            SubscriptionMessage::SubscribeEvents {
-                key: key.clone(),
-                tx,
-                response_tx: None,
-            },
-        )
-        .unwrap();
-
-        indexer.index_event_key(key.clone(), 7, 3).unwrap();
-
-        let NotificationBody::EventNotification { decoded_event, .. } =
-            rx.recv().await.unwrap().body
-        else {
-            panic!("expected events response");
-        };
-        let decoded_event = decoded_event.expect("expected decoded event");
-        assert_eq!(decoded_event.block_number, 7);
-        assert_eq!(decoded_event.event_index, 3);
-        assert_eq!(
-            decoded_event.event,
-            serde_json::json!({"specVersion": 1234, "eventName": "Ready"})
-        );
-    }
-
-    #[tokio::test]
-    async fn notify_event_subscribers_omits_decoded_events_when_not_stored() {
-        let trees = temp_trees();
-        let indexer = test_indexer(trees, false);
+        let indexer = Indexer::new_test(trees, &test_config());
         let key = Key::Custom(CustomKey {
             name: "ref_index".into(),
             value: CustomValue::U32(42),
@@ -2167,29 +1920,20 @@ events = [
 
         indexer.index_event_key(key.clone(), 7, 3).unwrap();
 
-        let NotificationBody::EventNotification {
-            event,
-            decoded_event,
-            ..
-        } = rx.recv().await.unwrap().body
-        else {
-            panic!("expected events response");
-        };
-        assert_eq!(
-            event,
-            EventRef {
-                block_number: 7,
-                event_index: 3,
-            }
-        );
-        assert!(decoded_event.is_none());
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await,
+            Ok(None) | Err(_)
+        ));
+        assert!(lock_or_recover(&indexer.runtime.events_subs, "events_subs")
+            .get(&key)
+            .is_none());
     }
 
     #[tokio::test]
-    async fn subscriptions_survive_replacing_the_indexer_instance() {
+    async fn replacing_indexer_instance_still_drops_subscription_on_hydration_failure() {
         let trees = temp_trees();
         let runtime = test_runtime(WsConfig::default().max_total_subscriptions);
-        let first_indexer = test_indexer_with_runtime(trees.clone(), true, runtime.clone());
+        let first_indexer = test_indexer_with_runtime(trees.clone(), runtime.clone());
         let key = Key::Custom(CustomKey {
             name: "ref_index".into(),
             value: CustomValue::U32(42),
@@ -2207,20 +1951,16 @@ events = [
         )
         .unwrap();
 
-        let replacement_indexer = test_indexer_with_runtime(trees, true, runtime);
-        replacement_indexer.index_event_key(key, 9, 2).unwrap();
+        let replacement_indexer = test_indexer_with_runtime(trees, runtime);
+        replacement_indexer.index_event_key(key.clone(), 9, 2).unwrap();
 
-        let NotificationBody::EventNotification { event, .. } = rx.recv().await.unwrap().body
-        else {
-            panic!("expected event notification");
-        };
-        assert_eq!(
-            event,
-            EventRef {
-                block_number: 9,
-                event_index: 2,
-            }
-        );
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await,
+            Ok(None)
+        ));
+        assert!(lock_or_recover(&replacement_indexer.runtime.events_subs, "events_subs")
+            .get(&key)
+            .is_none());
     }
 
     #[test]

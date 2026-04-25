@@ -17,7 +17,7 @@ This file is meant to help AI agents quickly find the right code and understand 
 - `src/metrics.rs`
   Owns the in-process `prometheus-client` registry, exposes the optional HTTP `/metrics` endpoint in OpenMetrics text format, and records process-level gauges, counters, and block-stage histograms.
 - `src/indexer.rs`
-  Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, decoded event storage, and notification fanout into shared subscriber state. Saves the current span before returning on any error so the supervisor loop can resume without data loss.
+  Owns the indexing pipeline, span tracking, resume logic, live-head tailing, event key derivation, and notification fanout into shared subscriber state. Saves the current span before returning on any error so the supervisor loop can resume without data loss.
 - `src/config.rs`
   Defines the TOML schema and resolves configured event params into runtime key-mapping rules.
 - `src/websockets.rs`
@@ -132,8 +132,7 @@ The suite uses helpers from `tests/common/mod.rs` to orchestrate this pipeline:
 2. Generate a local chain spec from the runtime WASM.
 3. Start `polkadot-omni-node` on random local ports.
 4. Render a matching synthetic index config for that node's genesis hash, with
-   optional test-specific overrides such as `store_events = false` or
-   `index_variant = true`.
+   optional test-specific overrides such as `index_variant = true`.
 5. Start `acuity-index` against a temporary database and test-specific runtime
    options.
 6. Seed deterministic synthetic transactions.
@@ -147,11 +146,11 @@ The current synthetic integration suite covers:
 - subscription lifecycle for `SubscribeStatus`, `UnsubscribeStatus`,
   `SubscribeEvents`, and `UnsubscribeEvents`
 - pushed `status` and `eventNotification` messages
-- config-sensitive behavior for `store_events = false` and `index_variant = true`
+- config-sensitive behavior for `index_variant = true`
 - request validation, subscription-limit handling, and idle timeout enforcement
 - fatal startup refusal on chain genesis-hash mismatch
 - process restart plus RPC outage/recovery behavior, including the documented
-  split between sled-backed requests and RPC-backed `Variants`
+  split between local requests and RPC-backed `Variants` / `GetEvents`
 
 Because this path validates the actual WebSocket interface, it catches
 integration breakage across runtime metadata, config rendering, indexing,
@@ -214,8 +213,6 @@ The sled layout is opened in `Trees::open` in `src/shared.rs`.
 - `index`
   Stores custom and built-in query keys under a compact binary prefix plus a
   `(block_number, event_index)` suffix encoded as big-endian `u32` values.
-- `events`
-  Stores decoded event JSON keyed by `(block_number, event_index)`.
 
 The two main query surfaces are:
 
@@ -253,8 +250,7 @@ This is why the README describes the indexer as indexing backward while simultan
     - Optionally write a variant index record if `index_variant` is enabled.
     - Decode fields schema-lessly into `scale_value::Composite<()>`.
     - Derive indexing keys.
-     - Write event references for each derived key.
-     - Optionally store a JSON-encoded decoded event if `store_events` is enabled.
+    - Write event references for each derived key.
 
 Operational detail:
 
@@ -342,7 +338,7 @@ When loading spans, the indexer may discard or trim them if they are stale relat
 
 - If `spec.spec_change_blocks` indicates the index spec changed starting at some block, affected spans are removed or split so that only the stale portion is reindexed.
 
-Changes to `index_variant` or `store_events` only trigger historical reindexing if
+Changes to `index_variant` only trigger historical reindexing if
 the spec revision is advanced via `spec_change_blocks`.
 
 Important invariants:
@@ -418,7 +414,6 @@ Top-level fields:
 - `genesis_hash`
 - `default_url`
 - `index_variant`
-- `store_events`
 - `spec_change_blocks`
 - `keys`
 - `pallets`
@@ -430,8 +425,8 @@ Runtime options (`url`, `db_path`, `db_mode`, `db_cache_capacity`, `queue_depth`
 are loaded from a separate `OptionsConfig` TOML file via the
 `--options-config` CLI flag. At startup, `resolve_args()` merges those values with
 **CLI flags > `--options-config` file > built-in defaults** precedence. `finalized`
-uses OR logic: `cli_flag || options_flag.unwrap_or(false)`. `index_variant` and
-`store_events` come only from `IndexSpec`.
+uses OR logic: `cli_flag || options_flag.unwrap_or(false)`. `index_variant` comes
+only from `IndexSpec`.
 
 Pallet configuration uses one mode: explicit event mappings in TOML.
 
@@ -509,12 +504,12 @@ These are answered directly from sled or RPC in `process_msg(...)`:
 - `GetEvents { key }`
 - `SizeOnDisk`
 
-`GetEvents` reads at most the most recent 100 matching event refs. If matching decoded event JSON exists in the `events` tree, it is attached as `decodedEvents`.
+`GetEvents` reads matching event refs from sled, then hydrates `decodedEvents` from the node before responding.
 
 Operational detail:
 
-- `Status`, `GetEvents`, and `SizeOnDisk` are sled-backed and continue working while the node RPC is unavailable.
-- `Variants` requires a live RPC handle. During reconnect backoff it returns a request-scoped `temporarily_unavailable` error instead of disconnecting the client.
+- `Status` and `SizeOnDisk` are local and continue working while the node RPC is unavailable.
+- `Variants` and `GetEvents` require a live RPC handle. During reconnect backoff they return a request-scoped `temporarily_unavailable` error instead of disconnecting the client.
 
 ### Subscriptions
 
@@ -604,7 +599,7 @@ Chain-specific semantic names such as `ref_index` must be declared by the spec a
 
 ## Gotchas
 
-- Do not assume every event is stored in `events`. That only happens when `store_events = true` in the active index spec and the event was considered indexable or variant-indexed.
+- Do not assume decoded event payloads are available without node access. Event refs are stored locally, but decoded payloads for `GetEvents` and `eventNotification` are hydrated from the node on demand.
 - Do not assume every decoded field is named. Some event fields are positional and TOML may reference them by stringified index like `"0"`.
 - Do not assume block indexing completes in numeric order. Both backfill and head processing can finish out of order and are stitched together afterward.
 - Do not bypass genesis-hash checks when reusing an existing database path.

@@ -21,16 +21,21 @@ pub mod genesis_config_presets {
     use super::*;
     use crate::{
         interface::{Balance, MinimumBalance},
-        sp_keyring::Sr25519Keyring,
-        BalancesConfig, ParachainSystemConfig, RuntimeGenesisConfig, SudoConfig,
+        sp_keyring::{Ed25519Keyring, Sr25519Keyring},
+        BalancesConfig, GrandpaConfig, ParachainSystemConfig, RuntimeGenesisConfig, SudoConfig,
     };
     use alloc::{vec, vec::Vec};
     use cumulus_primitives_core::ParaId;
     use serde_json::Value;
     use sp_consensus_aura::sr25519::AuthorityId as AuraId;
+    use sp_consensus_grandpa::AuthorityId as GrandpaId;
 
     fn dev_authority() -> AuraId {
         Sr25519Keyring::Alice.public().into()
+    }
+
+    fn dev_grandpa_authority() -> GrandpaId {
+        Ed25519Keyring::Alice.public().into()
     }
 
     pub fn development_config_genesis() -> Value {
@@ -43,6 +48,9 @@ pub mod genesis_config_presets {
             },
             aura: pallet_aura::GenesisConfig {
                 authorities: vec![dev_authority()],
+            },
+            grandpa: GrandpaConfig {
+                authorities: vec![(dev_grandpa_authority(), 1)],
             },
             parachain_system: ParachainSystemConfig {
                 parachain_id: ParaId::new(1000),
@@ -136,15 +144,18 @@ mod runtime {
     pub type Aura = pallet_aura::Pallet<Runtime>;
 
     #[runtime::pallet_index(4)]
-    pub type Balances = pallet_balances::Pallet<Runtime>;
+    pub type Grandpa = pallet_grandpa::Pallet<Runtime>;
 
     #[runtime::pallet_index(5)]
-    pub type Sudo = pallet_sudo::Pallet<Runtime>;
+    pub type Balances = pallet_balances::Pallet<Runtime>;
 
     #[runtime::pallet_index(6)]
-    pub type TransactionPayment = pallet_transaction_payment::Pallet<Runtime>;
+    pub type Sudo = pallet_sudo::Pallet<Runtime>;
 
     #[runtime::pallet_index(7)]
+    pub type TransactionPayment = pallet_transaction_payment::Pallet<Runtime>;
+
+    #[runtime::pallet_index(8)]
     pub type Synthetic = pallet_synthetic::Pallet<Runtime>;
 }
 
@@ -171,6 +182,16 @@ impl pallet_aura::Config for Runtime {
     type MaxAuthorities = ConstU32<32>;
     type AllowMultipleBlocksPerSlot = ConstBool<false>;
     type SlotDuration = pallet_aura::MinimumPeriodTimesTwo<Runtime>;
+}
+
+impl pallet_grandpa::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+    type MaxAuthorities = ConstU32<32>;
+    type MaxNominators = ConstU32<0>;
+    type MaxSetIdSessionEntries = ConstU64<0>;
+    type KeyOwnerProof = sp_core::Void;
+    type EquivocationReportSystem = ();
 }
 
 impl parachain_info::Config for Runtime {}
@@ -286,6 +307,33 @@ impl_runtime_apis! {
 
         fn authorities() -> Vec<sp_consensus_aura::sr25519::AuthorityId> {
             pallet_aura::Authorities::<Runtime>::get().into_inner()
+        }
+    }
+
+    impl sp_consensus_grandpa::GrandpaApi<Block> for Runtime {
+        fn grandpa_authorities() -> sp_consensus_grandpa::AuthorityList {
+            Grandpa::grandpa_authorities()
+        }
+
+        fn current_set_id() -> sp_consensus_grandpa::SetId {
+            Grandpa::current_set_id()
+        }
+
+        fn submit_report_equivocation_unsigned_extrinsic(
+            _equivocation_proof: sp_consensus_grandpa::EquivocationProof<
+                <Block as frame::traits::Block>::Hash,
+                sp_runtime::traits::NumberFor<Block>,
+            >,
+            _key_owner_proof: sp_consensus_grandpa::OpaqueKeyOwnershipProof,
+        ) -> Option<()> {
+            None
+        }
+
+        fn generate_key_ownership_proof(
+            _set_id: sp_consensus_grandpa::SetId,
+            _authority_id: sp_consensus_grandpa::AuthorityId,
+        ) -> Option<sp_consensus_grandpa::OpaqueKeyOwnershipProof> {
+            None
         }
     }
 

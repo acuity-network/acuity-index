@@ -30,3 +30,6 @@ acuity-index <COMMAND>
 | `-v / -q` | none | Increase or decrease log verbosity |
 
 `run` requires a positional `&lt;INDEX_SPEC&gt;` before any options.
+
+Running with `--finalized` also enables finalized proof responses for
+`GetEvents` requests that set `includeProofs: true`.

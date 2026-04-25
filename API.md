@@ -139,6 +139,7 @@ Request fields:
 - `key`: query key
 - `limit`: optional `u16`, default `100`
 - `before`: optional event cursor
+- `includeProofs`: optional boolean, default `false`
 
 Request:
 
@@ -148,7 +149,8 @@ Request:
   "type": "GetEvents",
   "key": {"type": "Custom", "value": {"name": "ref_index", "kind": "u32", "value": 42}},
   "limit": 100,
-  "before": null
+  "before": null,
+  "includeProofs": false
 }
 ```
 
@@ -179,6 +181,20 @@ Response payload:
 - `key`: the queried key
 - `events`: matching event references, newest first
 - `decodedEvents`: decoded payloads for the returned event refs
+- `proofsByBlock`: omitted unless `includeProofs` was requested
+- `proofsStatus`: omitted unless `includeProofs` was requested
+
+`proofsByBlock` has three states:
+
+- omitted: proofs were not requested
+- `null`: proofs were requested but are unavailable
+- array: proofs were requested and included
+
+Proofs are only available when the indexer is currently running in finalized
+mode. In that case, the server returns one proof object per returned block,
+newest block first, containing the finalized block hash, header, `System.Events`
+storage key/value pair, and the storage proof needed to verify that value
+against the header state root.
 
 Each `EventRef` contains:
 
@@ -190,6 +206,21 @@ Each `DecodedEvent` contains:
 - `blockNumber`: `u32`
 - `eventIndex`: zero-based `u32` ordinal within the block
 - `event`: decoded event JSON
+
+Each `EventBlockProof` contains:
+
+- `blockNumber`: `u32`
+- `blockHash`: hex-encoded block hash
+- `header`: serialized block header JSON
+- `storageKey`: hex-encoded `System.Events` storage key
+- `storageValue`: hex-encoded SCALE-encoded `System.Events` bytes for that block
+- `storageProof`: array of hex-encoded trie proof nodes
+
+`proofsStatus` contains:
+
+- `available`: boolean
+- `reason`: stable machine-readable reason such as `included`, `rpc_proof_unavailable`, or `finalized_proofs_unavailable`
+- `message`: human-readable explanation
 
 Decoded event JSON currently contains:
 
@@ -228,7 +259,48 @@ Example:
           }
         }
       }
-    ]
+    ],
+    "proofsByBlock": [
+      {
+        "blockNumber": 50,
+        "blockHash": "0xabc123...",
+        "header": {
+          "parent_hash": "0x...",
+          "number": 50,
+          "state_root": "0x...",
+          "extrinsics_root": "0x...",
+          "digest": {"logs": []}
+        },
+        "storageKey": "0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7",
+        "storageValue": "0x...",
+        "storageProof": ["0x..."]
+      }
+    ],
+    "proofsStatus": {
+      "available": true,
+      "reason": "included",
+      "message": "Finalized event proofs included."
+    }
+  }
+}
+```
+
+Example when proofs were requested but the indexer is not in finalized mode:
+
+```json
+{
+  "id": 3,
+  "type": "events",
+  "data": {
+    "key": {"type": "Custom", "value": {"name": "ref_index", "kind": "u32", "value": 42}},
+    "events": [{"blockNumber": 50, "eventIndex": 3}],
+    "decodedEvents": [],
+    "proofsByBlock": null,
+    "proofsStatus": {
+      "available": false,
+      "reason": "finalized_proofs_unavailable",
+      "message": "Finalized proofs are only available when the indexer is running with finalized indexing."
+    }
   }
 }
 ```

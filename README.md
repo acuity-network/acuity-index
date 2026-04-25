@@ -37,6 +37,7 @@ Detailed source documents remain available too:
 - **Safe shutdown** — persists progress and exits cleanly on termination signals or when the upstream node disconnects
 - **Backward indexing** — indexes from the chain tip backwards while simultaneously tracking new blocks
 - **WebSocket API** — query events by key, subscribe to live updates, and inspect chain metadata
+- **Optional finalized proofs** — `GetEvents` can include verifiable `System.Events` storage proofs when the indexer runs in finalized mode
 - **Concurrent block fetching** — configurable queue depth for parallel backfill and HEAD catch-up requests
 
 Any Substrate chain can be supported by generating or writing an index specification TOML and passing it as `<INDEX_SPEC>`.
@@ -99,6 +100,11 @@ acuity-index <COMMAND>
 Runtime option precedence: **CLI flags > `--options-config` file > built-in defaults**.
 `index_variant` is a top-level index spec field, not a runtime option.
 
+When clients send `GetEvents` with `"includeProofs": true`, the response may also
+carry `proofsByBlock` plus `proofsStatus` metadata. Proofs are only available
+while the indexer is running with `--finalized` indexing; otherwise the response
+returns `proofsByBlock: null` with an explanatory `proofsStatus`.
+
 When `run <INDEX_SPEC>` points to a file, `acuity-index` watches that file for changes.
 Accepted spec edits restart only the RPC/indexer loop; the WebSocket and metrics
 servers stay up. Changes to `name` or `genesis_hash` are rejected and the current
@@ -128,13 +134,21 @@ If the index-spec output file already exists, `generate-index-spec` fails unless
 
 ## Local Synthetic Devnet
 
-This repository now includes a minimal in-repo Polkadot SDK runtime under `runtime/` and a matching synthetic index spec renderer in `src/synthetic_devnet.rs`.
+This repository now includes a minimal in-repo Polkadot SDK runtime under `runtime/`,
+a checked-in example index spec at [`acuity.toml`](./acuity.toml), and a matching
+synthetic index spec renderer in `src/synthetic_devnet.rs`.
 
 The synthetic runtime is intentionally small and deterministic:
 
 - one custom `Synthetic` pallet emits searchable `u32`, `bytes32`, `account_id`, and multi-value event fields
+- the local runtime now includes GRANDPA so finalized-head and proof-oriented flows can be exercised end to end
 - `just synthetic-node` runs `polkadot-omni-node --instant-seal --pool-type single-state` for ad hoc local experimentation and smoke-style seeding
 - `just benchmark-indexing` starts its own disposable synthetic node with `--dev-block-time 100 --pool-type single-state` and does not use `--instant-seal`
+
+The ignored integration suite also includes proof-oriented coverage:
+
+- default mode verifies that `includeProofs` reports proofs as unavailable when the indexer is not running with `--finalized`
+- finalized-mode coverage starts a libp2p-enabled local node, runs the indexer with `--finalized`, requests proofs through `GetEvents`, and verifies the returned header plus storage proof against the block state root
 
 Useful recipes:
 

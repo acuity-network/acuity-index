@@ -9,7 +9,7 @@ use subxt::{
     rpcs::methods::legacy::LegacyRpcMethods,
 };
 
-use crate::shared::{DecodedEvent, EventRef, IndexError, internal_error};
+use crate::shared::{DecodedEvent, EventBlockProof, EventRef, HexBytes, IndexError, internal_error};
 
 pub(crate) struct FetchedBlock {
     pub(crate) block_number: u32,
@@ -81,6 +81,72 @@ pub(crate) async fn hydrate_event_refs(
     }
 
     Ok(decoded_events)
+}
+
+pub(crate) async fn fetch_event_block_proofs(
+    rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    event_refs: &[EventRef],
+) -> Result<Vec<EventBlockProof>, IndexError> {
+    if event_refs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut block_numbers = AHashSet::<u32>::new();
+    for event_ref in event_refs {
+        block_numbers.insert(event_ref.block_number);
+    }
+
+    let mut proofs = Vec::with_capacity(block_numbers.len());
+    for block_number in block_numbers {
+        proofs.push(fetch_event_block_proof(rpc, block_number).await?);
+    }
+    proofs.sort_by_key(|proof| std::cmp::Reverse(proof.block_number));
+
+    Ok(proofs)
+}
+
+async fn fetch_event_block_proof(
+    rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
+    block_number: u32,
+) -> Result<EventBlockProof, IndexError> {
+    let storage_key = system_events_storage_key();
+    let block_hash = rpc
+        .chain_get_block_hash(Some(block_number.into()))
+        .await?
+        .ok_or(IndexError::BlockNotFound(block_number))?;
+    let header = rpc
+        .chain_get_header(Some(block_hash))
+        .await?
+        .ok_or(IndexError::BlockNotFound(block_number))?;
+    let storage_value = rpc
+        .state_get_storage(&storage_key, Some(block_hash))
+        .await?
+        .ok_or_else(|| internal_error(format!("System.Events missing at block {block_number}")))?;
+    let read_proof = rpc
+        .state_get_read_proof([storage_key.as_slice()], Some(block_hash))
+        .await?;
+
+    Ok(EventBlockProof {
+        block_number,
+        block_hash: HexBytes(block_hash.as_ref().to_vec()),
+        header: serde_json::to_value(&header)?,
+        storage_key: HexBytes(storage_key.to_vec()),
+        storage_value: HexBytes(storage_value),
+        storage_proof: read_proof
+            .proof
+            .into_iter()
+            .map(|bytes| HexBytes(bytes.0))
+            .collect(),
+    })
+}
+
+pub(crate) fn system_events_storage_key() -> [u8; 32] {
+    let system = sp_crypto_hashing::twox_128(b"System");
+    let events = sp_crypto_hashing::twox_128(b"Events");
+    let mut res = [0u8; 32];
+    res[..16].copy_from_slice(&system);
+    res[16..].copy_from_slice(&events);
+    res
 }
 
 fn decode_requested_block_events(
@@ -185,6 +251,14 @@ mod tests {
                 "eventIndex": 7,
                 "fields": {"amount": "999"},
             })
+        );
+    }
+
+    #[test]
+    fn system_events_storage_key_matches_substrate_layout() {
+        assert_eq!(
+            hex::encode(system_events_storage_key()),
+            "26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7"
         );
     }
 }

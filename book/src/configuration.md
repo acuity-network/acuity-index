@@ -15,6 +15,9 @@ CLI flags > --options-config file > built-in defaults
 
 Each chain is described by an index specification passed as `<INDEX_SPEC>`.
 
+The repository also includes a larger checked-in example spec at
+[`acuity.toml`](../../acuity.toml).
+
 ```toml
 name = "mychain"
 genesis_hash = "abc123..."
@@ -105,3 +108,7 @@ Supported fields:
 | `metrics_port` | integer | disabled |
 
 `index_variant` belongs in the index spec, not the runtime options file.
+
+When `finalized = true`, `GetEvents` can return finalized block proofs for
+requests that set `includeProofs = true`. In non-finalized mode the same request
+shape is accepted, but the response reports proofs as unavailable.

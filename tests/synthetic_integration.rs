@@ -2,16 +2,20 @@ mod common;
 
 use acuity_index::synthetic_devnet::{
     QueryExpectation, decoded_event_names, events_len, fetch_genesis_hash, fetch_status,
-    get_events, key_bytes32, key_u32, pick_unused_port, size_on_disk, spans_cover_tip,
-    synthetic_digest,
+    get_events, get_events_with_proofs, key_bytes32, key_u32, pick_unused_port, size_on_disk,
+    spans_cover_tip, synthetic_digest,
     validate_query_expectation, wait_for_indexed_tip, wait_for_node,
 };
 use serde_json::{Value, json};
+use sp_core::{Blake2Hasher, H256};
+use sp_state_machine::read_proof_check;
+use sp_trie::StorageProof;
 use std::{
     error::Error,
     io,
     time::{Duration, Instant},
 };
+use subxt::{OnlineClient, PolkadotConfig, config::substrate::SubstrateHeader, ext::codec::Encode, utils::H256 as SubxtH256};
 
 use common::{
     ConfigOverrides, IndexerOptions, SyntheticStack, WsClient, build_chain_spec,
@@ -36,6 +40,104 @@ fn response_events(response: &Value) -> Result<Vec<(u64, u64)>, Box<dyn Error>> 
             Ok((block_number, event_index))
         })
         .collect()
+}
+
+fn response_decoded_event<'a>(
+    response: &'a Value,
+    block_number: u64,
+    event_index: u64,
+) -> Result<&'a Value, Box<dyn Error>> {
+    response["data"]["decodedEvents"]
+        .as_array()
+        .ok_or_else(|| io::Error::other(format!("missing decodedEvents array in response: {response}")))?
+        .iter()
+        .find(|event| {
+            event["blockNumber"].as_u64() == Some(block_number)
+                && event["eventIndex"].as_u64() == Some(event_index)
+        })
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "missing decoded event #{block_number}:{event_index} in response: {response}"
+            ))
+            .into()
+        })
+}
+
+fn response_block_proof<'a>(response: &'a Value, block_number: u64) -> Result<&'a Value, Box<dyn Error>> {
+    response["data"]["proofsByBlock"]
+        .as_array()
+        .ok_or_else(|| io::Error::other(format!("missing proofsByBlock array in response: {response}")))?
+        .iter()
+        .find(|proof| proof["blockNumber"].as_u64() == Some(block_number))
+        .ok_or_else(|| {
+            io::Error::other(format!("missing proof for block {block_number} in response: {response}")).into()
+        })
+}
+
+fn hex_bytes(value: &Value) -> Result<Vec<u8>, Box<dyn Error>> {
+    let encoded = value
+        .as_str()
+        .ok_or_else(|| io::Error::other(format!("expected hex string, got: {value}")))?;
+    let trimmed = encoded.strip_prefix("0x").unwrap_or(encoded);
+    Ok(hex::decode(trimmed)?)
+}
+
+fn hex_h256(value: &Value) -> Result<H256, Box<dyn Error>> {
+    let bytes = hex_bytes(value)?;
+    let len = bytes.len();
+    let array: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| io::Error::other(format!("expected 32-byte hash, got {len} bytes")))?;
+    Ok(H256::from(array))
+}
+
+type LightClientHeader = SubstrateHeader<SubxtH256>;
+
+async fn verify_response_event_proof(
+    stack: &SyntheticStack,
+    response: &Value,
+    block_number: u64,
+    event_index: u64,
+) -> Result<(), Box<dyn Error>> {
+    let proof = response_block_proof(response, block_number)?;
+    let block_hash = hex_h256(&proof["blockHash"])?;
+    let header: LightClientHeader = serde_json::from_value(proof["header"].clone())?;
+    let header_hash = H256::from(sp_crypto_hashing::blake2_256(&header.encode()));
+    assert_eq!(header_hash, block_hash);
+    let state_root = H256::from_slice(header.state_root.as_ref());
+    let storage_key = hex_bytes(&proof["storageKey"])?;
+    let storage_value = hex_bytes(&proof["storageValue"])?;
+    let storage_proof = proof["storageProof"]
+        .as_array()
+        .ok_or_else(|| io::Error::other(format!("missing storageProof array: {proof}")))?
+        .iter()
+        .map(hex_bytes)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let proven = read_proof_check::<Blake2Hasher, _>(
+        state_root,
+        StorageProof::new(storage_proof),
+        [&storage_key],
+    )
+    .map_err(|err| io::Error::other(err.to_string()))?;
+    assert_eq!(proven.get(&storage_key), Some(&Some(storage_value.clone())));
+
+    let api = OnlineClient::<PolkadotConfig>::from_insecure_url(&stack.node_url).await?;
+    let at_block = api.at_block(block_hash).await?;
+    let events = at_block.events().from_bytes(storage_value);
+    let event = events
+        .iter()
+        .find_map(|event| match event {
+            Ok(event) if u64::from(event.index()) == event_index => Some(Ok(event)),
+            Ok(_) => None,
+            Err(err) => Some(Err(err)),
+        })
+        .ok_or_else(|| io::Error::other(format!("missing event #{block_number}:{event_index} in proven System.Events")))??;
+    let decoded = response_decoded_event(response, block_number, event_index)?;
+    assert_eq!(decoded["event"]["palletName"], Value::from(event.pallet_name()));
+    assert_eq!(decoded["event"]["eventName"], Value::from(event.event_name()));
+    assert_eq!(decoded["event"]["eventIndex"], Value::from(event_index));
+    Ok(())
 }
 
 fn find_query<'a>(
@@ -506,6 +608,74 @@ async fn subscriptions_deliver_status_and_event_notifications() -> Result<(), Bo
 }
 
 #[tokio::test]
+#[ignore = "requires polkadot-omni-node, a release runtime build, and light-client bootnode support"]
+async fn get_events_with_proofs_reports_unavailable_without_finalized_indexing(
+) -> Result<(), Box<dyn Error>> {
+    let stack = SyntheticStack::start(ConfigOverrides::default(), IndexerOptions::default()).await?;
+    let temp = tempfile::tempdir()?;
+    let manifest_path = temp.path().join("proofs-unavailable.json");
+
+    let manifest = run_bulk_seeder(&stack.node_url, &manifest_path, 9200, 1, 3)?;
+    wait_for_indexed_tip(
+        &stack.indexer_url,
+        manifest.end_block,
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let response = get_events_with_proofs(&stack.indexer_url, key_u32("batch_id", 9200), 10, true).await?;
+    assert_eq!(response["type"], "events");
+    assert_eq!(events_len(&response), 3);
+    assert_eq!(response["data"]["proofsByBlock"], Value::Null);
+    assert_eq!(response["data"]["proofsStatus"]["available"], Value::Bool(false));
+    assert_eq!(
+        response["data"]["proofsStatus"]["reason"],
+        Value::from("finalized_proofs_unavailable")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires polkadot-omni-node, a release runtime build, and embedded light-client networking"]
+async fn finalized_event_proofs_verify_against_returned_header_and_storage_proof(
+) -> Result<(), Box<dyn Error>> {
+    let stack = SyntheticStack::start(
+        ConfigOverrides::default(),
+        IndexerOptions {
+            finalized: true,
+            light_client_ws: true,
+            ..IndexerOptions::default()
+        },
+    )
+    .await?;
+    let temp = tempfile::tempdir()?;
+    let manifest_path = temp.path().join("proofs-finalized.json");
+
+    let manifest = run_bulk_seeder(&stack.node_url, &manifest_path, 9250, 1, 3)?;
+    wait_for_indexed_tip(
+        &stack.indexer_url,
+        manifest.end_block,
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let response = get_events_with_proofs(&stack.indexer_url, key_u32("batch_id", 9250), 10, true).await?;
+    assert_eq!(response["type"], "events");
+    assert_eq!(events_len(&response), 3);
+    assert_eq!(response["data"]["proofsStatus"]["available"], Value::Bool(true));
+    assert!(!response["data"]["proofsByBlock"].is_null());
+
+    let (block_number, event_index) = response_events(&response)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| io::Error::other("missing proven event in response"))?;
+    verify_response_event_proof(&stack, &response, block_number, event_index).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "requires polkadot-omni-node and a release runtime build"]
 async fn variant_queries_return_hydrated_decoded_events() -> Result<(), Box<dyn Error>> {
     let stack = SyntheticStack::start(
@@ -798,7 +968,7 @@ async fn startup_fails_on_chain_genesis_hash_mismatch() -> Result<(), Box<dyn Er
 
     build_chain_spec(&chain_spec)?;
 
-    let _node = start_node(&chain_spec, rpc_port, &node_base, &node_log)?;
+    let _node = start_node(&chain_spec, rpc_port, None, &node_base, &node_log)?;
     let node_url = format!("ws://127.0.0.1:{rpc_port}");
     wait_for_node(&node_url, 0, Duration::from_secs(30)).await?;
 

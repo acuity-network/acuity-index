@@ -42,6 +42,7 @@ Example:
 - `Status`: returns indexed block spans
 - `Variants`: returns pallet and event variant metadata
 - `GetEvents`: queries indexed events for a key, optionally paginated with `before`
+  and optionally enriched with finalized proofs via `includeProofs`
 - `SubscribeStatus`: subscribes to status changes
 - `SubscribeEvents`: subscribes to updates for one key
 - `UnsubscribeStatus`: removes a status subscription
@@ -120,7 +121,8 @@ Example:
     "value": {"name": "ref_index", "kind": "u32", "value": 42}
   },
   "limit": 100,
-  "before": null
+  "before": null,
+  "includeProofs": false
 }
 ```
 
@@ -129,6 +131,7 @@ Request fields:
 - `key`: query key
 - `limit`: optional `u16`, default `100`
 - `before`: optional event cursor
+- `includeProofs`: optional boolean, default `false`
 
 Response type: `events`
 
@@ -137,6 +140,13 @@ Response payload:
 - `key`: the queried key
 - `events`: matching event refs, newest first
 - `decodedEvents`: decoded payloads when event storage is enabled
+- `proofsByBlock`: omitted unless proofs were requested; `null` if requested but unavailable
+- `proofsStatus`: omitted unless proofs were requested
+
+Proofs are only returned while the indexer is running in finalized mode. When
+available, the response includes one proof object per returned block containing
+the finalized block hash, header, `System.Events` storage key/value pair, and the
+storage proof for that value.
 
 Each `EventRef` contains:
 
@@ -152,6 +162,21 @@ Each decoded event object contains:
 - `variantIndex`
 - `eventIndex`
 - `fields`
+
+Each proof object contains:
+
+- `blockNumber`
+- `blockHash`
+- `header`
+- `storageKey`
+- `storageValue`
+- `storageProof`
+
+`proofsStatus` contains:
+
+- `available`
+- `reason`
+- `message`
 
 Example response:
 
@@ -180,10 +205,35 @@ Example response:
           }
         }
       }
-    ]
+    ],
+    "proofsByBlock": [
+      {
+        "blockNumber": 50,
+        "blockHash": "0xabc123...",
+        "header": {
+          "parent_hash": "0x...",
+          "number": 50,
+          "state_root": "0x...",
+          "extrinsics_root": "0x...",
+          "digest": {"logs": []}
+        },
+        "storageKey": "0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7",
+        "storageValue": "0x...",
+        "storageProof": ["0x..."]
+      }
+    ],
+    "proofsStatus": {
+      "available": true,
+      "reason": "included",
+      "message": "Finalized event proofs included."
+    }
   }
 }
 ```
+
+If proofs were requested while the indexer is not running in finalized mode,
+`proofsByBlock` is returned as `null` and `proofsStatus.reason` is
+`finalized_proofs_unavailable`.
 
 ## Composite Custom Keys
 

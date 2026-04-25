@@ -261,6 +261,8 @@ mod websocket_tests {
                     event_index: 2,
                 }],
                 decoded_events: vec![],
+                proofs_by_block: None,
+                proofs_status: None,
             },
         };
         let json = serde_json::to_string(&msg).unwrap();

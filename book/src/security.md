@@ -63,6 +63,7 @@ Impact:
 - any reachable client can subscribe to live updates
 - any reachable client can call `SizeOnDisk`
 - any reachable client can retrieve decoded events while the service has live node access
+- any reachable client can request finalized block headers plus `System.Events` storage proofs when the service is running in finalized mode and `includeProofs` is enabled on `GetEvents`
 
 This is the largest remaining exposure and should be treated as a deliberate
 product decision rather than an implicit default.
@@ -107,10 +108,12 @@ Recent advisories called out in the current review include:
 
 - `RUSTSEC-2025-0057` via `sled -> fxhash`
 - `RUSTSEC-2024-0384` via `sled -> parking_lot -> instant`
-- `RUSTSEC-2026-0002` via `subxt -> subxt-lightclient -> smoldot-light -> lru`
+- `RUSTSEC-2026-0002` via `subxt-lightclient -> smoldot-light -> lru`
 
-These are dependency risks, not proof of a directly exploitable application bug,
-but they should stay on the maintenance backlog.
+These are dependency risks, not proof of a directly exploitable application bug.
+The `lru` advisory currently lands through synthetic proof-verification test
+tooling rather than the main production request path, but it should still stay on
+the maintenance backlog.
 
 ## Deployment Guidance
 

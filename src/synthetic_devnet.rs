@@ -338,6 +338,15 @@ pub async fn get_events(
     key: Value,
     limit: u16,
 ) -> Result<Value, Box<dyn Error>> {
+    get_events_with_proofs(indexer_url, key, limit, false).await
+}
+
+pub async fn get_events_with_proofs(
+    indexer_url: &str,
+    key: Value,
+    limit: u16,
+    include_proofs: bool,
+) -> Result<Value, Box<dyn Error>> {
     request_json_ws(
         indexer_url,
         json!({
@@ -345,6 +354,7 @@ pub async fn get_events(
             "type": "GetEvents",
             "key": key,
             "limit": limit,
+            "includeProofs": include_proofs,
         }),
     )
     .await

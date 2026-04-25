@@ -1,7 +1,7 @@
 //! WebSocket server — schema-less edition.
 
 use crate::shared::*;
-use crate::event_hydration::hydrate_event_refs;
+use crate::event_hydration::{fetch_event_block_proofs, hydrate_event_refs};
 use futures::{SinkExt, StreamExt};
 use sled::Tree;
 use std::{
@@ -276,12 +276,14 @@ pub async fn process_msg_variants(
 }
 
 pub async fn process_msg_get_events(
+    runtime: &RuntimeState,
     trees: &Trees,
     api: &OnlineClient<PolkadotConfig>,
     rpc: &LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     key: Key,
     before: Option<EventRef>,
     limit: u16,
+    include_proofs: bool,
     max_events_limit: usize,
 ) -> Result<ResponseBody, IndexError> {
     let event_refs = key.get_events(
@@ -291,10 +293,51 @@ pub async fn process_msg_get_events(
     )?;
     let decoded_events = hydrate_event_refs(api, rpc, &event_refs).await?;
 
+    let (proofs_by_block, proofs_status) = if include_proofs {
+        if !runtime.finalized_mode() {
+            (
+                Some(None),
+                Some(ProofsStatus {
+                    available: false,
+                    reason: "finalized_proofs_unavailable".into(),
+                    message: "Finalized proofs are only available when the indexer is running with finalized indexing.".into(),
+                }),
+            )
+        } else {
+            match fetch_event_block_proofs(rpc, &event_refs).await {
+                Ok(proofs) => (
+                    Some(Some(proofs)),
+                    Some(ProofsStatus {
+                        available: true,
+                        reason: "included".into(),
+                        message: "Finalized event proofs included.".into(),
+                    }),
+                ),
+                Err(err) => (
+                    Some(None),
+                    Some(ProofsStatus {
+                        available: false,
+                        reason: if err.is_recoverable() {
+                            "rpc_proof_unavailable"
+                        } else {
+                            "finalized_proofs_unavailable"
+                        }
+                        .into(),
+                        message: format!("Unable to include finalized proofs: {err}"),
+                    }),
+                ),
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     Ok(ResponseBody::Events {
         key,
         events: event_refs,
         decoded_events,
+        proofs_by_block,
+        proofs_status,
     })
 }
 
@@ -348,11 +391,16 @@ fn process_local_msg(
             )
         }
         RequestBody::Variants => return None,
-        RequestBody::GetEvents { key, limit, before } => {
+        RequestBody::GetEvents {
+            key,
+            limit,
+            before,
+            include_proofs,
+        } => {
             if let Err(err) = validate_key(&key) {
                 return Some(Ok(invalid_request_response(msg.id, err)));
             }
-            let _ = (before, limit, max_events_limit);
+            let _ = (before, limit, include_proofs, max_events_limit);
             return None;
         }
         RequestBody::SubscribeEvents { key } => {
@@ -557,8 +605,24 @@ pub async fn process_msg(
 
     let body = match msg.body {
         RequestBody::Variants => process_msg_variants(&rpc).await,
-        RequestBody::GetEvents { key, limit, before } => {
-            process_msg_get_events(trees, &api, &rpc, key, before, limit, max_events_limit).await
+        RequestBody::GetEvents {
+            key,
+            limit,
+            before,
+            include_proofs,
+        } => {
+            process_msg_get_events(
+                runtime,
+                trees,
+                &api,
+                &rpc,
+                key,
+                before,
+                limit,
+                include_proofs,
+                max_events_limit,
+            )
+            .await
         }
         _ => unreachable!(),
     };
@@ -1260,6 +1324,7 @@ mod tests {
                     key,
                     limit: 100,
                     before: None,
+                    include_proofs: false,
                 },
             },
             &sub_tx,
@@ -1437,6 +1502,7 @@ mod tests {
                     key,
                     limit: 100,
                     before: None,
+                    include_proofs: false,
                 },
             },
             &sub_tx,
@@ -1519,6 +1585,7 @@ mod tests {
                     key,
                     limit: 100,
                     before: None,
+                    include_proofs: false,
                 },
             },
             &sub_tx,
@@ -1566,6 +1633,7 @@ mod tests {
                     key,
                     limit: 100,
                     before: None,
+                    include_proofs: false,
                 },
             },
             &sub_tx,
@@ -1612,6 +1680,7 @@ mod tests {
                     key,
                     limit: 100,
                     before: None,
+                    include_proofs: false,
                 },
             },
             &sub_tx,

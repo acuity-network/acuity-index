@@ -36,4 +36,5 @@ This book is split across three overlapping audiences:
 - Hot reload for accepted index-spec changes
 - Concurrent backfill and head catch-up via configurable queue depth
 - Public JSON-over-WebSocket query interface
+- Optional finalized proof responses for `GetEvents`
 - In-repo synthetic runtime for integration testing and benchmarking

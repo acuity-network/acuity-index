@@ -15,6 +15,7 @@ pallet-synthetic = { path = "pallets/synthetic", default-features = false }
 polkadot-sdk = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2603", default-features = false, features = [
     "cumulus-primitives-core",
     "pallet-aura",
+    "pallet-grandpa",
     "runtime",
     "pallet-balances",
     "pallet-sudo",
@@ -22,6 +23,7 @@ polkadot-sdk = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "
     "pallet-transaction-payment",
     "pallet-transaction-payment-rpc-runtime-api",
     "sp-consensus-aura",
+    "sp-consensus-grandpa",
     "sp-keyring",
     "staging-parachain-info",
 ] }

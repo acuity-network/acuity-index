@@ -72,6 +72,7 @@ Impact:
 - Any reachable client can subscribe to live updates.
 - Any reachable client can call `SizeOnDisk`, which exposes operational metadata.
 - If event storage is enabled, any reachable client can retrieve decoded events through `GetEvents`.
+- If clients request `includeProofs` and the service is running in finalized mode, any reachable client can also retrieve finalized block headers plus `System.Events` storage proofs for the matching blocks.
 
 Assessment:
 
@@ -149,13 +150,13 @@ Assessment:
    - status: unmaintained
 
 3. `RUSTSEC-2026-0002`
-   - dependency chain: `subxt -> subxt-lightclient -> smoldot-light -> lru 0.12.5`
+   - dependency chain: `subxt-lightclient -> smoldot-light -> lru 0.12.5`
    - status: unsoundness in `IterMut`
 
 Assessment:
 
 - The `sled` advisories indicate maintenance risk in the storage stack.
-- The `lru` advisory is more serious in principle, but practical exposure depends on whether the affected light-client path is exercised in this deployment model.
+- The `lru` advisory currently lands through the synthetic proof-verification test tooling rather than the main production request path, but it should still be tracked.
 - These are dependency risks, not evidence of a directly exploitable application bug in this review.
 
 ## Recommended Next Steps

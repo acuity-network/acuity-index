@@ -21,9 +21,11 @@ This file is meant to help AI agents quickly find the right code and understand 
 - `src/config.rs`
   Defines the TOML schema and resolves configured event params into runtime key-mapping rules.
 - `src/websockets.rs`
-  Implements the public WebSocket API, request/response handling, and connection lifecycle.
+  Implements the public WebSocket API, request/response handling, connection lifecycle, and optional finalized proof inclusion for `GetEvents` responses.
 - `src/shared.rs`
-  Holds shared wire types, on-disk key formats, database tree handles, shared runtime state, and common enums like `Key`, `RequestMessage`, and `ResponseMessage`.
+  Holds shared wire types, on-disk key formats, database tree handles, shared runtime state, finalized-mode gating, and common enums like `Key`, `RequestMessage`, and `ResponseMessage`.
+- `src/event_hydration.rs`
+  Hydrates decoded events for API responses and, when requested, fetches finalized `System.Events` storage proofs keyed by block.
 - `src/config_gen.rs`
   Builds starter index spec TOML files from live runtime metadata.
 - `src/synthetic_devnet.rs`
@@ -35,9 +37,9 @@ This file is meant to help AI agents quickly find the right code and understand 
 - `runtime/`
   Separate in-repo Polkadot SDK runtime workspace used for local devnet testing. It builds a WASM runtime consumed by `polkadot-omni-node` and includes the custom `Synthetic` pallet used to exercise indexed key shapes.
 - `tests/common/mod.rs`
-  Process orchestration helpers for the synthetic integration test. It builds the runtime, generates a chain spec, starts the local node and indexer, runs the seeder, and manages child-process cleanup.
+  Process orchestration helpers for the synthetic integration test. It builds the runtime, generates a chain spec, starts the local node and indexer, can enable libp2p networking plus finalized indexing for proof-oriented flows, runs the seeder, and manages child-process cleanup.
 - `tests/synthetic_integration.rs`
-  Ignored external integration test that validates the full synthetic stack end to end: runtime build, local node, indexer startup, deterministic seeding, and WebSocket API query verification.
+  Ignored external integration test that validates the full synthetic stack end to end: runtime build, local node, indexer startup, deterministic seeding, WebSocket API query verification, and finalized event-proof verification.
 
 ## Synthetic Devnet Architecture
 
@@ -47,7 +49,7 @@ The stack has five layers:
 
 1. `runtime/` builds a small Polkadot SDK runtime WASM with standard system pallets plus a custom `Synthetic` pallet.
 2. `polkadot-omni-node` runs that WASM runtime locally from a generated chain spec.
-3. `src/synthetic_devnet.rs` renders the matching index specification for the synthetic pallet events.
+3. `src/synthetic_devnet.rs` renders the matching index specification for the synthetic pallet events and exposes helper calls for `GetEvents` with or without proofs.
 4. `src/bin/seed_synthetic_runtime.rs` writes deterministic on-chain data that should become queryable through the indexer.
 5. `acuity-index` indexes that chain normally, and tests/benchmarks validate the result through the public WebSocket API.
 
@@ -74,10 +76,11 @@ This keeps the synthetic workflow safe for disposable local chains whose genesis
 
 ### Synthetic Node Modes
 
-The synthetic tooling currently uses two local-node modes.
+The synthetic tooling currently uses multiple local-node modes.
 
 - `just synthetic-node` runs `polkadot-omni-node` in dev mode with `--instant-seal --pool-type single-state` for interactive local experimentation and smoke-style seeding.
 - `just benchmark-indexing` starts its own disposable dev node with `--dev-block-time 50 --pool-type single-state` and deliberately does not use `--instant-seal`.
+- finalized proof tests start a libp2p-enabled local node instead of instant-seal dev mode so a local light-client-compatible networking path is available during proof verification.
 - The benchmark path needs deterministic timed blocks, so the bulk seeder submits one extrinsic at a time and waits for on-chain inclusion before issuing the next submission.
 - The benchmark node avoids the instant-seal behavior that previously forced increasingly complex inclusion workarounds during large local seed runs.
 
@@ -143,6 +146,7 @@ The current synthetic integration suite covers:
 - smoke end-to-end indexing and manifest-backed `GetEvents` validation
 - request/response flows for `Status`, `Variants`, `GetEvents`, and `SizeOnDisk`
 - `GetEvents` ordering and `before` cursor pagination
+- `GetEvents includeProofs` behavior in both unavailable and finalized-proof-available modes
 - subscription lifecycle for `SubscribeStatus`, `UnsubscribeStatus`,
   `SubscribeEvents`, and `UnsubscribeEvents`
 - pushed `status` and `eventNotification` messages
@@ -187,11 +191,12 @@ The normal startup path lives in `src/main.rs`:
     c. If `--metrics-port` is configured, bind a separate HTTP listener that serves `/metrics`.
     d. Spawn an index-spec watcher task for the active `<INDEX_SPEC>` path.
 7. Enter the reconnect/supervisor loop (see [RPC Reconnection And Spec Reload](#rpc-reconnection-and-spec-reload) below). On each iteration:
-   a. Connect to the target node with `subxt` (retry with exponential backoff on transient failures).
-   b. Verify the connected chain genesis hash matches the config.
-   c. Publish the current RPC handle into shared runtime state.
-   d. Spawn `run_indexer(...)`.
-   e. Wait for a termination signal, an accepted watched-spec update, or indexer completion, then act accordingly.
+    a. Connect to the target node with `subxt` (retry with exponential backoff on transient failures).
+    b. Verify the connected chain genesis hash matches the config.
+    c. Publish the current RPC handle into shared runtime state.
+    d. Publish whether the current run is in finalized mode into shared runtime state so WebSocket proof responses match the active indexing mode.
+    e. Spawn `run_indexer(...)`.
+    f. Wait for a termination signal, an accepted watched-spec update, or indexer completion, then act accordingly.
 
 Startup error handling is centralized in a fallible `run()` path in `src/main.rs`. Configuration, database, and signal-registration failures return structured errors that are logged once before the process exits.
 
@@ -255,6 +260,18 @@ This is why the README describes the indexer as indexing backward while simultan
 Operational detail:
 
 - Runtime decoding of persisted sled keys/values is now defensive. Malformed span records or malformed index keys are skipped with error logging rather than panicking the process.
+
+### Event hydration and proof responses
+
+`GetEvents` always reads event refs from sled first, then hydrates decoded event
+payloads from the node for the returned refs.
+
+When the request sets `includeProofs = true`, `src/websockets.rs` also asks
+`src/event_hydration.rs` for one finalized proof per returned block. Each proof is
+derived from the block header plus a `state_get_read_proof` call for the
+`System.Events` storage item. The response surface intentionally distinguishes
+between proofs not requested, proofs requested but unavailable, and proofs
+successfully included.
 
 ### Key derivation
 

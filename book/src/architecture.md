@@ -11,14 +11,16 @@ entries in `sled`, and serves query access over WebSocket.
 - `src/indexer.rs`: indexing pipeline, resume logic, live-head tailing, event key
   derivation, notification fanout
 - `src/config.rs`: TOML schema and mapping resolution
-- `src/websockets.rs`: public API implementation and connection lifecycle
-- `src/shared.rs`: wire types, sled key layouts, shared runtime state
+- `src/websockets.rs`: public API implementation, connection lifecycle, and optional finalized proof inclusion for `GetEvents`
+- `src/shared.rs`: wire types, sled key layouts, shared runtime state, and finalized-mode gating for proof responses
+- `src/event_hydration.rs`: decoded-event hydration plus finalized `System.Events` proof fetching
 - `src/config_gen.rs`: live metadata to starter spec generation
 - `src/metrics.rs`: metrics registry and HTTP export
 - `src/synthetic_devnet.rs`: synthetic local chain helpers and shared test types
 
 The repository also includes an in-repo synthetic runtime workspace under
-`runtime/` plus node-backed integration and benchmarking paths.
+`runtime/`, a checked-in example spec at [`acuity.toml`](../../acuity.toml), plus
+node-backed integration and benchmarking paths.
 
 ## Startup Sequence
 
@@ -38,6 +40,9 @@ The long-lived tasks created before entering the supervisor loop are important:
 - a single process-lifetime WebSocket listener
 - an optional metrics listener serving `/metrics`
 - an index-spec watcher for accepted file changes
+
+The shared runtime state also tracks whether the current run is indexing
+finalized blocks so WebSocket proof responses stay aligned with the active mode.
 
 ## Data Model
 
@@ -68,6 +73,9 @@ High-level behavior:
 - resume an existing tail span or index the current head immediately
 - run backward backfill and live-head tracking concurrently
 
+If finalized mode is enabled, the same finalized-only setting also governs
+whether API callers can receive verifiable proof material for `GetEvents`.
+
 Per-block indexing follows this shape:
 
 1. fetch block hash from RPC
@@ -80,6 +88,10 @@ Per-block indexing follows this shape:
 8. derive indexing keys from explicit config
 9. write event references for each derived key
 10. store event refs locally and hydrate decoded event payloads from the node when queries or subscriptions need them
+
+When `GetEvents` requests `includeProofs = true`, the WebSocket layer also asks
+for one proof object per returned block. That proof is built from the block
+header plus `state_get_read_proof` over the `System.Events` storage key.
 
 Malformed persisted sled data is handled defensively during decode. Corrupt span
 records or malformed index keys are skipped with logging instead of panicking.
@@ -184,6 +196,10 @@ Layers:
 
 This is not a mocked shortcut. It exercises the normal RPC, metadata decoding,
 indexing, persistence, and query surfaces end to end.
+
+For proof-oriented tests, the local node is started in a libp2p-enabled mode
+instead of instant-seal dev mode so finalized proof verification can run against a
+more realistic finalized-chain setup.
 
 ## Invariants
 

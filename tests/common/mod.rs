@@ -65,6 +65,7 @@ pub fn build_chain_spec(output_path: &Path) -> Result<(), Box<dyn Error>> {
         .arg("1000")
         .arg("--relay-chain")
         .arg("rococo-local")
+        .arg("--raw-storage")
         .arg("--runtime")
         .arg(runtime_wasm())
         .arg("named-preset")
@@ -115,6 +116,8 @@ pub fn rewrite_config_table(
 #[derive(Clone, Debug)]
 pub struct IndexerOptions {
     pub queue_depth: u8,
+    pub finalized: bool,
+    pub light_client_ws: bool,
     pub max_events_limit: usize,
     pub max_total_subscriptions: Option<usize>,
     pub max_subscriptions_per_connection: Option<usize>,
@@ -127,6 +130,8 @@ impl Default for IndexerOptions {
     fn default() -> Self {
         Self {
             queue_depth: 1,
+            finalized: false,
+            light_client_ws: false,
             max_events_limit: 4096,
             max_total_subscriptions: None,
             max_subscriptions_per_connection: None,
@@ -140,16 +145,16 @@ impl Default for IndexerOptions {
 pub fn start_node(
     chain_spec_path: &Path,
     rpc_port: u16,
+    p2p_port: Option<u16>,
     base_path: &Path,
     log_path: &Path,
 ) -> Result<ManagedChild, Box<dyn Error>> {
     let log_file = File::create(log_path)?;
     let log_file_err = log_file.try_clone()?;
-    let child = Command::new("polkadot-omni-node")
+    let mut command = Command::new("polkadot-omni-node");
+    command
         .arg("--chain")
         .arg(chain_spec_path)
-        .arg("--dev")
-        .arg("--instant-seal")
         .arg("--pool-type")
         .arg("single-state")
         .arg("--state-pruning")
@@ -161,10 +166,28 @@ pub fn start_node(
         .arg("--prometheus-port")
         .arg("0")
         .arg("--no-prometheus")
-        .arg("--port")
-        .arg("0")
         .arg("--base-path")
-        .arg(base_path)
+        .arg(base_path);
+
+    if let Some(p2p_port) = p2p_port {
+        command
+            .arg("--dev-block-time")
+            .arg("200")
+            .arg("--alice")
+            .arg("--force-authoring")
+            .arg("--allow-private-ip")
+            .arg("--unsafe-force-node-key-generation");
+        command.arg("--network-backend").arg("libp2p");
+        command.arg("--listen-addr").arg(format!(
+            "/ip4/127.0.0.1/tcp/{p2p_port}/ws"
+        ));
+    } else {
+        command.arg("--dev");
+        command.arg("--instant-seal");
+        command.arg("--port").arg("0");
+    }
+
+    let child = command
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err))
         .spawn()?;
@@ -201,6 +224,10 @@ pub fn start_indexer(
         .arg(port.to_string())
         .arg("--max-events-limit")
         .arg(options.max_events_limit.to_string());
+
+    if options.finalized {
+        command.arg("--finalized");
+    }
 
     if let Some(max_total_subscriptions) = options.max_total_subscriptions {
         command
@@ -326,11 +353,16 @@ impl SyntheticStack {
         let node_log = temp.path().join("node.log");
         let indexer_log = temp.path().join("indexer.log");
         let rpc_port = pick_unused_port()?;
+        let node_p2p_port = if indexer_options.light_client_ws {
+            Some(pick_unused_port()?)
+        } else {
+            None
+        };
         let indexer_port = pick_unused_port()?;
 
         build_chain_spec(&chain_spec)?;
 
-        let node = start_node(&chain_spec, rpc_port, &node_base, &node_log)?;
+        let node = start_node(&chain_spec, rpc_port, node_p2p_port, &node_base, &node_log)?;
         let node_url = format!("ws://127.0.0.1:{rpc_port}");
         wait_for_node(&node_url, 0, Duration::from_secs(30)).await?;
 
@@ -394,6 +426,11 @@ impl SyntheticStack {
         self.node = start_node(
             &self.chain_spec,
             self.rpc_port,
+            if self.indexer_options.light_client_ws {
+                Some(pick_unused_port()?)
+            } else {
+                None
+            },
             &self.node_base,
             &self.node_log,
         )?;

@@ -33,6 +33,12 @@ Common overrides:
 acuity-index run ./mychain.toml --url wss://mynode:443 --queue-depth 4 --port 8172
 ```
 
+If clients need verifiable event proofs from `GetEvents`, run in finalized mode:
+
+```bash
+acuity-index run ./mychain.toml --finalized
+```
+
 ## 4. Query The Service
 
 By default, connect to:

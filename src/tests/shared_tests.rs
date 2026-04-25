@@ -359,11 +359,13 @@ mod shared_tests {
                     }),
                 limit,
                 before,
+                include_proofs,
             } => {
                 assert_eq!(name, "para_id");
                 assert_eq!(id, 2000);
                 assert_eq!(limit, 25);
                 assert!(before.is_none());
+                assert!(!include_proofs);
             }
             _ => panic!("wrong variant"),
         }
@@ -416,10 +418,12 @@ mod shared_tests {
                     }),
                 limit,
                 before,
+                include_proofs,
             } => {
                 assert_eq!(name, "account_id");
                 assert_eq!(b.0, [0xAA; 32]);
                 assert_eq!(limit, 100);
+                assert!(!include_proofs);
                 assert_eq!(
                     before,
                     Some(EventRef {
@@ -441,6 +445,19 @@ mod shared_tests {
             RequestBody::GetEvents { limit, before, .. } => {
                 assert_eq!(limit, 100);
                 assert!(before.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn request_get_events_accepts_include_proofs() {
+        let json = r#"{"id":6,"type":"GetEvents","key":{"type":"Custom","value":{"name":"pool_id","kind":"u32","value":9}},"includeProofs":true}"#;
+        let msg: RequestMessage = serde_json::from_str(json).unwrap();
+
+        match msg.body {
+            RequestBody::GetEvents { include_proofs, .. } => {
+                assert!(include_proofs);
             }
             _ => panic!("wrong variant"),
         }
@@ -497,6 +514,8 @@ mod shared_tests {
                         "eventName": "Deposit"
                     }),
                 }],
+                proofs_by_block: None,
+                proofs_status: None,
             },
         };
 
@@ -504,6 +523,32 @@ mod shared_tests {
         assert!(json.contains("decodedEvents"));
         assert!(json.contains("specVersion"));
         assert!(json.contains("Deposit"));
+    }
+
+    #[test]
+    fn response_events_with_proofs_status_serializes() {
+        let msg = ResponseMessage {
+            id: Some(8),
+            body: ResponseBody::Events {
+                key: Key::Custom(CustomKey {
+                    name: "ref_index".into(),
+                    value: CustomValue::U32(42),
+                }),
+                events: vec![],
+                decoded_events: vec![],
+                proofs_by_block: Some(None),
+                proofs_status: Some(ProofsStatus {
+                    available: false,
+                    reason: "finalized_proofs_unavailable".into(),
+                    message: "Finalized proofs are only available when the indexer is running with finalized indexing.".into(),
+                }),
+            },
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("proofsStatus"));
+        assert!(json.contains("finalized_proofs_unavailable"));
+        assert!(json.contains("\"proofsByBlock\":null"));
     }
 
     #[test]

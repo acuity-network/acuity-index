@@ -945,6 +945,7 @@ async fn run() -> Result<(), shared::IndexError> {
         resolved.ws_config.max_total_subscriptions,
         metrics.clone(),
     ));
+    runtime.set_finalized_mode(resolved.finalized);
     let (process_exit_tx, process_exit_rx) = watch::channel(false);
     let (spec_update_tx, mut spec_update_rx) = watch::channel(SpecUpdate {
         snapshot: initial_snapshot.clone(),
@@ -1062,6 +1063,7 @@ async fn run() -> Result<(), shared::IndexError> {
                         Ok(update) => {
                             log_ignored_options_fields(&update.ignored_fields);
                             resolved = update.resolved;
+                            runtime.set_finalized_mode(resolved.finalized);
                             let next_live_ws_config = LiveWsConfig::from(&resolved.ws_config);
                             if next_live_ws_config != current_live_ws_config {
                                 current_live_ws_config = next_live_ws_config;
@@ -1129,6 +1131,7 @@ async fn run() -> Result<(), shared::IndexError> {
                                 Ok(update) => {
                                     log_ignored_options_fields(&update.ignored_fields);
                                     resolved = update.resolved;
+                                    runtime.set_finalized_mode(resolved.finalized);
                                     let next_live_ws_config = LiveWsConfig::from(&resolved.ws_config);
                                     if next_live_ws_config != current_live_ws_config {
                                         current_live_ws_config = next_live_ws_config;
@@ -1247,6 +1250,7 @@ async fn run() -> Result<(), shared::IndexError> {
                             Ok(update) => {
                                 log_ignored_options_fields(&update.ignored_fields);
                                 resolved = update.resolved;
+                                runtime.set_finalized_mode(resolved.finalized);
                                 let next_live_ws_config = LiveWsConfig::from(&resolved.ws_config);
                                 if next_live_ws_config != current_live_ws_config {
                                     current_live_ws_config = next_live_ws_config;
@@ -1423,6 +1427,7 @@ async fn run() -> Result<(), shared::IndexError> {
                                     Ok(update) => {
                                         log_ignored_options_fields(&update.ignored_fields);
                                         resolved = update.resolved;
+                                        runtime.set_finalized_mode(resolved.finalized);
                                         let next_live_ws_config = LiveWsConfig::from(&resolved.ws_config);
                                         if next_live_ws_config != current_live_ws_config {
                                             current_live_ws_config = next_live_ws_config;

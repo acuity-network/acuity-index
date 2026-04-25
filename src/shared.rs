@@ -5,8 +5,7 @@ use sled::Tree;
 use std::{
     collections::HashMap,
     fmt,
-    sync::Arc,
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, atomic::{AtomicBool, Ordering}},
 };
 use subxt::{
     OnlineClient, PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods,
@@ -207,6 +206,30 @@ impl<'de> Deserialize<'de> for Bytes32 {
             .try_into()
             .map_err(|_| serde::de::Error::custom("expected 32 bytes"))?;
         Ok(Bytes32(arr))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HexBytes(pub Vec<u8>);
+
+impl Serialize for HexBytes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&format!("0x{}", hex::encode(&self.0)))
+    }
+}
+
+impl<'de> Deserialize<'de> for HexBytes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let hex_part = s.strip_prefix("0x").unwrap_or(&s);
+        let bytes = hex::decode(hex_part).map_err(serde::de::Error::custom)?;
+        Ok(HexBytes(bytes))
     }
 }
 
@@ -563,6 +586,25 @@ pub struct DecodedEvent {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EventBlockProof {
+    pub block_number: u32,
+    pub block_hash: HexBytes,
+    pub header: serde_json::Value,
+    pub storage_key: HexBytes,
+    pub storage_value: HexBytes,
+    pub storage_proof: Vec<HexBytes>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProofsStatus {
+    pub available: bool,
+    pub reason: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct EventMeta {
     pub index: u8,
     pub name: String,
@@ -600,6 +642,9 @@ pub enum RequestBody {
         #[serde(default = "default_get_events_limit")]
         limit: u16,
         before: Option<EventRef>,
+        #[serde(default)]
+        #[serde(rename = "includeProofs")]
+        include_proofs: bool,
     },
     SubscribeEvents {
         key: Key,
@@ -634,6 +679,10 @@ pub enum ResponseBody {
         events: Vec<EventRef>,
         #[serde(rename = "decodedEvents")]
         decoded_events: Vec<DecodedEvent>,
+        #[serde(rename = "proofsByBlock", skip_serializing_if = "Option::is_none")]
+        proofs_by_block: Option<Option<Vec<EventBlockProof>>>,
+        #[serde(rename = "proofsStatus", skip_serializing_if = "Option::is_none")]
+        proofs_status: Option<ProofsStatus>,
     },
     SubscriptionStatus {
         action: SubscriptionAction,
@@ -780,6 +829,7 @@ pub struct RuntimeState {
     pub(crate) metrics: Arc<Metrics>,
     api: Mutex<Option<OnlineClient<PolkadotConfig>>>,
     rpc: Mutex<Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>>,
+    finalized_mode: AtomicBool,
 }
 
 impl RuntimeState {
@@ -795,6 +845,7 @@ impl RuntimeState {
             metrics,
             api: Mutex::new(None),
             rpc: Mutex::new(None),
+            finalized_mode: AtomicBool::new(false),
         }
     }
 
@@ -821,6 +872,14 @@ impl RuntimeState {
         LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     )> {
         Some((self.api()?, self.rpc()?))
+    }
+
+    pub fn set_finalized_mode(&self, finalized_mode: bool) {
+        self.finalized_mode.store(finalized_mode, Ordering::Relaxed);
+    }
+
+    pub fn finalized_mode(&self) -> bool {
+        self.finalized_mode.load(Ordering::Relaxed)
     }
 }
 

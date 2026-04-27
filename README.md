@@ -134,9 +134,7 @@ If the index-spec output file already exists, `generate-index-spec` fails unless
 
 ## Local Synthetic Devnet
 
-This repository now includes a minimal in-repo Polkadot SDK runtime under `runtime/`,
-a checked-in example index spec at [`acuity.toml`](./acuity.toml), and a matching
-synthetic index spec renderer in `src/synthetic_devnet.rs`.
+This repository now includes a minimal in-repo Polkadot SDK runtime under `runtime/`, and a matching synthetic index spec renderer in `src/synthetic_devnet.rs`.
 
 The synthetic runtime is intentionally small and deterministic:
 

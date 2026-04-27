@@ -1,6 +1,6 @@
 # Architecture
 
-`acuity-index` is a config-driven event indexer for Substrate chains. It decodes
+Acuity Index is a config-driven event indexer for Substrate chains. It decodes
 runtime events with `subxt`, derives query keys from TOML config, stores index
 entries in `sled`, and serves query access over WebSocket.
 
@@ -18,9 +18,10 @@ entries in `sled`, and serves query access over WebSocket.
 - `src/metrics.rs`: metrics registry and HTTP export
 - `src/synthetic_devnet.rs`: synthetic local chain helpers and shared test types
 
-The repository also includes an in-repo synthetic runtime workspace under
-`runtime/`, a checked-in example spec at [`acuity.toml`](../../acuity.toml), plus
-node-backed integration and benchmarking paths.
+The repository also includes a checked-in example spec, plus node-backed
+integration and benchmarking paths. The synthetic runtime has its own dedicated
+page in
+[Synthetic Devnet](./synthetic-devnet.md).
 
 ## Startup Sequence
 

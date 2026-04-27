@@ -12,7 +12,7 @@ deterministic local chain without depending on external networks.
 2. `polkadot-omni-node` runs that runtime locally
 3. `src/synthetic_devnet.rs` renders the matching index spec
 4. `seed_synthetic_runtime` writes deterministic on-chain data
-5. `acuity-index` indexes the chain normally and is validated through its public API
+5. Acuity Index indexes the chain normally and is validated through its public API
 
 The synthetic runtime now includes GRANDPA so finalized indexing and proof
 responses can be exercised locally.

@@ -31,17 +31,21 @@ use tracing_log::AsTrace;
 
 mod config;
 mod config_gen;
+mod errors;
 mod event_hydration;
 mod indexer;
 mod metrics;
-mod shared;
+mod protocol;
+mod runtime_state;
 mod websockets;
 
 use config::{IndexSpec, OptionsConfig};
 use config_gen::write_generated_index_spec;
+use errors::{IndexError, internal_error};
 use indexer::{process_sub_msg, run_indexer};
 use metrics::{Metrics, metrics_listen};
-use shared::{LiveWsConfig, RuntimeState, Trees, WsConfig};
+use protocol::{LiveWsConfig, Trees, WsConfig};
+use runtime_state::RuntimeState;
 use websockets::websockets_listen;
 
 #[cfg(test)]
@@ -566,7 +570,7 @@ async fn watch_runtime_config(
     options_snapshot_tx: watch::Sender<Option<OptionsSnapshot>>,
     ready_tx: Option<oneshot::Sender<()>>,
     mut exit_rx: watch::Receiver<bool>,
-) -> Result<(), shared::IndexError> {
+) -> Result<(), IndexError> {
     let mut watch_dirs = HashSet::new();
     watch_dirs.insert(
         index_spec_path
@@ -589,12 +593,12 @@ async fn watch_runtime_config(
         },
         notify::Config::default(),
     )
-    .map_err(|e| shared::internal_error(format!("failed to create config watcher: {e}")))?;
+    .map_err(|e| internal_error(format!("failed to create config watcher: {e}")))?;
     for watch_dir in &watch_dirs {
         watcher
             .watch(watch_dir, RecursiveMode::NonRecursive)
             .map_err(|e| {
-                shared::internal_error(format!("failed to watch {}: {e}", watch_dir.display()))
+                internal_error(format!("failed to watch {}: {e}", watch_dir.display()))
             })?;
     }
     if let Some(ready_tx) = ready_tx {
@@ -612,7 +616,7 @@ async fn watch_runtime_config(
             _ = exit_rx.changed() => return Ok(()),
             maybe_event = event_rx.recv() => {
                 let Some(result) = maybe_event else {
-                    return Err(shared::internal_error("config watcher channel closed"));
+                    return Err(internal_error("config watcher channel closed"));
                 };
 
                 let event = match result {
@@ -647,7 +651,7 @@ async fn watch_runtime_config(
 
                 if spec_event_seen {
                     let (toml_str, source_hash) = match load_index_spec_source(index_spec_path.to_str().ok_or_else(|| {
-                        shared::internal_error("index spec path is not valid UTF-8")
+                        internal_error("index spec path is not valid UTF-8")
                     })?) {
                         Ok(source) => source,
                         Err(err) => {
@@ -690,7 +694,7 @@ async fn watch_runtime_config(
                         continue;
                     };
                     let snapshot = match build_options_snapshot(options_config_path.to_str().ok_or_else(|| {
-                        shared::internal_error("options config path is not valid UTF-8")
+                        internal_error("options config path is not valid UTF-8")
                     })?) {
                         Ok(snapshot) => snapshot,
                         Err(err) => {
@@ -709,7 +713,7 @@ async fn watch_runtime_config(
     }
 }
 
-fn validate_chain_name(chain_name: &str) -> Result<(), shared::IndexError> {
+fn validate_chain_name(chain_name: &str) -> Result<(), IndexError> {
     match Path::new(chain_name).components().next() {
         Some(Component::Normal(component))
             if Path::new(component) == Path::new(chain_name)
@@ -717,18 +721,18 @@ fn validate_chain_name(chain_name: &str) -> Result<(), shared::IndexError> {
         {
             Ok(())
         }
-        _ => Err(shared::internal_error(format!(
+        _ => Err(internal_error(format!(
             "invalid chain name '{chain_name}': path separators and traversal are not allowed"
         ))),
     }
 }
 
-fn validate_db_path(path: &str) -> Result<(), shared::IndexError> {
+fn validate_db_path(path: &str) -> Result<(), IndexError> {
     if Path::new(path)
         .components()
         .any(|component| matches!(component, Component::ParentDir))
     {
-        return Err(shared::internal_error(format!(
+        return Err(internal_error(format!(
             "invalid database path '{path}': parent directory traversal is not allowed"
         )));
     }
@@ -741,7 +745,7 @@ fn parse_db_path_arg(path: &str) -> Result<String, String> {
     Ok(path.to_owned())
 }
 
-fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> Result<PathBuf, shared::IndexError> {
+fn resolve_db_path(chain_name: &str, db_path: Option<&str>) -> Result<PathBuf, IndexError> {
     match db_path {
         Some(path) => {
             validate_db_path(path)?;
@@ -798,7 +802,7 @@ where
 
 #[cfg(test)]
 fn describe_indexer_shutdown_result(
-    result: Result<Result<(), shared::IndexError>, tokio::task::JoinError>,
+    result: Result<Result<(), IndexError>, tokio::task::JoinError>,
 ) -> &'static str {
     match result {
         Ok(Ok(())) => {
@@ -814,19 +818,19 @@ fn describe_indexer_shutdown_result(
     "indexer stopped"
 }
 
-fn parse_db_cache_capacity(value: &str) -> Result<u64, shared::IndexError> {
+fn parse_db_cache_capacity(value: &str) -> Result<u64, IndexError> {
     let bytes = Byte::parse_str(value, true).map_err(|err| {
-        shared::internal_error(format!("invalid db cache capacity '{value}': {err}"))
+        internal_error(format!("invalid db cache capacity '{value}': {err}"))
     })?;
     bytes.as_u64_checked().ok_or_else(|| {
-        shared::internal_error(format!("db cache capacity '{value}' does not fit in u64"))
+        internal_error(format!("db cache capacity '{value}' does not fit in u64"))
     })
 }
 
 fn init_db_genesis(
     trees: &Trees,
     genesis_hash_config: &[u8],
-) -> Result<Vec<u8>, shared::IndexError> {
+) -> Result<Vec<u8>, IndexError> {
     match trees.root.get("genesis_hash")? {
         Some(v) => Ok(v.to_vec()),
         None => {
@@ -846,7 +850,7 @@ async fn connect_rpc(
         OnlineClient<PolkadotConfig>,
         LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
     ),
-    shared::IndexError,
+    IndexError,
 > {
     let rpc_client = RpcClient::from_url(url).await?;
     let api = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client.clone()).await?;
@@ -854,7 +858,7 @@ async fn connect_rpc(
     Ok((api, rpc))
 }
 
-async fn run() -> Result<(), shared::IndexError> {
+async fn run() -> Result<(), IndexError> {
     let args = Args::parse_from(normalize_args(std::env::args()));
     let log_level = args.verbose.log_level_filter().as_trace();
     tracing_subscriber::fmt().with_max_level(log_level).init();
@@ -908,7 +912,7 @@ async fn run() -> Result<(), shared::IndexError> {
 
     let genesis_hash_config = spec
         .genesis_hash_bytes()
-        .map_err(|e| shared::internal_error(format!("invalid genesis hash in config: {e}")))?;
+        .map_err(|e| internal_error(format!("invalid genesis hash in config: {e}")))?;
 
     let db_path = resolve_db_path(&spec.name, resolved.db_path.as_deref())?;
     info!("Database path: {}", db_path.display());
@@ -924,7 +928,7 @@ async fn run() -> Result<(), shared::IndexError> {
 
     let stored_genesis = init_db_genesis(&trees, genesis_hash_config.as_ref())?;
     if stored_genesis != genesis_hash_config {
-        return Err(shared::internal_error(format!(
+        return Err(internal_error(format!(
             "database genesis hash mismatch. expected 0x{}, stored 0x{}",
             hex::encode(genesis_hash_config),
             hex::encode(stored_genesis),
@@ -1052,7 +1056,7 @@ async fn run() -> Result<(), shared::IndexError> {
                     current_snapshot = spec_update_rx.borrow_and_update().snapshot.clone();
                     continue;
                 }
-                return Err(shared::internal_error("index spec update channel closed"));
+                return Err(internal_error("index spec update channel closed"));
             }
             changed = options_update_rx.changed(), if options_hot_reload_enabled => {
                 if changed.is_ok() {
@@ -1077,16 +1081,16 @@ async fn run() -> Result<(), shared::IndexError> {
                         }
                     }
                 }
-                return Err(shared::internal_error("options config update channel closed"));
+                return Err(internal_error("options config update channel closed"));
             }
             watcher_result = &mut watcher_task => {
                 match watcher_result {
                     Ok(Ok(())) => {
-                        return Err(shared::internal_error("config watcher stopped unexpectedly"));
+                        return Err(internal_error("config watcher stopped unexpectedly"));
                     }
                     Ok(Err(err)) => return Err(err),
                     Err(join_err) => {
-                        return Err(shared::internal_error(format!(
+                        return Err(internal_error(format!(
                             "config watcher task panicked: {join_err}"
                         )));
                     }
@@ -1120,7 +1124,7 @@ async fn run() -> Result<(), shared::IndexError> {
                             current_snapshot = spec_update_rx.borrow_and_update().snapshot.clone();
                             continue;
                         }
-                        return Err(shared::internal_error("index spec update channel closed"));
+                        return Err(internal_error("index spec update channel closed"));
                     }
                     changed = options_update_rx.changed(), if options_hot_reload_enabled => {
                         if changed.is_ok() {
@@ -1145,16 +1149,16 @@ async fn run() -> Result<(), shared::IndexError> {
                                 }
                             }
                         }
-                        return Err(shared::internal_error("options config update channel closed"));
+                        return Err(internal_error("options config update channel closed"));
                     }
                     watcher_result = &mut watcher_task => {
                         match watcher_result {
                             Ok(Ok(())) => {
-                                return Err(shared::internal_error("config watcher stopped unexpectedly"));
+                                return Err(internal_error("config watcher stopped unexpectedly"));
                             }
                             Ok(Err(err)) => return Err(err),
                             Err(join_err) => {
-                                return Err(shared::internal_error(format!(
+                                return Err(internal_error(format!(
                                     "config watcher task panicked: {join_err}"
                                 )));
                             }
@@ -1170,7 +1174,7 @@ async fn run() -> Result<(), shared::IndexError> {
 
         let chain_genesis = api.genesis_hash().as_ref().to_vec();
         if chain_genesis != genesis_hash_config {
-            return Err(shared::internal_error(format!(
+            return Err(internal_error(format!(
                 "chain genesis hash mismatch. expected 0x{}, chain 0x{}",
                 hex::encode(genesis_hash_config),
                 hex::encode(chain_genesis),
@@ -1199,7 +1203,7 @@ async fn run() -> Result<(), shared::IndexError> {
             Shutdown,
             Continue,
             Restart,
-            Indexer(Result<Result<(), shared::IndexError>, tokio::task::JoinError>),
+            Indexer(Result<Result<(), IndexError>, tokio::task::JoinError>),
         }
 
         let loop_control = select! {
@@ -1235,7 +1239,7 @@ async fn run() -> Result<(), shared::IndexError> {
                         LoopControl::Continue
                     }
                 } else {
-                    return Err(shared::internal_error("index spec update channel closed"));
+                    return Err(internal_error("index spec update channel closed"));
                 }
             }
             changed = options_update_rx.changed(), if options_hot_reload_enabled => {
@@ -1275,7 +1279,7 @@ async fn run() -> Result<(), shared::IndexError> {
                         LoopControl::Continue
                     }
                 } else {
-                    return Err(shared::internal_error("options config update channel closed"));
+                    return Err(internal_error("options config update channel closed"));
                 }
             }
             watcher_result = &mut watcher_task => {
@@ -1295,7 +1299,7 @@ async fn run() -> Result<(), shared::IndexError> {
                             let _ = metrics_task.await;
                         }
                         let _ = trees.flush();
-                        return Err(shared::internal_error("config watcher stopped unexpectedly"));
+                        return Err(internal_error("config watcher stopped unexpectedly"));
                     }
                     Ok(Err(err)) => {
                         runtime.set_api(None);
@@ -1327,7 +1331,7 @@ async fn run() -> Result<(), shared::IndexError> {
                             let _ = metrics_task.await;
                         }
                         let _ = trees.flush();
-                        return Err(shared::internal_error(format!(
+                        return Err(internal_error(format!(
                             "config watcher task panicked: {join_err}"
                         )));
                     }
@@ -1370,7 +1374,7 @@ async fn run() -> Result<(), shared::IndexError> {
                         let _ = metrics_task.await;
                     }
                     error!("Indexer task failed: {join_err}");
-                    return Err(shared::internal_error(format!(
+                    return Err(internal_error(format!(
                         "indexer task panicked: {join_err}"
                     )));
                 }
@@ -1416,7 +1420,7 @@ async fn run() -> Result<(), shared::IndexError> {
                                 current_snapshot = spec_update_rx.borrow_and_update().snapshot.clone();
                                 continue;
                             }
-                            return Err(shared::internal_error("index spec update channel closed"));
+                            return Err(internal_error("index spec update channel closed"));
                         }
                         changed = options_update_rx.changed(), if options_hot_reload_enabled => {
                             if changed.is_ok() {
@@ -1441,16 +1445,16 @@ async fn run() -> Result<(), shared::IndexError> {
                                     }
                                 }
                             }
-                            return Err(shared::internal_error("options config update channel closed"));
+                            return Err(internal_error("options config update channel closed"));
                         }
                         watcher_result = &mut watcher_task => {
                             match watcher_result {
                                 Ok(Ok(())) => {
-                                    return Err(shared::internal_error("config watcher stopped unexpectedly"));
+                                    return Err(internal_error("config watcher stopped unexpectedly"));
                                 }
                                 Ok(Err(err)) => return Err(err),
                                 Err(join_err) => {
-                                    return Err(shared::internal_error(format!(
+                                    return Err(internal_error(format!(
                                         "config watcher task panicked: {join_err}"
                                     )));
                                 }
@@ -1489,7 +1493,7 @@ async fn run() -> Result<(), shared::IndexError> {
                     }
                     let _ = watcher_task.as_mut().await;
                     error!("Indexer task failed: {join_err}");
-                    return Err(shared::internal_error(format!(
+                    return Err(internal_error(format!(
                         "indexer task panicked: {join_err}"
                     )));
                 }
@@ -2062,7 +2066,7 @@ max_events_limit = 500
     #[test]
     fn describe_indexer_shutdown_result_reports_indexer_error() {
         assert_eq!(
-            describe_indexer_shutdown_result(Ok(Err(shared::IndexError::BlockStreamClosed))),
+            describe_indexer_shutdown_result(Ok(Err(IndexError::BlockStreamClosed))),
             "indexer stopped"
         );
     }

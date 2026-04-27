@@ -1,18 +1,10 @@
-//! Shared data types for acuity-index.
+//! Protocol and storage data types for acuity-index.
 
 use serde::{Deserialize, Serialize};
 use sled::Tree;
-use std::{
-    collections::HashMap,
-    fmt,
-    sync::{Arc, Mutex, MutexGuard, atomic::{AtomicBool, Ordering}},
-};
-use subxt::{
-    OnlineClient, PolkadotConfig, config::RpcConfigFor, rpcs::methods::legacy::LegacyRpcMethods,
-};
+use std::fmt;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio_tungstenite::tungstenite;
 use tracing::error;
 use zerocopy::{
     BigEndian, FromBytes, IntoBytes,
@@ -20,108 +12,7 @@ use zerocopy::{
 };
 use zerocopy_derive::*;
 
-use crate::metrics::Metrics;
-
-// ─── Errors ──────────────────────────────────────────────────────────────────
-
-#[derive(thiserror::Error, Debug)]
-pub enum IndexError {
-    #[error("database error")]
-    Sled(#[from] sled::Error),
-    #[error("connection error")]
-    Subxt(#[from] subxt::Error),
-    #[error("websocket error")]
-    Tungstenite(#[from] tungstenite::Error),
-    #[error("parse error")]
-    Hex(#[from] hex::FromHexError),
-    #[error("block not found: {0}")]
-    BlockNotFound(u32),
-    #[error(
-        "node is pruning historical state at #{block_number}; --state-pruning must be set to archive-canonical"
-    )]
-    StatePruningMisconfigured { block_number: u32 },
-    #[error("RPC error: {0}")]
-    RpcError(#[from] subxt::rpcs::Error),
-    #[error("codec error")]
-    CodecError(#[from] subxt::ext::codec::Error),
-    #[error("metadata error")]
-    MetadataError(#[from] subxt::error::MetadataTryFromError),
-    #[error("block stream error")]
-    BlocksError(#[from] subxt::error::BlocksError),
-    #[error("block stream closed")]
-    BlockStreamClosed,
-    #[error("events error")]
-    EventsError(#[from] subxt::error::EventsError),
-    #[error("at-block error")]
-    OnlineClientAtBlockError(#[from] subxt::error::OnlineClientAtBlockError),
-    #[error("online client error")]
-    OnlineClientError(#[from] subxt::error::OnlineClientError),
-    #[error("JSON error")]
-    Json(#[from] serde_json::Error),
-    #[error("I/O error")]
-    Io(#[from] std::io::Error),
-    #[error("TOML serialization error")]
-    TomlSer(#[from] toml::ser::Error),
-    #[error("internal error: {0}")]
-    Internal(String),
-}
-
-pub fn internal_error(message: impl Into<String>) -> IndexError {
-    IndexError::Internal(message.into())
-}
-
-impl IndexError {
-    pub fn is_recoverable(&self) -> bool {
-        match self {
-            IndexError::Subxt(_)
-            | IndexError::RpcError(_)
-            | IndexError::BlocksError(_)
-            | IndexError::BlockStreamClosed
-            | IndexError::EventsError(_)
-            | IndexError::OnlineClientAtBlockError(_)
-            | IndexError::OnlineClientError(_)
-            | IndexError::BlockNotFound(_) => true,
-            IndexError::Sled(_)
-            | IndexError::Tungstenite(_)
-            | IndexError::Hex(_)
-            | IndexError::StatePruningMisconfigured { .. }
-            | IndexError::CodecError(_)
-            | IndexError::MetadataError(_)
-            | IndexError::Json(_)
-            | IndexError::Io(_)
-            | IndexError::TomlSer(_)
-            | IndexError::Internal(_) => false,
-        }
-    }
-}
-
-pub fn metadata_version(metadata_bytes: &[u8]) -> Option<u8> {
-    if metadata_bytes.len() < 5 {
-        return None;
-    }
-
-    if &metadata_bytes[..4] != b"meta" {
-        return None;
-    }
-
-    Some(metadata_bytes[4])
-}
-
-pub fn unsupported_metadata_error(version: u8, spec_name: &str, spec_version: u64) -> IndexError {
-    internal_error(format!(
-        "unsupported metadata version v{version} from runtime {spec_name} specVersion {spec_version}; the node may still be syncing early chain history before a runtime upgrade"
-    ))
-}
-
-pub fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error!("Recovering poisoned mutex: {name}");
-            poisoned.into_inner()
-        }
-    }
-}
+use crate::errors::{IndexError, internal_error};
 
 pub fn decode_u32_key(bytes: &[u8]) -> Option<u32> {
     let key: [u8; 4] = bytes.try_into().ok()?;
@@ -510,7 +401,6 @@ impl Key {
         before: Option<&EventRef>,
         limit: usize,
     ) -> Result<Vec<EventRef>, IndexError> {
-        use crate::websockets::get_events_index;
         match self {
             Key::Variant(pi, vi) => Ok(get_events_variant(&trees.variant, *pi, *vi, before, limit)),
             Key::Custom(_) => {
@@ -521,6 +411,36 @@ impl Key {
             }
         }
     }
+}
+
+pub(crate) fn get_events_index(
+    tree: &Tree,
+    prefix: &[u8],
+    before: Option<&EventRef>,
+    limit: usize,
+) -> Vec<EventRef> {
+    let mut events = Vec::new();
+    let mut iter = tree.scan_prefix(prefix).keys();
+    while let Some(Ok(raw)) = iter.next_back() {
+        if raw.len() < EVENT_REF_SUFFIX_LEN {
+            continue;
+        }
+        let suffix = &raw[raw.len() - EVENT_REF_SUFFIX_LEN..];
+        let Some(event) = decode_event_ref_suffix(suffix) else {
+            error!("Skipping malformed event index key");
+            continue;
+        };
+        if before.is_some_and(|cursor| {
+            (event.block_number, event.event_index) >= (cursor.block_number, cursor.event_index)
+        }) {
+            continue;
+        }
+        events.push(event);
+        if events.len() == limit {
+            break;
+        }
+    }
+    events
 }
 
 fn get_events_variant(
@@ -821,66 +741,6 @@ pub enum SubscriptionMessage {
         tx: mpsc::Sender<NotificationMessage>,
         response_tx: Option<oneshot::Sender<Result<(), String>>>,
     },
-}
-
-pub struct RuntimeState {
-    pub(crate) status_subs: Mutex<Vec<mpsc::Sender<NotificationMessage>>>,
-    pub(crate) events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<NotificationMessage>>>>,
-    pub(crate) metrics: Arc<Metrics>,
-    api: Mutex<Option<OnlineClient<PolkadotConfig>>>,
-    rpc: Mutex<Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>>,
-    finalized_mode: AtomicBool,
-}
-
-impl RuntimeState {
-    #[cfg(test)]
-    pub fn new(_max_total_subscriptions: usize) -> Self {
-        Self::with_metrics(_max_total_subscriptions, Arc::new(Metrics::new()))
-    }
-
-    pub fn with_metrics(_max_total_subscriptions: usize, metrics: Arc<Metrics>) -> Self {
-        Self {
-            status_subs: Mutex::new(Vec::new()),
-            events_subs: Mutex::new(HashMap::new()),
-            metrics,
-            api: Mutex::new(None),
-            rpc: Mutex::new(None),
-            finalized_mode: AtomicBool::new(false),
-        }
-    }
-
-    pub fn set_api(&self, api: Option<OnlineClient<PolkadotConfig>>) {
-        *lock_or_recover(&self.api, "runtime_api") = api;
-    }
-
-    pub fn api(&self) -> Option<OnlineClient<PolkadotConfig>> {
-        lock_or_recover(&self.api, "runtime_api").clone()
-    }
-
-    pub fn set_rpc(&self, rpc: Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>) {
-        *lock_or_recover(&self.rpc, "runtime_rpc") = rpc;
-    }
-
-    pub fn rpc(&self) -> Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>> {
-        lock_or_recover(&self.rpc, "runtime_rpc").clone()
-    }
-
-    pub fn clients(
-        &self,
-    ) -> Option<(
-        OnlineClient<PolkadotConfig>,
-        LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>,
-    )> {
-        Some((self.api()?, self.rpc()?))
-    }
-
-    pub fn set_finalized_mode(&self, finalized_mode: bool) {
-        self.finalized_mode.store(finalized_mode, Ordering::Relaxed);
-    }
-
-    pub fn finalized_mode(&self) -> bool {
-        self.finalized_mode.load(Ordering::Relaxed)
-    }
 }
 
 #[cfg(test)]

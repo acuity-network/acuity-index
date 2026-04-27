@@ -1,6 +1,6 @@
 use crate::{
     config::{CustomKeyConfig, EventConfig, IndexSpec, PalletConfig, ParamConfig, ScalarKind},
-    shared::{IndexError, internal_error, metadata_version, unsupported_metadata_error},
+    errors::{IndexError, internal_error, metadata_version, unsupported_metadata_error},
 };
 use scale_info::{
     Field, PortableRegistry, Type, TypeDef, TypeDefPrimitive, Variant, form::PortableForm,

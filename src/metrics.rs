@@ -12,7 +12,10 @@ use tokio::{
 };
 use tracing::{error, info};
 
-use crate::shared::{IndexError, Trees, internal_error};
+use crate::{
+    errors::{IndexError, internal_error},
+    protocol::Trees,
+};
 
 const METRICS_CONTENT_TYPE: &str = "application/openmetrics-text; version=1.0.0; charset=utf-8";
 const HISTOGRAM_BUCKETS: [f64; 13] = [

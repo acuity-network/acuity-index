@@ -1,6 +1,8 @@
 //! WebSocket server — schema-less edition.
 
-use crate::shared::*;
+use crate::errors::IndexError;
+use crate::protocol::*;
+use crate::runtime_state::RuntimeState;
 use crate::event_hydration::{fetch_event_block_proofs, hydrate_event_refs};
 use futures::{SinkExt, StreamExt};
 use sled::Tree;
@@ -54,40 +56,6 @@ fn enqueue_subscription_message(
         mpsc::error::TrySendError::Full(_) => disconnect_error("subscription control queue full"),
         mpsc::error::TrySendError::Closed(_) => disconnect_error("subscription dispatcher closed"),
     })
-}
-
-// ─── Tree scan helpers (pub so shared.rs can call them) ───────────────────────
-
-pub fn get_events_index(
-    tree: &Tree,
-    prefix: &[u8],
-    before: Option<&EventRef>,
-    limit: usize,
-) -> Vec<EventRef> {
-    let mut events = Vec::new();
-    let mut iter = tree.scan_prefix(prefix).keys();
-    while let Some(Ok(raw)) = iter.next_back() {
-        if raw.len() < EVENT_REF_SUFFIX_LEN {
-            continue;
-        }
-        let suffix = &raw[raw.len() - EVENT_REF_SUFFIX_LEN..];
-        let Some(event) = decode_event_ref_suffix(suffix) else {
-            error!("Skipping malformed event index key");
-            continue;
-        };
-        if before.is_some_and(|cursor| !event_is_before(&event, cursor)) {
-            continue;
-        }
-        events.push(event);
-        if events.len() == limit {
-            break;
-        }
-    }
-    events
-}
-
-fn event_is_before(event: &EventRef, cursor: &EventRef) -> bool {
-    (event.block_number, event.event_index) < (cursor.block_number, cursor.event_index)
 }
 
 fn clamp_events_limit(limit: u16, max_events_limit: usize) -> usize {
@@ -923,6 +891,7 @@ pub async fn websockets_listen(
 mod tests {
     use super::*;
     use crate::indexer::process_sub_msg;
+    use crate::protocol::get_events_index;
     use futures::{SinkExt, StreamExt};
     use std::sync::Arc;
     use subxt::rpcs::client::{RawRpcFuture, RawRpcSubscription, RawValue, RpcClient, RpcClientT};

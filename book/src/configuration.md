@@ -1,6 +1,6 @@
 # Configuration
 
-`acuity-index` uses two configuration layers:
+Acuity Index uses two configuration layers:
 
 - an index specification TOML that describes chain identity and indexing rules
 - an optional runtime options TOML passed via `--options-config`
@@ -15,8 +15,8 @@ CLI flags > --options-config file > built-in defaults
 
 Each chain is described by an index specification passed as `<INDEX_SPEC>`.
 
-The repository also includes a larger checked-in example spec at
-[`acuity.toml`](../../acuity.toml).
+The repository also includes a larger checked-in example spec in the
+repository.
 
 ```toml
 name = "mychain"

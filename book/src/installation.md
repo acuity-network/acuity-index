@@ -31,7 +31,7 @@ just build-release
 
 ## Related Tooling
 
-- Main binary: `acuity-index`
+- Main binary: Acuity Index (`acuity-index`)
 - Synthetic workload seeder: `seed_synthetic_runtime`
 - Synthetic benchmark harness: `benchmark_synthetic_indexing`
 

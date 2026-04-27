@@ -2,7 +2,8 @@
 mod indexer_tests {
     use crate::config::IndexSpec;
     use crate::indexer::*;
-    use crate::shared::*;
+    use crate::errors::IndexError;
+    use crate::protocol::*;
     use scale_value::{Composite, Primitive, Value, ValueDef};
     use tokio::sync::mpsc;
 

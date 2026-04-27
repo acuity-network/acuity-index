@@ -1,6 +1,6 @@
 # Quickstart
 
-This path is the fastest way to get `acuity-index` indexing a chain.
+This path is the fastest way to get Acuity Index indexing a chain.
 
 ## 1. Generate A Starter Spec
 
@@ -55,7 +55,7 @@ Minimal request:
 
 ## 5. Iterate Safely
 
-When `run <INDEX_SPEC>` points to a file, `acuity-index` watches that file for
+When `run <INDEX_SPEC>` points to a file, Acuity Index watches that file for
 accepted changes. Valid changes restart only the RPC/indexer loop. The WebSocket
 server and metrics listener stay up.
 

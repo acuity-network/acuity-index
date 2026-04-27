@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod websocket_tests {
-    use crate::shared::*;
+    use crate::protocol::get_events_index;
+    use crate::protocol::*;
     use crate::websockets::*;
     use zerocopy::IntoBytes;
 

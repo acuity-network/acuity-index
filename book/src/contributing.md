@@ -26,6 +26,7 @@ High-level module boundaries:
 - `src/metrics.rs`: Prometheus/OpenMetrics integration
 - `src/config_gen.rs`: starter index spec generation from metadata
 - `src/synthetic_devnet.rs`: synthetic local chain support
+- `runtime/`: in-repo synthetic runtime used for integration testing and benchmarking
 
 ## Suggested Workflow
 
@@ -47,4 +48,5 @@ Keep user-facing behavior documented close to the change:
 
 This repository has both unit-style code coverage and a heavier end-to-end path.
 The synthetic runtime exists specifically to exercise the real indexing path
-against a deterministic local chain.
+against a deterministic local chain. See [Synthetic Devnet](./synthetic-devnet.md)
+for the dedicated walkthrough.

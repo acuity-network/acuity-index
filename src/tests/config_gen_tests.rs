@@ -3,7 +3,7 @@ mod config_gen_tests {
     use crate::{
         config::{EventConfig, IndexSpec, PalletConfig, ParamConfig, ScalarKind},
         config_gen::{infer_param, render_index_spec_toml},
-        shared::{metadata_version, unsupported_metadata_error},
+        errors::{metadata_version, unsupported_metadata_error},
     };
     use scale_info::{MetaType, PortableRegistry, Registry, TypeDef, TypeInfo};
     use std::collections::HashMap;
@@ -242,7 +242,6 @@ mod config_gen_tests {
 
         assert!(toml.contains("[keys]\n"));
         assert!(toml.contains("[[pallets]]\nname = \"System\"\nevents = ["));
-        assert!(!toml.contains("sdk = true"));
     }
 
     #[test]

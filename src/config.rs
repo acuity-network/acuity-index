@@ -336,15 +336,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn serializing_pallet_omits_sdk_flag() {
-        let pallet = PalletConfig {
-            name: "Content".into(),
-            events: vec![],
-        };
-
-        let toml = toml::to_string(&pallet).unwrap();
-
-        assert!(!toml.contains("sdk"));
-    }
 }

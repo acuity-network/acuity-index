@@ -23,8 +23,10 @@ use zerocopy::IntoBytes;
 
 use crate::{
     config::{IndexSpec, ParamKey, ResolvedParamConfig, ScalarKind},
+    errors::{IndexError, internal_error},
     event_hydration::{FetchedBlock, fetch_block_events, hydrate_event_refs},
-    shared::*,
+    protocol::*,
+    runtime_state::{RuntimeState, lock_or_recover},
     websockets::process_msg_status,
 };
 

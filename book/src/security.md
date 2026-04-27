@@ -1,6 +1,6 @@
 # Security And Deployment
 
-`acuity-index` is designed to expose a public WebSocket service, so deployment
+Acuity Index is designed to expose a public WebSocket service, so deployment
 controls matter as much as application behavior.
 
 ## Current Hardening

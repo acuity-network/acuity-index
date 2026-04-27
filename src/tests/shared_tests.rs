@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod shared_tests {
-    use crate::shared::*;
+    use crate::errors::IndexError;
+    use crate::protocol::*;
     use zerocopy::IntoBytes;
 
     // ─── Bytes32 ──────────────────────────────────────────────────────────

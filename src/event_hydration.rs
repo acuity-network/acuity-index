@@ -9,7 +9,10 @@ use subxt::{
     rpcs::methods::legacy::LegacyRpcMethods,
 };
 
-use crate::shared::{DecodedEvent, EventBlockProof, EventRef, HexBytes, IndexError, internal_error};
+use crate::{
+    errors::{IndexError, internal_error},
+    protocol::{DecodedEvent, EventBlockProof, EventRef, HexBytes},
+};
 
 pub(crate) struct FetchedBlock {
     pub(crate) block_number: u32,

@@ -27,7 +27,7 @@ use crate::{
     event_hydration::{FetchedBlock, fetch_block_events, hydrate_event_refs},
     protocol::*,
     runtime_state::{RuntimeState, lock_or_recover},
-    websockets::process_msg_status,
+    ws_api::process_msg_status,
 };
 
 // ─── Indexer struct ───────────────────────────────────────────────────────────

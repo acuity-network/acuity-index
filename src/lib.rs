@@ -7,4 +7,4 @@ pub mod metrics;
 pub mod protocol;
 pub mod runtime_state;
 pub mod synthetic_devnet;
-pub mod websockets;
+pub mod ws_api;

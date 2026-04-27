@@ -37,7 +37,7 @@ mod indexer;
 mod metrics;
 mod protocol;
 mod runtime_state;
-mod websockets;
+mod ws_api;
 
 use config::{IndexSpec, OptionsConfig};
 use config_gen::write_generated_index_spec;
@@ -46,7 +46,7 @@ use indexer::{process_sub_msg, run_indexer};
 use metrics::{Metrics, metrics_listen};
 use protocol::{LiveWsConfig, Trees, WsConfig};
 use runtime_state::RuntimeState;
-use websockets::websockets_listen;
+use ws_api::websockets_listen;
 
 #[cfg(test)]
 mod tests;

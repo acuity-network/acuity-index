@@ -15,7 +15,7 @@ Reviewed components:
 Primary attack surface:
 
 - public WebSocket listener on `0.0.0.0:<port>`
-- JSON request parsing for `Status`, `Variants`, `GetEvents`, `SubscribeStatus`, `SubscribeEvents`, `UnsubscribeStatus`, `UnsubscribeEvents`, and `SizeOnDisk`
+- JSON request parsing for `acuity_indexStatus`, `acuity_getEventMetadata`, `acuity_getEvents`, `acuity_subscribeStatus`, `acuity_subscribeEvents`, `acuity_unsubscribeStatus`, and `acuity_unsubscribeEvents`
 - subscription dispatch path between connection handlers and the indexer
 
 ## Current Hardening
@@ -70,9 +70,8 @@ Impact:
 
 - Any reachable client can query indexed data.
 - Any reachable client can subscribe to live updates.
-- Any reachable client can call `SizeOnDisk`, which exposes operational metadata.
-- If event storage is enabled, any reachable client can retrieve decoded events through `GetEvents`.
-- If clients request `includeProofs` and the service is running in finalized mode, any reachable client can also retrieve finalized block headers plus `System.Events` storage proofs for the matching blocks.
+- If event storage is enabled, any reachable client can retrieve decoded events through `acuity_getEvents`.
+- If the service is running in finalized mode, any reachable client can also retrieve finalized block headers plus `System.Events` storage proofs for the matching blocks.
 
 Assessment:
 
@@ -94,7 +93,7 @@ Assessment:
 
 ### 3. Expensive public endpoints remain available
 
-`Variants`, `GetEvents`, and live subscriptions are still public and can be used repeatedly.
+`acuity_getEventMetadata`, `acuity_getEvents`, and live subscriptions are still public and can be used repeatedly.
 
 Impact:
 
@@ -107,13 +106,11 @@ Assessment:
 
 ### 4. Some operational metadata is still exposed
 
-`SizeOnDisk` returns on-disk database size to any client. If enabled, the separate
-OpenMetrics endpoint also exposes operational signals such as connection state,
+If enabled, the separate OpenMetrics endpoint exposes operational signals such as connection state,
 subscription counts, span progress, and database size.
 
 Impact:
 
-- This leaks storage growth and operational characteristics.
 - The metrics listener widens the set of operational metadata visible to anything
   that can reach that port.
 
@@ -164,8 +161,7 @@ Assessment:
 Highest-value remaining work:
 
 1. Add rate limiting.
-2. Decide whether `SizeOnDisk` should remain public.
-3. Decide whether decoded event retrieval should remain public.
+2. Decide whether decoded event retrieval should remain public.
 4. Require TLS termination in all documented deployment paths.
 5. Revisit authentication if the service needs differentiated access or abuse accountability.
 6. Track or remediate the `cargo audit` findings, especially the transitive `lru` advisory and long-term `sled` maintenance risk.

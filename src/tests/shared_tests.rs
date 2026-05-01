@@ -329,66 +329,51 @@ mod shared_tests {
         }
     }
 
-    // ─── RequestMessage deserialization ───────────────────────────────────
+    // ─── JSON-RPC request deserialization ───────────────────────────────────
 
     #[test]
     fn request_status() {
-        let msg: RequestMessage = serde_json::from_str(r#"{"id":1,"type":"Status"}"#).unwrap();
+        let msg: JsonRpcRequest = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"acuity_indexStatus"}"#).unwrap();
         assert_eq!(msg.id, 1);
-        assert!(matches!(msg.body, RequestBody::Status));
+        assert_eq!(msg.method, "acuity_indexStatus");
     }
 
     #[test]
     fn request_subscribe_status() {
-        let msg: RequestMessage =
-            serde_json::from_str(r#"{"id":2,"type":"SubscribeStatus"}"#).unwrap();
+        let msg: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"method":"acuity_subscribeStatus"}"#).unwrap();
         assert_eq!(msg.id, 2);
-        assert!(matches!(msg.body, RequestBody::SubscribeStatus));
+        assert_eq!(msg.method, "acuity_subscribeStatus");
     }
 
     #[test]
     fn request_get_events_custom_u32() {
-        let json = r#"{"id":3,"type":"GetEvents","key":{"type":"Custom","value":{"name":"para_id","kind":"u32","value":2000}},"limit":25}"#;
-        let msg: RequestMessage = serde_json::from_str(json).unwrap();
+        let json = r#"{"jsonrpc":"2.0","id":3,"method":"acuity_getEvents","params":{"key":{"type":"Custom","value":{"name":"para_id","kind":"u32","value":2000}},"limit":25}}"#;
+        let msg: JsonRpcRequest = serde_json::from_str(json).unwrap();
         assert_eq!(msg.id, 3);
-        match msg.body {
-            RequestBody::GetEvents {
-                key:
-                    Key::Custom(CustomKey {
-                        name,
-                        value: CustomValue::U32(id),
-                    }),
-                limit,
-                before,
-                include_proofs,
-            } => {
+        assert_eq!(msg.method, "acuity_getEvents");
+        let params: GetEventsParams = serde_json::from_value(msg.params).unwrap();
+        match params.key {
+            Key::Custom(CustomKey { name, value: CustomValue::U32(id) }) => {
                 assert_eq!(name, "para_id");
                 assert_eq!(id, 2000);
-                assert_eq!(limit, 25);
-                assert!(before.is_none());
-                assert!(!include_proofs);
             }
-            _ => panic!("wrong variant"),
+            _ => panic!("wrong key type"),
         }
+        assert_eq!(params.limit, 25);
+        assert!(params.before.is_none());
     }
 
     #[test]
     fn request_get_events_composite_key() {
         let hex = hex::encode([0xAB; 32]);
         let json = format!(
-            r#"{{"id":6,"type":"GetEvents","key":{{"type":"Custom","value":{{"name":"item_revision","kind":"composite","value":[{{"kind":"bytes32","value":"0x{hex}"}},{{"kind":"u32","value":7}}]}}}}}}"#
+            r#"{{"jsonrpc":"2.0","id":6,"method":"acuity_getEvents","params":{{"key":{{"type":"Custom","value":{{"name":"item_revision","kind":"composite","value":[{{"kind":"bytes32","value":"0x{hex}"}},{{"kind":"u32","value":7}}]}}}}}}}}"#
         );
-        let msg: RequestMessage = serde_json::from_str(&json).unwrap();
-
-        match msg.body {
-            RequestBody::GetEvents {
-                key:
-                    Key::Custom(CustomKey {
-                        name,
-                        value: CustomValue::Composite(values),
-                    }),
-                ..
-            } => {
+        let msg: JsonRpcRequest = serde_json::from_str(&json).unwrap();
+        let params: GetEventsParams = serde_json::from_value(msg.params).unwrap();
+        match params.key {
+            Key::Custom(CustomKey { name, value: CustomValue::Composite(values) }) => {
                 assert_eq!(name, "item_revision");
                 assert_eq!(
                     values,
@@ -398,7 +383,7 @@ mod shared_tests {
                     ]
                 );
             }
-            _ => panic!("wrong variant"),
+            _ => panic!("wrong key type"),
         }
     }
 
@@ -406,62 +391,35 @@ mod shared_tests {
     fn request_get_events_account_id() {
         let hex = hex::encode([0xAA; 32]);
         let json = format!(
-            r#"{{"id":4,"type":"GetEvents","key":{{"type":"Custom","value":{{"name":"account_id","kind":"bytes32","value":"0x{hex}"}}}},"before":{{"blockNumber":10,"eventIndex":2}}}}"#
+            r#"{{"jsonrpc":"2.0","id":4,"method":"acuity_getEvents","params":{{"key":{{"type":"Custom","value":{{"name":"account_id","kind":"bytes32","value":"0x{hex}"}}}},"before":{{"blockNumber":10,"eventIndex":2}}}}}}"#
         );
-        let msg: RequestMessage = serde_json::from_str(&json).unwrap();
+        let msg: JsonRpcRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(msg.id, 4);
-        match msg.body {
-            RequestBody::GetEvents {
-                key:
-                    Key::Custom(CustomKey {
-                        name,
-                        value: CustomValue::Bytes32(b),
-                    }),
-                limit,
-                before,
-                include_proofs,
-            } => {
+        let params: GetEventsParams = serde_json::from_value(msg.params).unwrap();
+        match params.key {
+            Key::Custom(CustomKey { name, value: CustomValue::Bytes32(b) }) => {
                 assert_eq!(name, "account_id");
                 assert_eq!(b.0, [0xAA; 32]);
-                assert_eq!(limit, 100);
-                assert!(!include_proofs);
-                assert_eq!(
-                    before,
-                    Some(EventRef {
-                        block_number: 10,
-                        event_index: 2,
-                    })
-                );
             }
-            _ => panic!("wrong variant"),
+            _ => panic!("wrong key type"),
         }
+        assert_eq!(params.limit, 100);
+        assert_eq!(
+            params.before,
+            Some(EventRef {
+                block_number: 10,
+                event_index: 2,
+            })
+        );
     }
 
     #[test]
     fn request_get_events_defaults_limit_when_omitted() {
-        let json = r#"{"id":5,"type":"GetEvents","key":{"type":"Custom","value":{"name":"pool_id","kind":"u32","value":9}}}"#;
-        let msg: RequestMessage = serde_json::from_str(json).unwrap();
-
-        match msg.body {
-            RequestBody::GetEvents { limit, before, .. } => {
-                assert_eq!(limit, 100);
-                assert!(before.is_none());
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn request_get_events_accepts_include_proofs() {
-        let json = r#"{"id":6,"type":"GetEvents","key":{"type":"Custom","value":{"name":"pool_id","kind":"u32","value":9}},"includeProofs":true}"#;
-        let msg: RequestMessage = serde_json::from_str(json).unwrap();
-
-        match msg.body {
-            RequestBody::GetEvents { include_proofs, .. } => {
-                assert!(include_proofs);
-            }
-            _ => panic!("wrong variant"),
-        }
+        let json = r#"{"jsonrpc":"2.0","id":5,"method":"acuity_getEvents","params":{"key":{"type":"Custom","value":{"name":"pool_id","kind":"u32","value":9}}}}"#;
+        let msg: JsonRpcRequest = serde_json::from_str(json).unwrap();
+        let params: GetEventsParams = serde_json::from_value(msg.params).unwrap();
+        assert_eq!(params.limit, 100);
+        assert!(params.before.is_none());
     }
 
     // ─── EventRef / Span Display ──────────────────────────────────────────
@@ -496,88 +454,96 @@ mod shared_tests {
 
     #[test]
     fn response_events_with_decoded_events_serializes() {
-        let msg = ResponseMessage {
-            id: Some(7),
-            body: ResponseBody::Events {
-                key: Key::Custom(CustomKey {
-                    name: "ref_index".into(),
-                    value: CustomValue::U32(42),
+        let result = GetEventsResult {
+            key: Key::Custom(CustomKey {
+                name: "ref_index".into(),
+                value: CustomValue::U32(42),
+            }),
+            events: vec![EventRef {
+                block_number: 10,
+                event_index: 2,
+            }],
+            decoded_events: vec![DecodedEvent {
+                block_number: 10,
+                event_index: 2,
+                event: serde_json::json!({
+                    "specVersion": 1234,
+                    "eventName": "Deposit"
                 }),
-                events: vec![EventRef {
-                    block_number: 10,
-                    event_index: 2,
-                }],
-                decoded_events: vec![DecodedEvent {
-                    block_number: 10,
-                    event_index: 2,
-                    event: serde_json::json!({
-                        "specVersion": 1234,
-                        "eventName": "Deposit"
-                    }),
-                }],
-                proofs_by_block: None,
-                proofs_status: None,
+            }],
+            proofs: ProofsResult {
+                available: false,
+                reason: "included".into(),
+                message: "".into(),
+                items: vec![],
+            },
+            page: PageResult {
+                next_cursor: None,
+                has_more: false,
             },
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("decodedEvents"));
         assert!(json.contains("specVersion"));
         assert!(json.contains("Deposit"));
     }
 
     #[test]
-    fn response_events_with_proofs_status_serializes() {
-        let msg = ResponseMessage {
-            id: Some(8),
-            body: ResponseBody::Events {
-                key: Key::Custom(CustomKey {
-                    name: "ref_index".into(),
-                    value: CustomValue::U32(42),
-                }),
-                events: vec![],
-                decoded_events: vec![],
-                proofs_by_block: Some(None),
-                proofs_status: Some(ProofsStatus {
-                    available: false,
-                    reason: "finalized_proofs_unavailable".into(),
-                    message: "Finalized proofs are only available when the indexer is running with finalized indexing.".into(),
-                }),
+    fn response_events_with_proofs_unavailable_serializes() {
+        let result = GetEventsResult {
+            key: Key::Custom(CustomKey {
+                name: "ref_index".into(),
+                value: CustomValue::U32(42),
+            }),
+            events: vec![],
+            decoded_events: vec![],
+            proofs: ProofsResult {
+                available: false,
+                reason: "finalized_proofs_unavailable".into(),
+                message: "Finalized proofs are only available when the indexer is running with finalized indexing.".into(),
+                items: vec![],
+            },
+            page: PageResult {
+                next_cursor: None,
+                has_more: false,
             },
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("proofsStatus"));
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("proofs"));
         assert!(json.contains("finalized_proofs_unavailable"));
-        assert!(json.contains("\"proofsByBlock\":null"));
+        assert!(json.contains("\"available\":false"));
     }
 
     #[test]
-    fn response_error_without_id_omits_id_field() {
-        let msg = ResponseMessage {
-            id: None,
-            body: ResponseBody::Error(ApiError {
-                code: "invalid_request",
-                message: "missing field `id`".into(),
-            }),
-        };
+    fn response_error_serializes_with_jsonrpc_envelope() {
+        let msg = jsonrpc_error_with_id(None, INVALID_PARAMS, "missing field `id`", Some(REASON_INVALID_KEY));
 
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"error\""));
-        assert!(!json.contains("\"id\""));
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
+        assert!(json.contains("\"code\":-32602"));
+        assert!(json.contains("\"reason\":\"invalid_key\""));
     }
 
     #[test]
     fn notification_subscription_terminated_serializes() {
-        let msg = NotificationMessage {
-            body: NotificationBody::SubscriptionTerminated {
-                reason: SubscriptionTerminationReason::Backpressure,
-                message: "subscriber disconnected due to backpressure".into(),
+        let msg = JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "acuity_subscription",
+            params: NotificationParams {
+                subscription: "sub_123".into(),
+                result: NotificationResult::Terminated {
+                    reason: "backpressure".into(),
+                    message: "subscriber disconnected due to backpressure".into(),
+                },
             },
         };
 
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("subscriptionTerminated"));
+        assert!(json.contains("\"method\":\"acuity_subscription\""));
+        assert!(json.contains("\"type\":\"terminated\""));
         assert!(json.contains("backpressure"));
+        assert!(json.contains("\"subscription\":\"sub_123\""));
     }
 }

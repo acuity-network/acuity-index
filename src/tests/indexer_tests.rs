@@ -967,7 +967,7 @@ item_revision = { fields = ["bytes32", "u32"] }
         indexer.notify_status_subscribers();
 
         let first = rx.recv().await.unwrap();
-        assert!(matches!(first.body, NotificationBody::Status(_)));
+        assert!(matches!(first.params.result, NotificationResult::Status { .. }));
         assert!(rx.try_recv().is_err());
 
         indexer.notify_status_subscribers();
@@ -1014,15 +1014,21 @@ item_revision = { fields = ["bytes32", "u32"] }
 
     #[tokio::test]
     async fn termination_notification_serializes() {
-        let msg = NotificationMessage {
-            body: NotificationBody::SubscriptionTerminated {
-                reason: SubscriptionTerminationReason::Backpressure,
-                message: "subscriber disconnected due to backpressure".into(),
+        let msg = JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "acuity_subscription",
+            params: NotificationParams {
+                subscription: "sub_test".into(),
+                result: NotificationResult::Terminated {
+                    reason: "backpressure".into(),
+                    message: "subscriber disconnected due to backpressure".into(),
+                },
             },
         };
 
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("subscriptionTerminated"));
+        assert!(json.contains("\"method\":\"acuity_subscription\""));
+        assert!(json.contains("\"type\":\"terminated\""));
         assert!(json.contains("backpressure"));
     }
 

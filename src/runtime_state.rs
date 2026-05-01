@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tracing::error;
 
 use crate::metrics::Metrics;
-use crate::protocol::{Key, NotificationMessage};
+use crate::protocol::{Key, JsonRpcNotification};
 
 pub fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
     match mutex.lock() {
@@ -26,8 +26,8 @@ pub fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a,
 }
 
 pub struct RuntimeState {
-    pub(crate) status_subs: Mutex<Vec<mpsc::Sender<NotificationMessage>>>,
-    pub(crate) events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<NotificationMessage>>>>,
+    pub(crate) status_subs: Mutex<Vec<mpsc::Sender<JsonRpcNotification>>>,
+    pub(crate) events_subs: Mutex<HashMap<Key, Vec<mpsc::Sender<JsonRpcNotification>>>>,
     pub(crate) metrics: Arc<Metrics>,
     api: Mutex<Option<OnlineClient<PolkadotConfig>>>,
     rpc: Mutex<Option<LegacyRpcMethods<RpcConfigFor<PolkadotConfig>>>>,

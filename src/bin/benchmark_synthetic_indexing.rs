@@ -156,7 +156,6 @@ async fn run_benchmark_once(
         elapsed_seconds: elapsed,
         blocks_per_second: f64::from(manifest.total_blocks) / elapsed,
         synthetic_events_per_second: f64::from(manifest.synthetic_event_count) / elapsed,
-        size_on_disk_bytes: indexer_ws.size_on_disk().await?,
     };
 
     child.terminate();

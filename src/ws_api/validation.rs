@@ -82,12 +82,13 @@ fn validate_custom_value(value: &CustomValue, depth: usize) -> Result<usize, Str
 pub(crate) fn validate_subscription_request(
     status_subscribed: bool,
     event_subscriptions: &HashSet<Key>,
-    body: &RequestBody,
+    method: &str,
     max_subscriptions_per_connection: usize,
 ) -> Result<(), IndexError> {
-    let next_count = match body {
-        RequestBody::SubscribeStatus if !status_subscribed => event_subscriptions.len() + 1,
-        RequestBody::SubscribeEvents { key } if !event_subscriptions.contains(key) => {
+    let next_count = match method {
+        "acuity_subscribeStatus" if !status_subscribed => event_subscriptions.len() + 1,
+        "acuity_subscribeEvents" => {
+            // We can't check the key here without params, so we count optimistically
             event_subscriptions.len() + 1 + usize::from(status_subscribed)
         }
         _ => return Ok(()),
@@ -122,7 +123,7 @@ mod tests {
         let result = validate_subscription_request(
             false,
             &event_subscriptions,
-            &RequestBody::SubscribeStatus,
+            "acuity_subscribeStatus",
             DEFAULT_WS_CONFIG.max_subscriptions_per_connection,
         );
 
@@ -143,7 +144,7 @@ mod tests {
             validate_subscription_request(
                 false,
                 &event_subscriptions,
-                &RequestBody::SubscribeEvents { key },
+                "acuity_subscribeEvents",
                 DEFAULT_WS_CONFIG.max_subscriptions_per_connection,
             )
             .is_ok()
@@ -152,15 +153,10 @@ mod tests {
 
     #[test]
     fn validate_subscription_request_counts_status_and_event_subscriptions_together() {
-        let key = Key::Custom(CustomKey {
-            name: "pool_id".into(),
-            value: CustomValue::U32(8),
-        });
-
         let result = validate_subscription_request(
             true,
             &HashSet::new(),
-            &RequestBody::SubscribeEvents { key },
+            "acuity_subscribeEvents",
             1,
         );
 

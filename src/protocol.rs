@@ -517,14 +517,6 @@ pub struct EventBlockProof {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProofsStatus {
-    pub available: bool,
-    pub reason: String,
-    pub message: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct EventMeta {
     pub index: u8,
     pub name: String,
@@ -549,124 +541,249 @@ impl fmt::Display for Span {
     }
 }
 
-/// JSON request messages.
+// ─── JSON-RPC 2.0 envelope types ─────────────────────────────────────────────
+
+/// JSON-RPC 2.0 request envelope.
 #[derive(Deserialize, Debug, Clone, PartialEq)]
-#[serde(tag = "type")]
-pub enum RequestBody {
-    Status,
-    SubscribeStatus,
-    UnsubscribeStatus,
-    Variants,
-    GetEvents {
-        key: Key,
-        #[serde(default = "default_get_events_limit")]
-        limit: u16,
-        before: Option<EventRef>,
-        #[serde(default)]
-        #[serde(rename = "includeProofs")]
-        include_proofs: bool,
-    },
-    SubscribeEvents {
-        key: Key,
-    },
-    UnsubscribeEvents {
-        key: Key,
-    },
-    SizeOnDisk,
+pub struct JsonRpcRequest {
+    pub jsonrpc: String,
+    pub id: u64,
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+/// JSON-RPC 2.0 success response.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct JsonRpcSuccessResponse {
+    pub jsonrpc: &'static str,
+    pub id: u64,
+    pub result: serde_json::Value,
+}
+
+/// JSON-RPC 2.0 error object.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+/// JSON-RPC 2.0 error response.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct JsonRpcErrorResponse {
+    pub jsonrpc: &'static str,
+    pub id: Option<u64>,
+    pub error: JsonRpcError,
+}
+
+/// Either a success or error JSON-RPC response.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum JsonRpcResponse {
+    Success(JsonRpcSuccessResponse),
+    Error(JsonRpcErrorResponse),
+}
+
+// ─── JSON-RPC standard error codes ───────────────────────────────────────────
+
+pub const PARSE_ERROR: i32 = -32700;
+pub const INVALID_REQUEST: i32 = -32600;
+pub const METHOD_NOT_FOUND: i32 = -32601;
+pub const INVALID_PARAMS: i32 = -32602;
+pub const INTERNAL_ERROR: i32 = -32603;
+pub const UPSTREAM_UNAVAILABLE: i32 = -32001;
+
+// ─── Error data reason codes ─────────────────────────────────────────────────
+
+pub const REASON_INVALID_KEY: &str = "invalid_key";
+pub const REASON_INVALID_CURSOR: &str = "invalid_cursor";
+pub const REASON_SUBSCRIPTION_LIMIT: &str = "subscription_limit";
+pub const REASON_TEMPORARILY_UNAVAILABLE: &str = "temporarily_unavailable";
+pub const REASON_PROOFS_UNAVAILABLE: &str = "proofs_unavailable";
+
+// ─── JSON-RPC response builders ──────────────────────────────────────────────
+
+pub fn jsonrpc_success(id: u64, result: serde_json::Value) -> JsonRpcResponse {
+    JsonRpcResponse::Success(JsonRpcSuccessResponse {
+        jsonrpc: "2.0",
+        id,
+        result,
+    })
+}
+
+pub fn jsonrpc_error_with_id(
+    id: Option<u64>,
+    code: i32,
+    message: impl Into<String>,
+    reason: Option<&str>,
+) -> JsonRpcResponse {
+    let data = reason.map(|r| serde_json::json!({ "reason": r }));
+    JsonRpcResponse::Error(JsonRpcErrorResponse {
+        jsonrpc: "2.0",
+        id,
+        error: JsonRpcError {
+            code,
+            message: message.into(),
+            data,
+        },
+    })
+}
+
+pub fn jsonrpc_error(id: u64, code: i32, message: impl Into<String>, reason: Option<&str>) -> JsonRpcResponse {
+    jsonrpc_error_with_id(Some(id), code, message, reason)
+}
+
+pub fn jsonrpc_parse_error(message: impl Into<String>) -> JsonRpcResponse {
+    jsonrpc_error_with_id(None, PARSE_ERROR, message, None)
+}
+
+pub fn jsonrpc_invalid_request(message: impl Into<String>) -> JsonRpcResponse {
+    jsonrpc_error_with_id(None, INVALID_REQUEST, message, None)
+}
+
+pub fn jsonrpc_method_not_found(id: u64, method: &str) -> JsonRpcResponse {
+    jsonrpc_error(id, METHOD_NOT_FOUND, format!("method not found: {method}"), None)
+}
+
+pub fn jsonrpc_invalid_params(id: u64, message: impl Into<String>, reason: &str) -> JsonRpcResponse {
+    jsonrpc_error(id, INVALID_PARAMS, message, Some(reason))
+}
+
+pub fn jsonrpc_internal_error(id: u64, message: impl Into<String>) -> JsonRpcResponse {
+    jsonrpc_error(id, INTERNAL_ERROR, message, None)
+}
+
+pub fn jsonrpc_temporarily_unavailable(id: u64) -> JsonRpcResponse {
+    jsonrpc_error(
+        id,
+        UPSTREAM_UNAVAILABLE,
+        "node temporarily unavailable",
+        Some(REASON_TEMPORARILY_UNAVAILABLE),
+    )
+}
+
+pub fn jsonrpc_subscription_limit(id: u64, message: impl Into<String>) -> JsonRpcResponse {
+    jsonrpc_error(id, INVALID_PARAMS, message, Some(REASON_SUBSCRIPTION_LIMIT))
+}
+
+// ─── Typed params structs ────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GetEventsParams {
+    pub key: Key,
+    #[serde(default = "default_get_events_limit")]
+    pub limit: u16,
+    pub before: Option<EventRef>,
 }
 
 fn default_get_events_limit() -> u16 {
     100
 }
 
-/// JSON request envelope.
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-pub struct RequestMessage {
-    pub id: u64,
-    #[serde(flatten)]
-    pub body: RequestBody,
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SubscribeEventsParams {
+    pub key: Key,
 }
 
-/// JSON response messages.
-#[derive(Serialize, Debug, Clone, PartialEq)]
-#[serde(tag = "type", content = "data")]
-#[serde(rename_all = "camelCase")]
-pub enum ResponseBody {
-    Status(Vec<Span>),
-    Variants(Vec<PalletMeta>),
-    Events {
-        key: Key,
-        events: Vec<EventRef>,
-        #[serde(rename = "decodedEvents")]
-        decoded_events: Vec<DecodedEvent>,
-        #[serde(rename = "proofsByBlock", skip_serializing_if = "Option::is_none")]
-        proofs_by_block: Option<Option<Vec<EventBlockProof>>>,
-        #[serde(rename = "proofsStatus", skip_serializing_if = "Option::is_none")]
-        proofs_status: Option<ProofsStatus>,
-    },
-    SubscriptionStatus {
-        action: SubscriptionAction,
-        target: SubscriptionTarget,
-    },
-    SizeOnDisk(u64),
-    Error(ApiError),
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct UnsubscribeParams {
+    pub subscription: String,
+}
+
+// ─── Typed result structs ────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct IndexStatusResult {
+    pub spans: Vec<Span>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
-pub struct ResponseMessage {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<u64>,
-    #[serde(flatten)]
-    pub body: ResponseBody,
+pub struct GetEventMetadataResult {
+    pub pallets: Vec<PalletMeta>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub enum SubscriptionAction {
-    Subscribed,
-    Unsubscribed,
+pub struct ProofsResult {
+    pub available: bool,
+    pub reason: String,
+    pub message: String,
+    pub items: Vec<EventBlockProof>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PageResult {
+    pub next_cursor: Option<EventRef>,
+    pub has_more: bool,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GetEventsResult {
+    pub key: Key,
+    pub events: Vec<EventRef>,
+    pub decoded_events: Vec<DecodedEvent>,
+    pub proofs: ProofsResult,
+    pub page: PageResult,
+}
+
+// ─── Subscription notification types ─────────────────────────────────────────
+
+/// JSON-RPC 2.0 subscription notification.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct JsonRpcNotification {
+    pub jsonrpc: &'static str,
+    pub method: &'static str,
+    pub params: NotificationParams,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct NotificationParams {
+    pub subscription: String,
+    pub result: NotificationResult,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum SubscriptionTarget {
-    Status,
-    Events { key: Key },
-}
-
-#[derive(Serialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ApiError {
-    pub code: &'static str,
-    pub message: String,
-}
-
-#[derive(Serialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum SubscriptionTerminationReason {
-    Backpressure,
-}
-
-#[derive(Serialize, Debug, Clone, PartialEq)]
-pub struct NotificationMessage {
-    #[serde(flatten)]
-    pub body: NotificationBody,
-}
-
-#[derive(Serialize, Debug, Clone, PartialEq)]
-#[serde(tag = "type", content = "data")]
-#[serde(rename_all = "camelCase")]
-pub enum NotificationBody {
-    Status(Vec<Span>),
-    EventNotification {
+pub enum NotificationResult {
+    Status {
+        spans: Vec<Span>,
+    },
+    Event {
         key: Key,
         event: EventRef,
         #[serde(rename = "decodedEvent")]
         decoded_event: Option<DecodedEvent>,
     },
-    SubscriptionTerminated {
-        reason: SubscriptionTerminationReason,
+    Terminated {
+        reason: String,
         message: String,
+    },
+}
+
+/// Subscription messages from WebSocket connections to the shared subscription dispatcher.
+#[derive(Debug)]
+pub enum SubscriptionMessage {
+    SubscribeStatus {
+        tx: mpsc::Sender<JsonRpcNotification>,
+        response_tx: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    UnsubscribeStatus {
+        tx: mpsc::Sender<JsonRpcNotification>,
+        response_tx: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    SubscribeEvents {
+        key: Key,
+        tx: mpsc::Sender<JsonRpcNotification>,
+        response_tx: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    UnsubscribeEvents {
+        key: Key,
+        tx: mpsc::Sender<JsonRpcNotification>,
+        response_tx: Option<oneshot::Sender<Result<(), String>>>,
     },
 }
 
@@ -718,29 +835,6 @@ impl Default for WsConfig {
             max_events_limit: 1000,
         }
     }
-}
-
-/// Subscription messages from WebSocket connections to the shared subscription dispatcher.
-#[derive(Debug)]
-pub enum SubscriptionMessage {
-    SubscribeStatus {
-        tx: mpsc::Sender<NotificationMessage>,
-        response_tx: Option<oneshot::Sender<Result<(), String>>>,
-    },
-    UnsubscribeStatus {
-        tx: mpsc::Sender<NotificationMessage>,
-        response_tx: Option<oneshot::Sender<Result<(), String>>>,
-    },
-    SubscribeEvents {
-        key: Key,
-        tx: mpsc::Sender<NotificationMessage>,
-        response_tx: Option<oneshot::Sender<Result<(), String>>>,
-    },
-    UnsubscribeEvents {
-        key: Key,
-        tx: mpsc::Sender<NotificationMessage>,
-        response_tx: Option<oneshot::Sender<Result<(), String>>>,
-    },
 }
 
 #[cfg(test)]

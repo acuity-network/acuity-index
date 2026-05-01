@@ -21,7 +21,7 @@ This file is meant to help AI agents quickly find the right code and understand 
 - `src/config.rs`
   Defines the TOML schema and resolves configured event params into runtime key-mapping rules.
 - `src/websockets.rs`
-  Implements the public WebSocket API, request/response handling, connection lifecycle, and optional finalized proof inclusion for `GetEvents` responses.
+  Implements the public WebSocket API, request/response handling, connection lifecycle, and optional finalized proof inclusion for `acuity_getEvents` responses.
 - `src/shared.rs`
   Holds shared wire types, on-disk key formats, database tree handles, shared runtime state, finalized-mode gating, and common enums like `Key`, `RequestMessage`, and `ResponseMessage`.
 - `src/event_hydration.rs`
@@ -33,7 +33,7 @@ This file is meant to help AI agents quickly find the right code and understand 
 - `src/bin/seed_synthetic_runtime.rs`
   Deterministic chain seeder for the synthetic runtime. It submits known transactions in `smoke` or `bulk` mode and emits a `SeedManifest` describing the expected indexed queries that tests and benchmarks later validate through the public API.
 - `src/bin/benchmark_synthetic_indexing.rs`
-  End-to-end benchmark harness for the synthetic runtime. It starts `acuity-index` against a rendered synthetic config, waits until the manifest queries are observable through `GetEvents`, and emits a `BenchmarkReport` with throughput and on-disk size metrics.
+  End-to-end benchmark harness for the synthetic runtime. It starts `acuity-index` against a rendered synthetic config, waits until the manifest queries are observable through `acuity_getEvents`, and emits a `BenchmarkReport` with throughput and on-disk size metrics.
 - `runtime/`
   Separate in-repo Polkadot SDK runtime workspace used for local devnet testing. It builds a WASM runtime consumed by `polkadot-omni-node` and includes the custom `Synthetic` pallet used to exercise indexed key shapes.
 - `tests/common/mod.rs`
@@ -49,7 +49,7 @@ The stack has five layers:
 
 1. `runtime/` builds a small Polkadot SDK runtime WASM with standard system pallets plus a custom `Synthetic` pallet.
 2. `polkadot-omni-node` runs that WASM runtime locally from a generated chain spec.
-3. `src/synthetic_devnet.rs` renders the matching index specification for the synthetic pallet events and exposes helper calls for `GetEvents` with or without proofs.
+3. `src/synthetic_devnet.rs` renders the matching index specification for the synthetic pallet events and exposes helper calls for `acuity_getEvents` with or without proofs.
 4. `src/bin/seed_synthetic_runtime.rs` writes deterministic on-chain data that should become queryable through the indexer.
 5. `acuity-index` indexes that chain normally, and tests/benchmarks validate the result through the public WebSocket API.
 
@@ -100,7 +100,7 @@ The synthetic benchmark path is organized around durable artifacts rather than a
   - chain identity (`genesis_hash`)
   - seeded block range
   - transaction and synthetic event counts
-  - a list of `QueryExpectation` values describing which WebSocket `GetEvents` lookups must succeed
+  - a list of `QueryExpectation` values describing which WebSocket `acuity_getEvents` lookups must succeed
 
 That manifest is the contract between the seeder and downstream validation code. Tests and benchmarks do not hardcode their own expectations independently; they consume the manifest produced by the actual seeding pass.
 
@@ -113,8 +113,8 @@ Its flow is:
 1. Read the seeder manifest JSON.
 2. Render a temporary synthetic index config whose `genesis_hash` and node URL match the seeded local chain.
 3. Start `acuity-index` as a child process against an empty database.
-4. Poll `GetEvents` over the indexer's public WebSocket API until every manifest query passes.
-5. Query `SizeOnDisk` and compute elapsed-time throughput metrics.
+4. Poll `acuity_getEvents` over the indexer's public WebSocket API until every manifest query passes.
+5. Query `acuity_indexStatus` and compute elapsed-time throughput metrics.
 6. Emit a `BenchmarkReport` JSON document.
 
 This means benchmark success is defined by observable API behavior, not only by internal logs or process completion. The benchmark verifies that the indexer has actually made the seeded data queryable.
@@ -143,25 +143,25 @@ The suite uses helpers from `tests/common/mod.rs` to orchestrate this pipeline:
 
 The current synthetic integration suite covers:
 
-- smoke end-to-end indexing and manifest-backed `GetEvents` validation
-- request/response flows for `Status`, `Variants`, `GetEvents`, and `SizeOnDisk`
-- `GetEvents` ordering and `before` cursor pagination
-- `GetEvents includeProofs` behavior in both unavailable and finalized-proof-available modes
-- subscription lifecycle for `SubscribeStatus`, `UnsubscribeStatus`,
-  `SubscribeEvents`, and `UnsubscribeEvents`
-- pushed `status` and `eventNotification` messages
+- smoke end-to-end indexing and manifest-backed `acuity_getEvents` validation
+- request/response flows for `acuity_indexStatus`, `acuity_getEventMetadata`, `acuity_getEvents`
+- `acuity_getEvents` ordering and `before` cursor pagination
+- `acuity_getEvents` proofs behavior in both unavailable and finalized-proof-available modes
+- subscription lifecycle for `acuity_subscribeStatus`, `acuity_unsubscribeStatus`,
+  `acuity_subscribeEvents`, and `acuity_unsubscribeEvents`
+- pushed status and event notifications
 - config-sensitive behavior for `index_variant = true`
 - request validation, subscription-limit handling, and idle timeout enforcement
 - fatal startup refusal on chain genesis-hash mismatch
 - process restart plus RPC outage/recovery behavior, including the documented
-  split between local requests and RPC-backed `Variants` / `GetEvents`
+  split between local requests and RPC-backed `acuity_getEventMetadata` / `acuity_getEvents`
 
 Because this path validates the actual WebSocket interface, it catches
 integration breakage across runtime metadata, config rendering, indexing,
 persistence, connection lifecycle, and query handling in one place.
 
 It is intentionally broad, but it is not exhaustive. Notably, the suite does
-not yet exercise `subscriptionTerminated` backpressure handling or
+not yet exercise subscription termination backpressure handling or
 pruning-misconfiguration failure end to end.
 
 ## Developer Orchestration
@@ -263,15 +263,13 @@ Operational detail:
 
 ### Event hydration and proof responses
 
-`GetEvents` always reads event refs from sled first, then hydrates decoded event
+`acuity_getEvents` always reads event refs from sled first, then hydrates decoded event
 payloads from the node for the returned refs.
 
-When the request sets `includeProofs = true`, `src/websockets.rs` also asks
-`src/event_hydration.rs` for one finalized proof per returned block. Each proof is
+`src/websockets.rs` also asks `src/event_hydration.rs` for one finalized proof per returned block. Each proof is
 derived from the block header plus a `state_get_read_proof` call for the
-`System.Events` storage item. The response surface intentionally distinguishes
-between proofs not requested, proofs requested but unavailable, and proofs
-successfully included.
+`System.Events` storage item. The response includes a `proofs` object that indicates
+whether proofs are available, the reason, and the proof items when available.
 
 ### Key derivation
 
@@ -362,6 +360,7 @@ Important invariants:
 
 - The active in-memory `current_span` is not always persisted immediately. On shutdown or recoverable error, `save_current_span(...)` persists the current progress back into the `span` tree before the indexer task returns.
 - If the upstream `subxt` block stream closes because the node disconnects or exits, the indexer saves the current span and returns `BlockStreamClosed` so the supervisor loop in `src/main.rs` can re-establish the connection and resume indexing.
+- `acuity_indexStatus` is local and continues working while the node RPC is unavailable.
 
 ## RPC Reconnection And Spec Reload
 
@@ -510,23 +509,22 @@ Important operational details:
 - The listener enforces WebSocket frame and message size limits during handshake/runtime.
 - If the global connection cap is exhausted, the upgrade is rejected with HTTP `503 Service Unavailable`.
 - Each accepted connection is subject to an idle timeout and a per-connection subscription cap. Setting `idle_timeout_secs = 0` disables the timeout.
-- There is also a global total subscription cap across all connections. When exceeded, new subscriptions are rejected with a request-scoped `subscription_limit` error. Because the subscription was never established, no `subscriptionTerminated` notification is sent for that initial rejection.
+- There is also a global total subscription cap across all connections. When exceeded, new subscriptions are rejected with a `-32603` error with `data.reason: "subscription_limit"`. Because the subscription was never established, no termination notification is sent for that initial rejection.
 
 ### Local reads
 
 These are answered directly from sled or RPC in `process_msg(...)`:
 
-- `Status`
-- `Variants`
-- `GetEvents { key }`
-- `SizeOnDisk`
+- `acuity_indexStatus`
+- `acuity_getEventMetadata`
+- `acuity_getEvents { key }`
 
-`GetEvents` reads matching event refs from sled, then hydrates `decodedEvents` from the node before responding.
+`acuity_getEvents` reads matching event refs from sled, then hydrates `decodedEvents` from the node before responding.
 
 Operational detail:
 
-- `Status` and `SizeOnDisk` are local and continue working while the node RPC is unavailable.
-- `Variants` and `GetEvents` require a live RPC handle. During reconnect backoff they return a request-scoped `temporarily_unavailable` error instead of disconnecting the client.
+- `acuity_indexStatus` is local and continues working while the node RPC is unavailable.
+- `acuity_getEventMetadata` and `acuity_getEvents` require a live RPC handle. During reconnect backoff they return an upstream-unavailable error instead of disconnecting the client.
 
 ### Subscriptions
 
@@ -616,7 +614,7 @@ Chain-specific semantic names such as `ref_index` must be declared by the spec a
 
 ## Gotchas
 
-- Do not assume decoded event payloads are available without node access. Event refs are stored locally, but decoded payloads for `GetEvents` and `eventNotification` are hydrated from the node on demand.
+- Do not assume decoded event payloads are available without node access. Event refs are stored locally, but decoded payloads for `acuity_getEvents` and event subscription notifications are hydrated from the node on demand.
 - Do not assume every decoded field is named. Some event fields are positional and TOML may reference them by stringified index like `"0"`.
 - Do not assume block indexing completes in numeric order. Both backfill and head processing can finish out of order and are stitched together afterward.
 - Do not bypass genesis-hash checks when reusing an existing database path.

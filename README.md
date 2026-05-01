@@ -37,7 +37,7 @@ Detailed source documents remain available too:
 - **Safe shutdown** — persists progress and exits cleanly on termination signals or when the upstream node disconnects
 - **Backward indexing** — indexes from the chain tip backwards while simultaneously tracking new blocks
 - **WebSocket API** — query events by key, subscribe to live updates, and inspect chain metadata
-- **Optional finalized proofs** — `GetEvents` can include verifiable `System.Events` storage proofs when the indexer runs in finalized mode
+- **Optional finalized proofs** — `acuity_getEvents` can include verifiable `System.Events` storage proofs when the indexer runs in finalized mode
 - **Concurrent block fetching** — configurable queue depth for parallel backfill and HEAD catch-up requests
 
 Any Substrate chain can be supported by generating or writing an index specification TOML and passing it as `<INDEX_SPEC>`.
@@ -100,10 +100,10 @@ acuity-index <COMMAND>
 Runtime option precedence: **CLI flags > `--options-config` file > built-in defaults**.
 `index_variant` is a top-level index spec field, not a runtime option.
 
-When clients send `GetEvents` with `"includeProofs": true`, the response may also
-carry `proofsByBlock` plus `proofsStatus` metadata. Proofs are only available
-while the indexer is running with `--finalized` indexing; otherwise the response
-returns `proofsByBlock: null` with an explanatory `proofsStatus`.
+When clients send `acuity_getEvents`, the response always includes a `proofs`
+object. Proofs are only available while the indexer is running with `--finalized`
+indexing; otherwise the response returns `proofs.available: false` with an
+explanatory `proofs.reason` and `proofs.message`.
 
 When `run <INDEX_SPEC>` points to a file, `acuity-index` watches that file for changes.
 Accepted spec edits restart only the RPC/indexer loop; the WebSocket and metrics
@@ -145,8 +145,8 @@ The synthetic runtime is intentionally small and deterministic:
 
 The ignored integration suite also includes proof-oriented coverage:
 
-- default mode verifies that `includeProofs` reports proofs as unavailable when the indexer is not running with `--finalized`
-- finalized-mode coverage starts a libp2p-enabled local node, runs the indexer with `--finalized`, requests proofs through `GetEvents`, and verifies the returned header plus storage proof against the block state root
+- default mode verifies that proofs are reported as unavailable when the indexer is not running with `--finalized`
+- finalized-mode coverage starts a libp2p-enabled local node, runs the indexer with `--finalized`, requests proofs through `acuity_getEvents`, and verifies the returned header plus storage proof against the block state root
 
 Useful recipes:
 
@@ -169,7 +169,7 @@ The benchmark recipe starts its own synthetic node on the selected RPC port. Its
 By default, `just benchmark-indexing` starts at `queue_depth=4`, seeds 5000 burst blocks with `burst_count=128`, waits up to 600 seconds for each benchmark run to become ready, prints the JSON report for each successful run, then prints a summary table and the first failing `queue_depth`.
 
 The ignored synthetic integration suite exercises the real node-backed stack end
-to end, including `Status`, `Variants`, `GetEvents`, `SizeOnDisk`, subscription
+to end, including `acuity_indexStatus`, `acuity_getEventMetadata`, `acuity_getEvents`, subscription
 flows, live notifications, selected WebSocket limits/error behavior, and
 restart/reconnect behavior.
 
@@ -218,7 +218,7 @@ Clean shutdown happens in two cases:
 - the process receives a termination signal
 - a fatal startup/runtime error forces the process to exit
 
-If the upstream node closes the live block stream or the RPC connection drops, `acuity-index` saves the active span, keeps the WebSocket server running, and reconnects with exponential backoff instead of exiting. Local requests such as `Status` and `SizeOnDisk` keep working, while RPC-backed requests such as `Variants` and `GetEvents` return a temporary-unavailable error until the node comes back.
+If the upstream node closes the live block stream or the RPC connection drops, `acuity-index` saves the active span, keeps the WebSocket server running, and reconnects with exponential backoff instead of exiting. Local requests such as `acuity_indexStatus` keep working, while RPC-backed requests such as `acuity_getEventMetadata` and `acuity_getEvents` return an upstream-unavailable error until the node comes back.
 
 If the watched index spec changes, `acuity-index` validates the new file before
 switching. Accepted changes stop the current indexer cleanly, persist the active

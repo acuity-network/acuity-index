@@ -27,7 +27,7 @@ use crate::{
     event_hydration::{FetchedBlock, fetch_block_events, hydrate_event_refs},
     protocol::*,
     runtime_state::{RuntimeState, lock_or_recover},
-    ws_api::process_msg_status,
+    ws_api::build_index_status_result,
 };
 
 // ─── Indexer struct ───────────────────────────────────────────────────────────
@@ -543,11 +543,14 @@ impl Indexer {
     }
 
     pub fn notify_status_subscribers(&self) {
-        let msg = NotificationMessage {
-            body: NotificationBody::Status(match process_msg_status(&self.trees.span) {
-                ResponseBody::Status(spans) => spans,
-                _ => unreachable!(),
-            }),
+        let result = build_index_status_result(&self.trees.span);
+        let msg = JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "acuity_subscription",
+            params: NotificationParams {
+                subscription: String::new(), // Status subscribers don't have individual IDs in fanout
+                result: NotificationResult::Status { spans: result.spans },
+            },
         };
         let mut subs = lock_or_recover(&self.runtime.status_subs, "status_subs");
         subs.retain(|tx| keep_subscriber(tx, &msg));
@@ -598,11 +601,16 @@ impl Indexer {
                 }
             };
 
-            let notification = NotificationMessage {
-                body: NotificationBody::EventNotification {
-                    key: key.clone(),
-                    event: event_ref,
-                    decoded_event: Some(decoded_event),
+            let notification = JsonRpcNotification {
+                jsonrpc: "2.0",
+                method: "acuity_subscription",
+                params: NotificationParams {
+                    subscription: String::new(), // Event subscribers don't have individual IDs in fanout
+                    result: NotificationResult::Event {
+                        key: key.clone(),
+                        event: event_ref,
+                        decoded_event: Some(decoded_event),
+                    },
                 },
             };
             let mut subs = lock_or_recover(&runtime.events_subs, "events_subs");
@@ -620,16 +628,21 @@ fn drop_event_subscribers(runtime: &RuntimeState, key: &Key) {
     lock_or_recover(&runtime.events_subs, "events_subs").remove(key);
 }
 
-fn keep_subscriber(tx: &mpsc::Sender<NotificationMessage>, msg: &NotificationMessage) -> bool {
+fn keep_subscriber(tx: &mpsc::Sender<JsonRpcNotification>, msg: &JsonRpcNotification) -> bool {
     if tx.try_send(msg.clone()).is_ok() {
         return true;
     }
 
     error!("disconnecting slow WebSocket subscriber");
-    let _ = tx.try_send(NotificationMessage {
-        body: NotificationBody::SubscriptionTerminated {
-            reason: SubscriptionTerminationReason::Backpressure,
-            message: "subscriber disconnected due to backpressure".into(),
+    let _ = tx.try_send(JsonRpcNotification {
+        jsonrpc: "2.0",
+        method: "acuity_subscription",
+        params: NotificationParams {
+            subscription: String::new(),
+            result: NotificationResult::Terminated {
+                reason: "backpressure".into(),
+                message: "subscriber disconnected due to backpressure".into(),
+            },
         },
     });
     false

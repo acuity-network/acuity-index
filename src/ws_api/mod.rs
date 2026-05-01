@@ -10,7 +10,7 @@ mod validation;
 use crate::errors::IndexError;
 
 pub use listener::websockets_listen;
-pub use requests::process_msg_status;
+pub use requests::build_index_status_result;
 
 fn disconnect_error(message: impl Into<String>) -> IndexError {
     IndexError::Io(std::io::Error::new(

@@ -45,7 +45,6 @@ pub struct BenchmarkReport {
     pub elapsed_seconds: f64,
     pub blocks_per_second: f64,
     pub synthetic_events_per_second: f64,
-    pub size_on_disk_bytes: u64,
 }
 
 pub fn key_u32(name: &str, value: u32) -> Value {
@@ -241,31 +240,18 @@ impl JsonWsClient {
 
     pub async fn request(
         &mut self,
-        request_type: &str,
-        body: Value,
+        method: &str,
+        params: Value,
     ) -> Result<Value, Box<dyn Error>> {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
 
-        let mut request = json!({
+        let request = json!({
+            "jsonrpc": "2.0",
             "id": request_id,
-            "type": request_type,
+            "method": method,
+            "params": params,
         });
-
-        match body {
-            Value::Null => {}
-            Value::Object(extra) => {
-                let request_obj = request
-                    .as_object_mut()
-                    .ok_or_else(|| io::Error::other("request payload was not an object"))?;
-                request_obj.extend(extra);
-            }
-            _ => {
-                return Err(
-                    io::Error::other("websocket request body must be a JSON object").into(),
-                );
-            }
-        }
 
         self.send_json(request).await?;
         recv_json_ws(&mut self.socket).await
@@ -273,21 +259,13 @@ impl JsonWsClient {
 
     pub async fn get_events(&mut self, key: Value, limit: u16) -> Result<Value, Box<dyn Error>> {
         self.request(
-            "GetEvents",
+            "acuity_getEvents",
             json!({
                 "key": key,
                 "limit": limit,
             }),
         )
         .await
-    }
-
-    pub async fn size_on_disk(&mut self) -> Result<u64, Box<dyn Error>> {
-        let response = self.request("SizeOnDisk", Value::Null).await?;
-        response["data"]
-            .as_u64()
-            .ok_or_else(|| io::Error::other(format!("unexpected SizeOnDisk response: {response}")))
-            .map_err(Into::into)
     }
 }
 
@@ -300,11 +278,11 @@ pub async fn request_json_ws(url: &str, request: Value) -> Result<Value, Box<dyn
 }
 
 pub async fn fetch_status(indexer_url: &str) -> Result<Value, Box<dyn Error>> {
-    request_json_ws(indexer_url, json!({"id": 1, "type": "Status"})).await
+    request_json_ws(indexer_url, json!({"jsonrpc": "2.0", "id": 1, "method": "acuity_indexStatus"})).await
 }
 
 pub fn spans_cover_tip(status_response: &Value, expected_tip: u32) -> bool {
-    status_response["data"].as_array().is_some_and(|spans| {
+    status_response["result"]["spans"].as_array().is_some_and(|spans| {
         spans.iter().any(|span| {
             span["start"].as_u64().unwrap_or(u64::MAX) <= 1
                 && span["end"].as_u64().unwrap_or(0) >= u64::from(expected_tip)
@@ -338,37 +316,30 @@ pub async fn get_events(
     key: Value,
     limit: u16,
 ) -> Result<Value, Box<dyn Error>> {
-    get_events_with_proofs(indexer_url, key, limit, false).await
-}
-
-pub async fn get_events_with_proofs(
-    indexer_url: &str,
-    key: Value,
-    limit: u16,
-    include_proofs: bool,
-) -> Result<Value, Box<dyn Error>> {
     request_json_ws(
         indexer_url,
         json!({
+            "jsonrpc": "2.0",
             "id": 2,
-            "type": "GetEvents",
-            "key": key,
-            "limit": limit,
-            "includeProofs": include_proofs,
+            "method": "acuity_getEvents",
+            "params": {
+                "key": key,
+                "limit": limit,
+            },
         }),
     )
     .await
 }
 
 pub fn events_len(response: &Value) -> usize {
-    response["data"]["events"]
+    response["result"]["events"]
         .as_array()
         .map(Vec::len)
         .unwrap_or_default()
 }
 
 pub fn decoded_event_names(response: &Value) -> Vec<String> {
-    response["data"]["decodedEvents"]
+    response["result"]["decodedEvents"]
         .as_array()
         .into_iter()
         .flatten()
@@ -399,12 +370,4 @@ pub fn validate_query_expectation(
     }
 
     Ok(())
-}
-
-pub async fn size_on_disk(indexer_url: &str) -> Result<u64, Box<dyn Error>> {
-    let response = request_json_ws(indexer_url, json!({"id": 3, "type": "SizeOnDisk"})).await?;
-    response["data"]
-        .as_u64()
-        .ok_or_else(|| io::Error::other(format!("unexpected SizeOnDisk response: {response}")))
-        .map_err(Into::into)
 }
